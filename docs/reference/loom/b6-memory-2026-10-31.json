@@ -1,0 +1,257 @@
+{
+  "recordedAt": "2026-10-30T18:34:24.440Z",
+  "revision": "8d593662",
+  "environment": {
+    "os": "macOS 26.6.2",
+    "architecture": "arm64",
+    "ramGiB": 24,
+    "electron": "42.11.12",
+    "mode": "development",
+    "profile": "loom-dev2-loom-b6-measure",
+    "page": "main new conversation",
+    "activeTasks": 0,
+    "richPreviewsOpened": false,
+    "auxiliaryWindowsOpened": false
+  },
+  "launchCommand": "XDT_CDP_PORT=9331 pnpm dev:desktop --isolated=loom-b6-measure",
+  "rssCommand": "ps -axo pid=,ppid=,rss=,command=",
+  "footprintCommand": "footprint --noCategories --format bytes --json <output.json> <PIDs...>",
+  "scope": "Electron parent and associated Chromium helpers including Crashpad; native Codex, menubar and drag helpers recorded separately. Forge, Vite, pnpm and unrelated instances excluded.",
+  "baseline": {
+    "electronProcessCount": 12,
+    "rssApproxMB": 707,
+    "page": "login",
+    "source": "docs/loom/slimming-plan.md"
+  },
+  "representativeSample": 2,
+  "samples": [
+    {
+      "sample": 1,
+      "timestamp": "2026-10-30T18:29:36.781Z",
+      "rootPid": 56910,
+      "electronProcessCount": 5,
+      "electronRssBytes": 566214656,
+      "electronPhysFootprintBytes": 605084080,
+      "processes": [
+        {
+          "pid": 56910,
+          "parentPid": 56599,
+          "role": "Electron main",
+          "electron": true,
+          "rssBytes": 216956928,
+          "physFootprintBytes": 189237528
+        },
+        {
+          "pid": 57510,
+          "parentPid": 1,
+          "role": "Crashpad",
+          "electron": true,
+          "rssBytes": 7651328,
+          "physFootprintBytes": 2212296
+        },
+        {
+          "pid": 57523,
+          "parentPid": 56910,
+          "role": "GPU",
+          "electron": true,
+          "rssBytes": 82231296,
+          "physFootprintBytes": 131843080
+        },
+        {
+          "pid": 57524,
+          "parentPid": 56910,
+          "role": "Network service",
+          "electron": true,
+          "rssBytes": 55590912,
+          "physFootprintBytes": 15958904
+        },
+        {
+          "pid": 57547,
+          "parentPid": 56910,
+          "role": "Main renderer",
+          "electron": true,
+          "rssBytes": 203784192,
+          "physFootprintBytes": 265832272
+        },
+        {
+          "pid": 57608,
+          "parentPid": 56910,
+          "role": "Native drag helper",
+          "electron": false,
+          "rssBytes": 25198592,
+          "physFootprintBytes": 6685320
+        },
+        {
+          "pid": 57764,
+          "parentPid": 56910,
+          "role": "Native menubar helper",
+          "electron": false,
+          "rssBytes": 40566784,
+          "physFootprintBytes": 10764960
+        },
+        {
+          "pid": 57826,
+          "parentPid": 56910,
+          "role": "User Codex app-server",
+          "electron": false,
+          "rssBytes": 89669632,
+          "physFootprintBytes": 86016960
+        }
+      ],
+      "footprintErrors": [],
+      "footprintWarnings": []
+    },
+    {
+      "sample": 2,
+      "timestamp": "2026-10-30T18:30:35.230Z",
+      "rootPid": 56910,
+      "electronProcessCount": 5,
+      "electronRssBytes": 411648000,
+      "electronPhysFootprintBytes": 598301104,
+      "processes": [
+        {
+          "pid": 56910,
+          "parentPid": 56599,
+          "role": "Electron main",
+          "electron": true,
+          "rssBytes": 167673856,
+          "physFootprintBytes": 189155608
+        },
+        {
+          "pid": 57510,
+          "parentPid": 1,
+          "role": "Crashpad",
+          "electron": true,
+          "rssBytes": 7651328,
+          "physFootprintBytes": 2212296
+        },
+        {
+          "pid": 57523,
+          "parentPid": 56910,
+          "role": "GPU",
+          "electron": true,
+          "rssBytes": 68485120,
+          "physFootprintBytes": 131826696
+        },
+        {
+          "pid": 57524,
+          "parentPid": 56910,
+          "role": "Network service",
+          "electron": true,
+          "rssBytes": 45793280,
+          "physFootprintBytes": 12256120
+        },
+        {
+          "pid": 57547,
+          "parentPid": 56910,
+          "role": "Main renderer",
+          "electron": true,
+          "rssBytes": 122044416,
+          "physFootprintBytes": 262850384
+        },
+        {
+          "pid": 57608,
+          "parentPid": 56910,
+          "role": "Native drag helper",
+          "electron": false,
+          "rssBytes": 25329664,
+          "physFootprintBytes": 6685320
+        },
+        {
+          "pid": 57764,
+          "parentPid": 56910,
+          "role": "Native menubar helper",
+          "electron": false,
+          "rssBytes": 36782080,
+          "physFootprintBytes": 10764960
+        },
+        {
+          "pid": 57826,
+          "parentPid": 56910,
+          "role": "User Codex app-server",
+          "electron": false,
+          "rssBytes": 74465280,
+          "physFootprintBytes": 97764312
+        }
+      ],
+      "footprintErrors": [],
+      "footprintWarnings": []
+    },
+    {
+      "sample": 3,
+      "timestamp": "2026-10-30T18:32:14.365Z",
+      "rootPid": 56910,
+      "electronProcessCount": 5,
+      "electronRssBytes": 352583680,
+      "electronPhysFootprintBytes": 598235568,
+      "processes": [
+        {
+          "pid": 56910,
+          "parentPid": 56599,
+          "role": "Electron main",
+          "electron": true,
+          "rssBytes": 133332992,
+          "physFootprintBytes": 189303064
+        },
+        {
+          "pid": 57510,
+          "parentPid": 1,
+          "role": "Crashpad",
+          "electron": true,
+          "rssBytes": 7585792,
+          "physFootprintBytes": 2212296
+        },
+        {
+          "pid": 57523,
+          "parentPid": 56910,
+          "role": "GPU",
+          "electron": true,
+          "rssBytes": 60096512,
+          "physFootprintBytes": 131810312
+        },
+        {
+          "pid": 57524,
+          "parentPid": 56910,
+          "role": "Network service",
+          "electron": true,
+          "rssBytes": 42696704,
+          "physFootprintBytes": 12305272
+        },
+        {
+          "pid": 57547,
+          "parentPid": 56910,
+          "role": "Main renderer",
+          "electron": true,
+          "rssBytes": 108871680,
+          "physFootprintBytes": 262604624
+        },
+        {
+          "pid": 57608,
+          "parentPid": 56910,
+          "role": "Native drag helper",
+          "electron": false,
+          "rssBytes": 23232512,
+          "physFootprintBytes": 6750856
+        },
+        {
+          "pid": 57764,
+          "parentPid": 56910,
+          "role": "Native menubar helper",
+          "electron": false,
+          "rssBytes": 33193984,
+          "physFootprintBytes": 10797728
+        },
+        {
+          "pid": 57826,
+          "parentPid": 56910,
+          "role": "User Codex app-server",
+          "electron": false,
+          "rssBytes": 19087360,
+          "physFootprintBytes": 36586408
+        }
+      ],
+      "footprintErrors": [],
+      "footprintWarnings": []
+    }
+  ]
+}

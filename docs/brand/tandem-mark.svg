@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="200 308 624 408">
+  <!-- tandem 单色标志：透明底，填充色由生成脚本替换；两只相扣的环，交叉处留缝表现上下关系。用于菜单栏、首页 lockup、模板图标。 -->
+  <mask id="m" maskUnits="userSpaceOnUse" x="200" y="308" width="624" height="408">
+    <rect x="200" y="308" width="624" height="408" fill="#000"/>
+    <g fill="none">
+      <circle cx="404" cy="512" r="170" stroke="#fff" stroke-width="64"/>
+      <circle cx="620" cy="512" r="170" stroke="#000" stroke-width="100"/>
+      <circle cx="620" cy="512" r="170" stroke="#fff" stroke-width="64"/>
+      <path d="M546.6 604.6A170 170 0 0 1 467.7 669.6" stroke="#000" stroke-width="100"/>
+      <path d="M560.5 578.4A170 170 0 0 1 439.3 678.3" stroke="#fff" stroke-width="64"/>
+    </g>
+  </mask>
+  <rect x="200" y="308" width="624" height="408" fill="currentColor" mask="url(#m)"/>
+</svg>

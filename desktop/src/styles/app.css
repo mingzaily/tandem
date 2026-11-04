@@ -1,0 +1,63 @@
+@import '../../design/tokens/tokens.css';
+@import '../../design/tokens/colors.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    background: var(--surface);
+    color: hsl(var(--foreground));
+    font-family: var(--app-font-ui-default);
+    font-size: var(--app-ui-font-size);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  ::selection {
+    background: var(--focus-ring-soft);
+  }
+}
+
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.text-foreground {
+  color: hsl(var(--foreground));
+}
+
+/* Task running indicator: breathes on the agent mark. */
+@keyframes task-running {
+  50% {
+    opacity: 0.35;
+  }
+}
+.task-running {
+  animation: task-running 1600ms var(--motion-ease-move) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-running {
+    animation: none;
+  }
+}
+
+.message-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.message-scroll::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: var(--msg-scrollbar);
+}
+.message-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--msg-scrollbar-hover);
+}

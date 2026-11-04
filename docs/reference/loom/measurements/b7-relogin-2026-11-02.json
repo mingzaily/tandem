@@ -1,0 +1,87 @@
+{
+  "applicationVersion": "0.1.120",
+  "states": [
+    {
+      "at": "2026-11-02T03:28:55.203Z",
+      "phase": "signed-out",
+      "ws": "stopped",
+      "credentialFile": true,
+      "hasTokens": false,
+      "hasSavedSession": false
+    },
+    {
+      "at": "2026-11-02T03:28:58.206Z",
+      "phase": "signed-in",
+      "ws": "stopped",
+      "credentialFile": true,
+      "hasTokens": true,
+      "hasSavedSession": true
+    },
+    {
+      "at": "2026-11-02T03:29:22.217Z",
+      "phase": "signed-in",
+      "ws": "connecting",
+      "credentialFile": true,
+      "hasTokens": true,
+      "hasSavedSession": true
+    },
+    {
+      "at": "2026-11-02T03:29:25.218Z",
+      "phase": "signed-in",
+      "ws": "online",
+      "credentialFile": true,
+      "hasTokens": true,
+      "hasSavedSession": true
+    },
+    {
+      "at": "2026-11-02T03:42:38.129Z",
+      "phase": "signed-out",
+      "ws": "stopped",
+      "credentialFile": true,
+      "hasTokens": false,
+      "hasSavedSession": false
+    },
+    {
+      "at": "2026-11-02T03:42:41.129Z",
+      "phase": "signed-out",
+      "ws": "stopped",
+      "credentialFile": false,
+      "hasTokens": false,
+      "hasSavedSession": false
+    },
+    {
+      "at": "2026-11-02T03:47:59.314Z",
+      "phase": "signing-in",
+      "ws": "stopped",
+      "credentialFile": false,
+      "hasTokens": false,
+      "hasSavedSession": false
+    },
+    {
+      "at": "2026-11-02T03:51:32.521Z",
+      "phase": "signed-in",
+      "ws": "connecting",
+      "credentialFile": true,
+      "hasTokens": true,
+      "hasSavedSession": true
+    },
+    {
+      "at": "2026-11-02T03:51:38.522Z",
+      "phase": "signed-in",
+      "ws": "online",
+      "credentialFile": true,
+      "hasTokens": true,
+      "hasSavedSession": true
+    }
+  ],
+  "afterRelogin": {
+    "at": "2026-11-02T04:13:21.717Z",
+    "ws": "online",
+    "online": true,
+    "enabled": true,
+    "appVersion": "0.1.120",
+    "deviceCount": 2
+  },
+  "source": "Main-only probe reports state, credential-file existence and token-presence booleans; device directory is queried through the official account adapter. No credentials or account identifiers are saved.",
+  "probeErrors": []
+}

@@ -1,0 +1,148 @@
+{
+  "nativeRead": {
+    "recordedAt": "2026-10-31T00:25:32.882Z",
+    "platform": "darwin",
+    "node": "v24.18.1",
+    "claude": {
+      "sdkVersion": "0.3.292",
+      "cliVersion": "2.1.314 (Claude Code)",
+      "sessions": 1,
+      "defaultMessages": 73,
+      "systemMessages": 4,
+      "uniqueNativeUuids": true,
+      "filesUnchanged": 1
+    },
+    "pi": {
+      "packageName": "@earendil-works/pi-coding-agent",
+      "version": "1.4.0",
+      "sessions": 15,
+      "projectSessions": 0,
+      "copied": 15,
+      "openedWithReadOnlyPermissions": 15,
+      "versions": {
+        "3": 15
+      },
+      "branchEntries": 5682,
+      "originalsUnchanged": 15,
+      "failures": {},
+      "unterminatedV3": {
+        "readOnlyOpen": "EACCES",
+        "readOnlyCopyUnchanged": true,
+        "writableOpenAppendedBytes": 1
+      }
+    },
+    "codex": {
+      "userAgent": "Codex Desktop/0.166.0 (Mac OS 26.6.2; arm64) dumb (loom-c1-read-probe; 0.0.0)",
+      "counts": {
+        "active": 3,
+        "archived": 0
+      },
+      "lockedSessions": 1,
+      "samples": [
+        {
+          "externallyLocked": false,
+          "compressed": false,
+          "items": 2224,
+          "pages": 23,
+          "uniqueItemIds": true,
+          "readerLoadedBefore": false,
+          "readerLoadedAfter": false,
+          "writerLockAfter": {
+            "exists": false,
+            "held": false
+          },
+          "fileUnchanged": true
+        },
+        {
+          "externallyLocked": true,
+          "compressed": false,
+          "items": 1055,
+          "pages": 11,
+          "uniqueItemIds": true,
+          "readerLoadedBefore": false,
+          "readerLoadedAfter": false,
+          "writerLockAfter": {
+            "exists": true,
+            "held": true
+          },
+          "fileUnchanged": true
+        }
+      ]
+    }
+  },
+  "codexExternalAppend": {
+    "recordedAt": "2026-10-31T00:24:57.001Z",
+    "isolated": true,
+    "network": "loopback fake Responses endpoint, no credentials",
+    "nativeFilesWrittenBy": "official app-server only",
+    "userAgent": "Codex Desktop/0.166.0 (Mac OS 26.6.2; arm64) dumb (loom-c1-read-probe; 0.0.0)",
+    "writerLockBeforeRead": {
+      "exists": true,
+      "held": true
+    },
+    "firstReadCount": 1,
+    "readerLoadedAfterFirst": false,
+    "secondReadCount": 2,
+    "seesExternalAppend": true,
+    "existingIdsPreserved": true,
+    "readerLoadedAfterSecond": false,
+    "writerLockAfterRead": {
+      "exists": true,
+      "held": true
+    },
+    "unsubscribe": {
+      "status": "unsubscribed"
+    },
+    "writerLockAfterUnsubscribe": {
+      "exists": true,
+      "held": true
+    },
+    "writerLoadedAfterUnsubscribe": true,
+    "resumeAfterUnsubscribe": {
+      "ok": false,
+      "code": -32600,
+      "message": "thread 01a18f58-6547-7a11-b7f8-00c679f28567 already has an active writer"
+    },
+    "writerLockAfterExit": {
+      "exists": false,
+      "held": false
+    },
+    "resumeAfterWriterExit": {
+      "ok": true
+    },
+    "requests": 2
+  },
+  "codexAdditionalReads": {
+    "recordedAt": "2026-10-31T00:21:23.614Z",
+    "activeFirstPageCount": 100,
+    "activeHasMore": true,
+    "externalWriterProcesses": [
+      {
+        "pid": 60919,
+        "command": "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+      }
+    ],
+    "archivedFirstPageCount": 100,
+    "archivedHasMore": true,
+    "archivedRead": {
+      "items": 12,
+      "hasMore": false,
+      "fileUnchanged": true,
+      "compressed": false
+    },
+    "compressedRead": {
+      "found": false
+    }
+  },
+  "observedLimits": [
+    {
+      "operation": "thread/list: global ascending, scan-and-repair",
+      "timeoutMs": 30000
+    },
+    {
+      "operation": "initialize: two fresh app-servers started concurrently during full unit suites",
+      "timeoutMs": 30000,
+      "retest": "sequential initialization passed"
+    }
+  ]
+}

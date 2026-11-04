@@ -27,7 +27,7 @@ macOS 26，arm64。Tandem 第一版，只接了 Claude Code，15 个任务。
 
 ## 对比
 
-Electron 这边的数字是 loom B6 的记录（[原始数据](../reference/loom/b6-memory-2026-10-31.json)）：开发模式，主界面空闲，物理占用约 570–605 MB。
+Electron 这边的数字是 loom B6 的记录（[原始数据](../reference/loom/measurements/b6-memory-2026-10-31.json)）：开发模式，主界面空闲，物理占用约 570–605 MB。
 
 - **不是同等条件的对比**：Tandem 目前功能少得多，loom 是开发模式，页面也不同。功能补齐后要复测。
 - 每个活跃的 `claude` 进程另占约 230–290 MB，两边相同。

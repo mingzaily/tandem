@@ -1,6 +1,6 @@
 # Token 来源
 
-这些文件取自 Cindy `v0.1.121` 的生成结果（经 tandem 提交 `e7a3f25ace`），之后由本仓库维护，不再同步。
+这些文件取自 Cindy `v0.1.121` 的生成结果，之后由本仓库维护，不再同步。
 
 | 文件 | 来源 |
 |---|---|
@@ -9,4 +9,4 @@
 | `tailwind.generated.ts` | `apps/desktop/tailwind.config.ts` 的生成区 |
 | `code-dark.css` | `apps/desktop/src/renderer/styles/globals.css` 的深色代码配色 |
 
-原文件可以用 `git show refs/legacy/tandem:<路径>` 查看。
+路径相对于 `docs/reference/repos/cindy`。

@@ -3,7 +3,7 @@
 > **状态**：权威
 > **读取时机**：读写任务数据、接入新 CLI 之前
 
-各 CLI 的文件格式对照和早期设计见 [`reference/loom/architecture.md`](../reference/loom/architecture.md)，当时踩过的坑见同目录的其他文档。
+各 CLI 的文件格式对照和早期设计见 [`reference/loom/architecture.md`](../reference/loom/architecture.md)，当时踩过的坑见同目录的其他文档，ccgui 的做法可以查 `docs/reference/repos/ccgui`。
 
 ## Claude Code
 

@@ -21,7 +21,7 @@
 | [roadmap.md](roadmap.md) | 权威 | 决定下一步做什么 |
 | [decisions.md](decisions.md) | 权威 | 了解已定和待定的决策 |
 | [measurements/](measurements/2026-11-04-startup-and-memory.md) | 参考 | 比较启动和内存 |
-| [reference/](reference/README.md) | 参考 | 查 loom 和 Cindy 的历史资料 |
+| [reference/](reference/README.md) | 参考 | 查 loom 的历史文档，以及本地的 Cindy、ccgui 代码 |
 
 ## 收录规则
 

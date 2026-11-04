@@ -8,7 +8,7 @@ Tandem 的目标是**尽量复刻 Cindy 的界面**。`upstream/` 是原样复�
 ## 复刻方法
 
 1. 先在原版代码里找到对应组件，照搬它的几何、token、字号和交互，不要凭规范文字猜。
-2. 原版代码用 `git show refs/legacy/tandem:apps/desktop/src/renderer/<路径>` 查看。
+2. 原版代码在 `docs/reference/repos/cindy/apps/desktop/src/renderer/`。这份仓库不上传，新机器上的取法见 [参考资料](../reference/README.md)。
 3. 改完要看实际截图，不能只看代码。
 
 已经复刻的组件和原版对照：

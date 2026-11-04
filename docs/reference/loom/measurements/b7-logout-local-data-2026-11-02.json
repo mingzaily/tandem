@@ -1,0 +1,27 @@
+{
+  "logoutAt": "2026-11-02T03:42:41.129Z",
+  "observedUntil": "2026-11-02T03:45:09.249384+00:00",
+  "unsignedSeconds": 148.120384,
+  "cindyRequestsAfterCredentialRemoval": 0,
+  "localUiFilesUnchanged": true,
+  "derivedIndexAndLocalDatabaseTablesUnchanged": true,
+  "indexTablesChecked": 1,
+  "localTablesChecked": 83,
+  "excludedFromLogicalRead": [
+    "vec0 virtual table (extension is unavailable in Python sqlite; message and session facts are absent from this virtual table)"
+  ],
+  "localFactRows": {
+    "messages": 0,
+    "sessions": 0
+  },
+  "remoteCredentialFilesAfterLogout": [],
+  "authStateAfterLogout": {
+    "at": "2026-11-02T03:42:41.129Z",
+    "phase": "signed-out",
+    "ws": "stopped",
+    "credentialFile": false,
+    "hasTokens": false,
+    "hasSavedSession": false
+  },
+  "cliConfigHashesMatchUserApprovedBaseline": true
+}

@@ -28,32 +28,8 @@
 - `pwa/`、`relay/`：见各自的 README。
 - `docs/`：见 [文档索引](../README.md)。
 - `docs/brand/`：应用图标和标记的源文件。
+- `docs/reference/`：历史文档和本地参考仓库。
 
-## 历史引用
+## 参考仓库
 
-仓库保留了旧代码的 Git 引用，不会被推送到远端：
-
-| 引用 | 内容 |
-|---|---|
-| `refs/legacy/tandem` | Electron 版 tandem（Cindy 的轻 fork）最后的提交 |
-| `refs/loom/main` | 更早的深 fork loom，包含原生会话方案 |
-| `refs/cindy/v0.1.121` | fork 基线 |
-
-```bash
-git log --oneline refs/legacy/tandem
-git show refs/loom/main:docs/loom/b8-plan.md
-git show refs/legacy/tandem:apps/desktop/src/renderer/components/chat/UserMessage.tsx
-```
-
-这些历史来自 partial clone：tandem 和 loom 自己的提交内容都在本地，部分 Cindy 旧文件在第一次读取时才从 `cindy` 远端下载，需要 GitHub 的 SSH 权限。
-
-### 备份
-
-- `refs/loom/main` 已推送到私有仓库。新克隆用 `git fetch origin refs/loom/main:refs/loom/main` 取回。
-- `refs/legacy/tandem` 只有 14 个提交是自己的，其余是 Cindy 的公开历史。完整推送要先下载约 8 万个文件，所以这 14 个提交以 bundle 形式放在私有仓库的 Release `legacy-refs` 里。恢复时先取到基线 `v0.1.121`，再执行：
-
-```bash
-git fetch git@github.com:makecindy/cindy.git refs/tags/v0.1.121:refs/cindy/v0.1.121
-git bundle unbundle legacy-tandem.bundle
-git update-ref refs/legacy/tandem e7a3f25ace
-```
+`docs/reference/repos/` 放 Cindy 和 ccgui 的代码，供实现时查阅，已被 Git 忽略，不会上传。说明见 [参考资料](../reference/README.md)。

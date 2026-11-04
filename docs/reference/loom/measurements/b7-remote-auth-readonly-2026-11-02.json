@@ -1,0 +1,503 @@
+{
+  "recordedAt": "2026-11-01T17:38:51.457Z",
+  "scope": "Anonymous, no-follow GET probes; authorization redirects validate pre-login routing only.",
+  "methods": [
+    "GET"
+  ],
+  "credentialsSent": false,
+  "cookiesReused": false,
+  "followedProviderRedirects": false,
+  "accountMutations": false,
+  "requests": [
+    {
+      "label": "global:me:anonymous",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/me",
+      "userAgent": "loom/0.0.0",
+      "status": 401,
+      "ms": 1575,
+      "errorCode": "UNAUTHORIZED",
+      "location": null,
+      "responseAppSchemes": []
+    },
+    {
+      "label": "global:providers:snapshot-ua",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/providers",
+      "userAgent": "Cindy/0.0.0",
+      "status": 200,
+      "ms": 1577,
+      "errorCode": null,
+      "location": null,
+      "responseAppSchemes": [],
+      "providers": {
+        "region": "global",
+        "email": true,
+        "phone": false,
+        "social": [
+          "apple",
+          "google"
+        ]
+      }
+    },
+    {
+      "label": "global:devices:anonymous",
+      "origin": "https://device-link.cindy.app",
+      "path": "/api/device-link/devices",
+      "userAgent": "loom/0.0.0",
+      "status": 401,
+      "ms": 1582,
+      "errorCode": "UNAUTHORIZED",
+      "location": null,
+      "responseAppSchemes": []
+    },
+    {
+      "label": "global:providers:loom-ua",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/providers",
+      "userAgent": "loom/0.0.0",
+      "status": 200,
+      "ms": 1771,
+      "errorCode": null,
+      "location": null,
+      "responseAppSchemes": [],
+      "providers": {
+        "region": "global",
+        "email": true,
+        "phone": false,
+        "social": [
+          "apple",
+          "google"
+        ]
+      }
+    },
+    {
+      "label": "global:desktop:hosted",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 403,
+      "errorCode": null,
+      "location": {
+        "origin": "https://accounts.google.com",
+        "path": "/o/oauth2/v2/auth",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "https://auth.cindy.app/api/auth/desktop/callback",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:desktop:loopback",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 453,
+      "errorCode": null,
+      "location": {
+        "origin": "https://accounts.google.com",
+        "path": "/o/oauth2/v2/auth",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "http://127.0.0.1:43187/auth/callback",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:desktop:loom-scheme",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 397,
+      "errorCode": "INVALID_REDIRECT_URI",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "loom://auth",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:desktop:snapshot-scheme",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 450,
+      "errorCode": null,
+      "location": {
+        "origin": "https://accounts.google.com",
+        "path": "/o/oauth2/v2/auth",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "cindy://auth",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:mobile:snapshot-scheme",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 530,
+      "errorCode": null,
+      "location": {
+        "origin": "https://accounts.google.com",
+        "path": "/o/oauth2/v2/auth",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "mobile",
+        "redirectUri": "cindy://auth",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:mobile:loom-scheme",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 611,
+      "errorCode": "INVALID_REDIRECT_URI",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "mobile",
+        "redirectUri": "loom://auth",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:unknown-client-type",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/social/google/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 410,
+      "errorCode": "INVALID_PARAMS",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "loom",
+        "redirectUri": "https://auth.cindy.app/api/auth/desktop/callback",
+        "provider": "google"
+      }
+    },
+    {
+      "label": "global:hosted-callback:without-code",
+      "origin": "https://auth.cindy.app",
+      "path": "/api/auth/desktop/callback",
+      "userAgent": "loom/0.0.0",
+      "status": 404,
+      "ms": 449,
+      "errorCode": "NOT_FOUND",
+      "location": null,
+      "responseAppSchemes": []
+    },
+    {
+      "label": "cn:providers:snapshot-ua",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/providers",
+      "userAgent": "Cindy/0.0.0",
+      "status": 200,
+      "ms": 204,
+      "errorCode": null,
+      "location": null,
+      "responseAppSchemes": [],
+      "providers": {
+        "region": "cn",
+        "email": false,
+        "phone": true,
+        "social": [
+          "wechat",
+          "apple"
+        ]
+      }
+    },
+    {
+      "label": "cn:me:anonymous",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/me",
+      "userAgent": "loom/0.0.0",
+      "status": 401,
+      "ms": 217,
+      "errorCode": "UNAUTHORIZED",
+      "location": null,
+      "responseAppSchemes": []
+    },
+    {
+      "label": "cn:providers:loom-ua",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/providers",
+      "userAgent": "loom/0.0.0",
+      "status": 200,
+      "ms": 221,
+      "errorCode": null,
+      "location": null,
+      "responseAppSchemes": [],
+      "providers": {
+        "region": "cn",
+        "email": false,
+        "phone": true,
+        "social": [
+          "wechat",
+          "apple"
+        ]
+      }
+    },
+    {
+      "label": "cn:devices:anonymous",
+      "origin": "https://device-link.cindy.com.cn",
+      "path": "/api/device-link/devices",
+      "userAgent": "loom/0.0.0",
+      "status": 401,
+      "ms": 225,
+      "errorCode": "UNAUTHORIZED",
+      "location": null,
+      "responseAppSchemes": []
+    },
+    {
+      "label": "cn:desktop:hosted",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 52,
+      "errorCode": null,
+      "location": {
+        "origin": "https://appleid.apple.com",
+        "path": "/auth/authorize",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_mode",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "https://auth.cindy.com.cn/api/auth/desktop/callback",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:desktop:loopback",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 52,
+      "errorCode": null,
+      "location": {
+        "origin": "https://appleid.apple.com",
+        "path": "/auth/authorize",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_mode",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "http://127.0.0.1:43187/auth/callback",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:desktop:loom-scheme",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 43,
+      "errorCode": "INVALID_REDIRECT_URI",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "loom://auth",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:desktop:snapshot-scheme",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 50,
+      "errorCode": null,
+      "location": {
+        "origin": "https://appleid.apple.com",
+        "path": "/auth/authorize",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_mode",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "cindy://auth",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:desktop:regional-mobile-scheme",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 47,
+      "errorCode": null,
+      "location": {
+        "origin": "https://appleid.apple.com",
+        "path": "/auth/authorize",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_mode",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "desktop",
+        "redirectUri": "cindycn://auth",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:mobile:snapshot-scheme",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 302,
+      "ms": 49,
+      "errorCode": null,
+      "location": {
+        "origin": "https://appleid.apple.com",
+        "path": "/auth/authorize",
+        "queryKeys": [
+          "client_id",
+          "nonce",
+          "redirect_uri",
+          "response_mode",
+          "response_type",
+          "scope",
+          "state"
+        ]
+      },
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "mobile",
+        "redirectUri": "cindycn://auth",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:mobile:loom-scheme",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 43,
+      "errorCode": "INVALID_REDIRECT_URI",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "mobile",
+        "redirectUri": "loom://auth",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:unknown-client-type",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/social/apple/authorize",
+      "userAgent": "loom/0.0.0",
+      "status": 400,
+      "ms": 46,
+      "errorCode": "INVALID_PARAMS",
+      "location": null,
+      "responseAppSchemes": [],
+      "input": {
+        "clientType": "loom",
+        "redirectUri": "https://auth.cindy.com.cn/api/auth/desktop/callback",
+        "provider": "apple"
+      }
+    },
+    {
+      "label": "cn:hosted-callback:without-code",
+      "origin": "https://auth.cindy.com.cn",
+      "path": "/api/auth/desktop/callback",
+      "userAgent": "loom/0.0.0",
+      "status": 404,
+      "ms": 41,
+      "errorCode": "NOT_FOUND",
+      "location": null,
+      "responseAppSchemes": []
+    }
+  ]
+}

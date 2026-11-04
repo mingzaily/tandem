@@ -1,0 +1,93 @@
+{
+  "capturedAt": "2026-11-02T06:43:13.980969+00:00",
+  "appVersion": "0.1.120",
+  "officialPhone": {
+    "region": "Global",
+    "distribution": "Google Play",
+    "version": "0.1.28",
+    "newSessionSend": "user confirmed success",
+    "existingSessionOpen": "user confirmed success"
+  },
+  "nativeIdentity": {
+    "engine": "pi",
+    "nativeId": "67a4414e-62f5-4e92-9701-45352b845cc5",
+    "callerGuiId": "abe6a9e8-3194-4bcb-934e-1c0eaeb4ca26",
+    "rebuiltGuiId": "de9d83a2-3ed7-8cdc-aa5a-709c9a88535f",
+    "observedReply": "LOOM_B7_REMOTE_OK"
+  },
+  "rebuild": {
+    "method": "Stop disposable unsigned profile, move its entire data directory to a recoverable backup, restart the same empty profile, add the repository through the native folder dialog",
+    "originalSignedInProfileTouched": false,
+    "backup": "/tmp/loom-b7-rebuild-before-reset-20261102-142159",
+    "sessionCountBefore": 8,
+    "sessionCountAfter": 8,
+    "nativeReferencesMatchOriginal": true,
+    "nativeReferencesEqual": true,
+    "derivedGuiIdsEqual": true,
+    "byEngine": {
+      "claude-code": 1,
+      "codex": 3,
+      "pi": 4
+    },
+    "secondOpenShowsPlainUserPrompt": true,
+    "secondOpenShowsExactReply": true,
+    "nativeUiRefKeys": [
+      "engine",
+      "nativeId"
+    ],
+    "localFactsRows": {
+      "sessions": 0,
+      "messages": 0
+    },
+    "factsReadMethod": "Read immutable SQLite after stopping the disposable profile; WAL files absent"
+  },
+  "cliConfigHashes": [
+    {
+      "file": ".claude/settings.json",
+      "size": 212,
+      "sha256": "de84f8d396bdbed6352275ea38f0f75ad2b7a08a12f5c8693bcd1dce31a43bea",
+      "matchesBaseline": true,
+      "finalMatchesBaseline": true
+    },
+    {
+      "file": ".codex/config.toml",
+      "size": 9113,
+      "sha256": "2047b6e94b48d3f324e2a3c4a9710035e4dfbb4c13ac55220c213df5cc32f971",
+      "matchesBaseline": true,
+      "finalMatchesBaseline": true
+    },
+    {
+      "file": ".pi/agent/settings.json",
+      "size": 1129,
+      "sha256": "bbbb34d5fb589604015c46dcae5efe1c429389d10e15614e3a09e7f48ea76753",
+      "matchesBaseline": true,
+      "finalMatchesBaseline": true
+    },
+    {
+      "file": ".pi/agent/models.json",
+      "size": 7913,
+      "sha256": "8318276f06a6564350d852fd6b2a954126923e10a093fbc0b307649a57883e48",
+      "matchesBaseline": true,
+      "finalMatchesBaseline": true
+    }
+  ],
+  "notes": [
+    "No CLI configuration or session file was manually edited.",
+    "The original profile retains caller-chosen GUI UUIDs. Removing UI bindings recreates derived UUIDs, so old mobile links may need reselection."
+  ],
+  "originalProfileRestored": {
+    "capturedAt": "2026-11-02T06:48:20.728275+00:00",
+    "accountDisplayObserved": true,
+    "originalGuiIdRetained": true,
+    "refFieldsOnly": true,
+    "deviceLinkOnline": true,
+    "startupErrorCount": 0,
+    "historyReadObserved": true,
+    "log": "/tmp/loom-b7-identity-clean-start.log"
+  },
+  "temporaryClipboardPngs": {
+    "count": 20,
+    "sizeBytes": 6369836,
+    "action": "retained; existing native history still references these source attachments"
+  }
+}

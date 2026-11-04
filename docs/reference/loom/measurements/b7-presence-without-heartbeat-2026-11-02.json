@@ -1,0 +1,497 @@
+{
+  "recordedAt": "2026-11-02T03:16:44.486388+00:00",
+  "appVersion": "0.1.120",
+  "phone": {
+    "region": "global",
+    "distribution": "Google Play",
+    "version": "0.1.28",
+    "nativeSessionsListedAndOpened": "user confirmed"
+  },
+  "observationSeconds": 1812.846,
+  "samples": 60,
+  "allEnabledSamplesOnline": true,
+  "httpHeartbeatRequests": 0,
+  "presence": [
+    {
+      "at": "2026-11-02T02:46:14.552Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 3
+    },
+    {
+      "at": "2026-11-02T02:46:44.686Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 3
+    },
+    {
+      "at": "2026-11-02T02:47:17.696Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 3
+    },
+    {
+      "at": "2026-11-02T02:47:50.705Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 3
+    },
+    {
+      "at": "2026-11-02T02:48:23.718Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:48:53.730Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:49:23.742Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:49:53.751Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:50:23.762Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:50:56.774Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:51:29.784Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:51:59.796Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:52:29.810Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:52:59.819Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:53:29.827Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:53:59.837Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:54:29.916Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:54:59.931Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:55:29.940Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:55:59.949Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:56:29.961Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:56:59.969Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:57:29.985Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:57:59.995Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:58:30.008Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:59:00.026Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T02:59:30.040Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:00:00.048Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:00:32.963Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:01:02.978Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:01:32.987Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:02:02.996Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:02:33.004Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:03:03.015Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:03:33.026Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:04:03.062Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:04:33.104Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:05:06.132Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:05:36.144Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:06:09.154Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:06:42.165Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:07:12.177Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:07:42.187Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:08:12.200Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:08:42.209Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:09:15.219Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:09:45.234Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:10:18.253Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:10:48.263Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:11:18.275Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:11:48.288Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:12:21.297Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:12:51.361Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:13:24.374Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:13:54.383Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:14:24.394Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:14:54.404Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:15:24.431Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:15:54.440Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    },
+    {
+      "at": "2026-11-02T03:16:27.398Z",
+      "ws": "online",
+      "online": true,
+      "enabled": true,
+      "appVersion": "0.1.120",
+      "deviceCount": 2
+    }
+  ],
+  "failures": []
+}

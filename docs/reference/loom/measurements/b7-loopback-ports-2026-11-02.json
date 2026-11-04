@@ -1,0 +1,70 @@
+{
+  "recordedAt": "2026-11-02T00:45:49.303Z",
+  "userAgent": "loom/0.0.0",
+  "ports": [
+    38119,
+    49171,
+    62387
+  ],
+  "method": "GET",
+  "credentialsSent": false,
+  "cookiesReused": false,
+  "followedRedirects": false,
+  "results": [
+    {
+      "region": "global",
+      "port": 38119,
+      "redirectUri": "http://127.0.0.1:38119/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://accounts.google.com",
+      "acceptedBeforeLogin": true
+    },
+    {
+      "region": "global",
+      "port": 49171,
+      "redirectUri": "http://127.0.0.1:49171/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://accounts.google.com",
+      "acceptedBeforeLogin": true
+    },
+    {
+      "region": "global",
+      "port": 62387,
+      "redirectUri": "http://127.0.0.1:62387/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://accounts.google.com",
+      "acceptedBeforeLogin": true
+    },
+    {
+      "region": "cn",
+      "port": 38119,
+      "redirectUri": "http://127.0.0.1:38119/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://appleid.apple.com",
+      "acceptedBeforeLogin": true
+    },
+    {
+      "region": "cn",
+      "port": 49171,
+      "redirectUri": "http://127.0.0.1:49171/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://appleid.apple.com",
+      "acceptedBeforeLogin": true
+    },
+    {
+      "region": "cn",
+      "port": 62387,
+      "redirectUri": "http://127.0.0.1:62387/auth/callback",
+      "status": 302,
+      "errorCode": null,
+      "redirectOrigin": "https://appleid.apple.com",
+      "acceptedBeforeLogin": true
+    }
+  ],
+  "allPortsAcceptedBeforeLogin": true
+}

@@ -1,0 +1,133 @@
+{
+  "recordedAt": "2026-10-31T19:01:30.808793+00:00",
+  "piConfigurationRestore": {
+    "restored": true,
+    "alreadyOriginal": false,
+    "removedBytes": 43,
+    "bytes": 1129,
+    "sha256MatchesOriginal": true,
+    "recordedAt": "2026-10-31T17:47:57.612Z",
+    "authorization": "User explicitly authorized exact pre-test restoration on 2026-11-01",
+    "originalSha256": "bbbb34d5fb589604015c46dcae5efe1c429389d10e15614e3a09e7f48ea76753"
+  },
+  "cliConfigurationHashesAllMatchPreTest": true,
+  "guiPiRoundtrip": {
+    "nativeId": "baad8c33-05f6-44b0-ba83-9da2388fbca4",
+    "userTurns": 3,
+    "guiFirstReplyMatched": true,
+    "terminalReplyMatched": true,
+    "guiFollowupUsedTerminalContext": true,
+    "officialReadKeptOriginalSignature": true,
+    "createdThroughDesktopUi": true,
+    "discoveredByOfficialListAll": true,
+    "terminalResumedSameId": true,
+    "manualRefreshShowedTerminalAppend": true,
+    "storedInUserNativeDirectory": true
+  },
+  "desktopProfileRebuild": {
+    "originalIds": 22,
+    "recoveredOriginalIds": 22,
+    "finalCount": 22,
+    "extraIds": 0,
+    "counts": {
+      "claude-code": 1,
+      "codex": 18,
+      "pi": 3
+    },
+    "columnCount": 9,
+    "selectedProjectThroughNativeFolderDialog": true,
+    "claudeCodeOpenedAfterRebuild": true,
+    "codexOpenedAfterRebuild": true,
+    "piThreeTurnHistoryOpenedAfterRebuild": true,
+    "startupErrorLines": 0
+  },
+  "nativeSqlRowsAfterRebuild": {
+    "messages": 0,
+    "sessions": 0,
+    "schedule_runs": 0,
+    "orca_workers": 0,
+    "session_pr_refs": 0,
+    "skill_usage_exposures": 0,
+    "skill_usage_sources": 0,
+    "session_goals": 0,
+    "right_sidebar_tabs": 0,
+    "agent_input_queue_snapshots": 0,
+    "ghost_cards": 0,
+    "wechat_file_attachments": 0,
+    "wechat_inbox": 0,
+    "subagent_run_aliases": 0,
+    "subagent_runs": 0,
+    "schedule_session_latest_runs": 0,
+    "bot_lifecycle_events": 0,
+    "bot_runtime_snapshots": 0,
+    "bot_session_links": 0,
+    "im_notification_origins": 0,
+    "session_task_tags": 0,
+    "shared_task_events": 0,
+    "daily_session_usage": 0,
+    "auto_review_projections": 0,
+    "plugin_usage_events": 0
+  },
+  "volatileNativeQueue": {
+    "desktopBodiesPersisted": false,
+    "mobileBodiesPersisted": false,
+    "advertisesDurableRetries": false,
+    "pendingInputsRecoverAfterProcessRestart": false
+  },
+  "checks": {
+    "desktop": {
+      "filesPassed": 2210,
+      "filesSkipped": 5,
+      "testsPassed": 32853,
+      "testsSkipped": 32,
+      "testsFailed": 0,
+      "seconds": 490.72
+    },
+    "mobile": {
+      "filesPassed": 691,
+      "filesSkipped": 0,
+      "testsPassed": 9723,
+      "testsSkipped": 0,
+      "testsFailed": 0,
+      "seconds": 106.34
+    },
+    "typecheck": {
+      "desktopErrors": 0,
+      "mobileErrors": 0,
+      "incrementalCaches": "/tmp/loom-c1-<platform>.tsbuildinfo"
+    },
+    "changedUi": {
+      "command": "pnpm ui:check --changed=3b9d8608 --theme all",
+      "passed": 152,
+      "failed": 0,
+      "seconds": 157.1,
+      "artifact": "artifacts/ui-check/changed-hpX1AG",
+      "assertionsAndTimeoutsPreserved": true,
+      "uiHostSelftestsPassed": 5,
+      "uiHostSelftestsFailed": 0,
+      "screenshotsReviewed": true,
+      "fixtureUncoveredFiles": [
+        "CCAgentSessionView.tsx",
+        "ccAgent.types.ts",
+        "vite-env.d.ts"
+      ],
+      "additionalCoverage": "Full Desktop creation/read/refresh/resume/profile-rebuild for CCAgentSessionView; TypeScript for the two declarations"
+    },
+    "targeted": {
+      "desktopFiles": 6,
+      "desktopTests": 94,
+      "mobileFiles": 4,
+      "mobileTests": 156
+    }
+  },
+  "review": {
+    "business": "Native IDs and official reads; ephemeral turn/queue state; external-append execution context; configuration hashes; all original IDs rebuilt.",
+    "design": "Reuse native ID predicate, shared real-time translators and IPC paths; small ID-only in-memory receipts; per-variant renderer ownership; resize outside observer delivery."
+  },
+  "limitations": [
+    "Claude SDK 0.3.292 omits four system-record payloads; placeholders link the user back to Claude Code.",
+    "No Codex .zst sample was returned by the official API in this environment.",
+    "Native OS fullscreen Space transitions are outside the hidden DOM-fullscreen fixture.",
+    "Earlier profile shutdown emitted two existing CodexAgent.dispose error-level diagnostics; the final clean startup and all three native history reads emitted zero ERROR lines."
+  ]
+}

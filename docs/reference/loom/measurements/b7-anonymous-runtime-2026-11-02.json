@@ -1,0 +1,16 @@
+{
+  "recordedAt": "2026-11-02T02:01:02.305011+00:00",
+  "phase": "anonymous startup and Remote Connections settings before clicking login",
+  "durationSeconds": 651.521,
+  "eventCount": 459380,
+  "urlRequestStartJobCount": 4541,
+  "officialCindyEventCount": 0,
+  "officialCindyEvents": [],
+  "ui": {
+    "loginEntryVisible": true,
+    "sshVisible": true,
+    "myDevicesVisible": false,
+    "relayVisible": false
+  },
+  "rawCapture": "temporary local file only; ended before login"
+}

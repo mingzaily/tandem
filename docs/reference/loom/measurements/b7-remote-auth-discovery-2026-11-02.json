@@ -1,0 +1,120 @@
+{
+  "recordedAt": "2026-11-01T17:41:26.204259+00:00",
+  "scope": "B7 step 0 only; implementation awaits user confirmation",
+  "sourceCommit": "ef33b587",
+  "referenceSnapshot": "fbb1010f",
+  "phoneClientChosenByUser": "Existing official Cindy mobile client",
+  "productionCodeChanged": false,
+  "accountLoginPerformed": false,
+  "accountStateChanged": false,
+  "cliConfigurationHashes": {
+    "beforeAt": "2026-11-01T13:38:45.326295+00:00",
+    "files": [
+      {
+        "file": "~/.claude/settings.json",
+        "bytesBefore": 212,
+        "bytesAfter": 212,
+        "sha256Before": "de84f8d396bdbed6352275ea38f0f75ad2b7a08a12f5c8693bcd1dce31a43bea",
+        "sha256After": "de84f8d396bdbed6352275ea38f0f75ad2b7a08a12f5c8693bcd1dce31a43bea",
+        "unchanged": true
+      },
+      {
+        "file": "~/.codex/config.toml",
+        "bytesBefore": 9113,
+        "bytesAfter": 9113,
+        "sha256Before": "2047b6e94b48d3f324e2a3c4a9710035e4dfbb4c13ac55220c213df5cc32f971",
+        "sha256After": "2047b6e94b48d3f324e2a3c4a9710035e4dfbb4c13ac55220c213df5cc32f971",
+        "unchanged": true
+      },
+      {
+        "file": "~/.pi/agent/settings.json",
+        "bytesBefore": 1129,
+        "bytesAfter": 1129,
+        "sha256Before": "bbbb34d5fb589604015c46dcae5efe1c429389d10e15614e3a09e7f48ea76753",
+        "sha256After": "bbbb34d5fb589604015c46dcae5efe1c429389d10e15614e3a09e7f48ea76753",
+        "unchanged": true
+      },
+      {
+        "file": "~/.pi/agent/models.json",
+        "bytesBefore": 7376,
+        "bytesAfter": 7376,
+        "sha256Before": "c4578dbb5634fa4e432c25bdbc54aefaabf560c6cd49441427a20e5ae7cdc0bc",
+        "sha256After": "c4578dbb5634fa4e432c25bdbc54aefaabf560c6cd49441427a20e5ae7cdc0bc",
+        "unchanged": true
+      }
+    ],
+    "afterAt": "2026-11-01T17:44:01.371648+00:00"
+  },
+  "publicHttpProbe": {
+    "file": "b7-remote-auth-readonly-2026-11-02.json",
+    "requests": 25,
+    "statusCounts": {
+      "401": 4,
+      "200": 4,
+      "302": 9,
+      "400": 6,
+      "404": 2
+    },
+    "initialProbeFile": "b7-remote-auth-readonly-2026-11-01.json",
+    "initialRequests": 24,
+    "totalRequestsThisStep": 49,
+    "authenticatedRelayHandshakeVerified": false,
+    "initialProbeNote": "The initial CN desktop-scheme case used the regional mobile scheme cindycn; the final matrix additionally verifies the shared snapshot desktop scheme cindy. Request inputs and responses are preserved."
+  },
+  "mobileObservation": {
+    "installedRelevantSimulatorApps": [],
+    "physicalPhoneConnected": false,
+    "scope": "Simulator installation metadata only; official phone login and pairing state remains unobserved"
+  },
+  "baseline": {
+    "typechecks": {
+      "desktopErrors": 0,
+      "mobileErrors": 0,
+      "authClientErrors": 0,
+      "deviceLinkErrors": 0,
+      "makerCoreErrors": 0
+    },
+    "targetedTests": {
+      "desktop-audit": {
+        "filesPassed": 2,
+        "testsPassed": 3,
+        "testsFailed": 0
+      },
+      "mobile-audit": {
+        "filesPassed": 3,
+        "testsPassed": 59,
+        "testsFailed": 0
+      },
+      "codex-auth": {
+        "filesPassed": 2,
+        "testsPassed": 64,
+        "testsFailed": 0
+      },
+      "auth-client": {
+        "filesPassed": 6,
+        "testsPassed": 131,
+        "testsFailed": 0
+      }
+    },
+    "fullDesktopUnitSuiteRun": false,
+    "fullMobileUnitSuiteRun": false,
+    "changedUiRun": false,
+    "desktopStartupNetworkCaptureRun": false,
+    "engineProcessEnvironmentAfterLoginChecked": false
+  },
+  "codexBoundary": {
+    "evidence": "Source audit and mocked AppServerHost/external-auth tests",
+    "nativeCliAuthReturnsEmptyAuthEnv": true,
+    "productionHostPassesExternalAuth": false,
+    "refreshHandlerRequiresExternalAuth": true,
+    "cindyTokenConnectedToCodexExternalAuth": false
+  },
+  "pending": [
+    "User confirmation of implementation plan",
+    "Official phone realm/version and observed login/pairing state",
+    "Authenticated relay version and same-account native-session interoperability",
+    "SSH settings placement when unsigned",
+    "Actual login/logout, credential erasure, data invariance and process-environment acceptance"
+  ],
+  "cindyAccountCredentialsRead": false
+}

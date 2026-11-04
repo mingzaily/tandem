@@ -15,6 +15,8 @@
 | `pwa/` | 手机端 PWA（未开始） |
 | `relay/` | 自建中转（未开始，`packages/` 是待改造的 Cindy 代码） |
 
+`docs/reference/repos/` 下有 Cindy 和 ccgui 的代码，供实现时查阅，不上传，也不要改。
+
 ## 动手前先读
 
 文档总索引：[`docs/README.md`](docs/README.md)。按改动类型读对应规则：

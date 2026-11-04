@@ -1,0 +1,125 @@
+{
+  "recordedAt": "2026-10-31T02:27:58.708Z",
+  "pi": {
+    "nativeId": "52eef7f7-5498-4d88-a0a3-384e28bbecae",
+    "adapterCreatedInUserHome": true,
+    "discoveredByOfficialListAll": true,
+    "firstReplyMatched": true,
+    "terminalResumedSameId": true,
+    "terminalReplyMatched": true,
+    "userTurns": 2,
+    "grewAfterTerminal": true,
+    "sizeBytes": 152592
+  },
+  "rebuild": {
+    "counts": {
+      "claude-code": 1,
+      "codex": 15,
+      "pi": 2
+    },
+    "initialCount": 18,
+    "recoveredCount": 18,
+    "identicalNativeIds": true,
+    "unchangedScanSkippedOfficialReread": [
+      "claude-code",
+      "codex",
+      "pi"
+    ],
+    "deletedWholeDisposableProfile": true,
+    "reselectedSameProject": true,
+    "indexColumns": [
+      "engine",
+      "native_id",
+      "file_path",
+      "cwd",
+      "title",
+      "first_preview",
+      "last_activity_at",
+      "size_bytes",
+      "mtime_ms"
+    ],
+    "sourcesUnchanged": true,
+    "scope": "Production index and official listers; desktop window/profile-reset acceptance is separate."
+  },
+  "userConfiguration": {
+    "claudeSettingsUnchanged": true,
+    "codexConfigurationUnchanged": true,
+    "piModelsUnchanged": true,
+    "firstAttemptAddedPiCompactionSettingBytes": 43,
+    "removedRpcThatWritesSettings": true,
+    "fixedRoundtripIntroducedNoFurtherChanges": true,
+    "exactOriginalRollbackVerifiedBySha256": true,
+    "pendingUserAuthorizationToRestore": false,
+    "restoredExactPreTestBytes": true,
+    "restoreRecordedAt": "2026-10-31T17:47:57.612Z"
+  },
+  "desktopUi": {
+    "selectedProjectThroughNativeFolderDialog": true,
+    "initialClaudeSessions": 1,
+    "initialCodexSessions": 3,
+    "openedNativeCodexHistory": true,
+    "furtherInteractionBlockedByMacLock": true,
+    "finalStartupErrorLines": 0,
+    "finalIndexedSessions": 18,
+    "nativeSqlSessionRows": 0,
+    "nativeSqlMessageRows": 0,
+    "fullAppProfileResetStillPending": true
+  },
+  "checks": {
+    "desktop": {
+      "filesPassed": 2209,
+      "filesSkipped": 5,
+      "testsPassed": 32838,
+      "testsSkipped": 32,
+      "testsFailed": 0,
+      "seconds": 303.57
+    },
+    "mobile": {
+      "filesPassed": 691,
+      "testsPassed": 9716,
+      "testsFailed": 0,
+      "seconds": 84.5
+    },
+    "typechecks": {
+      "desktop": 0,
+      "mobile": 0,
+      "makerCore": 0,
+      "makerShared": 0,
+      "deviceLink": 0,
+      "nativeSessions": 0
+    },
+    "nativeSafety": {
+      "testsPassed": 1005,
+      "testsSkipped": 11
+    },
+    "pi": {
+      "filesPassed": 44,
+      "filesSkipped": 5,
+      "testsPassed": 1317,
+      "testsSkipped": 117
+    },
+    "deviceLinkTests": 67,
+    "sharedTests": 73,
+    "indexTests": 8,
+    "changedUi": {
+      "passed": 137,
+      "total": 152,
+      "failed": 15,
+      "uncoveredFiles": 3
+    },
+    "nativeUi": {
+      "passed": 4,
+      "total": 4,
+      "locales": [
+        "zh-CN",
+        "en"
+      ],
+      "themes": [
+        "light",
+        "dark"
+      ],
+      "screenshotsReviewed": true
+    }
+  },
+  "continuation": "c1-native-completion-2026-11-01.json"
+}

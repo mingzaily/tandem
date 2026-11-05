@@ -37,7 +37,7 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 测试脚本改过的 `localStorage` 要在结束时还原，调试版和正式版共用这份数据。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
 
-`TANDEM_DRIVE_PANEL=1` 打开菜单栏面板，测试点不了菜单栏图标。`TANDEM_DRIVE_CLOSE=<秒>` 到时间关主窗口，和点红色按钮走同一条路。
+`TANDEM_DRIVE_PANEL=1` 打开菜单栏面板，测试点不了菜单栏图标。`TANDEM_DRIVE_CLOSE=<秒>` 到时间关主窗口，和点红色按钮走同一条路。`TANDEM_DRIVE_PAIR_FILE=<路径>` 把配对码写到文件，`TANDEM_DRIVE_PAIR_ALLOW=1` 代答配对弹窗，这几个都只在调试版生效。
 
 安装、登录和拿不到真实触发条件的卡片，用替身 CLI 测：把 `ZDOTDIR` 指向一个目录，里面的 `.zshrc` 和 `.zlogin` 只放替身的 `PATH`。这样不动用户的真实账号和全局安装。
 

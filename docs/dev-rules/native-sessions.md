@@ -57,6 +57,8 @@ claude -p --input-format stream-json --output-format stream-json \
 
 **转换**：`commandExecution`、`fileChange` 等转成和 Claude 一样的工具消息，界面共用一套。命令外层的 `/bin/zsh -lc` 要去掉。
 
+**是否在运行**：写入锁只说明线程开着。看 rollout 末尾最后一个回合标记：`task_started` 是运行中，`task_complete`、`turn_aborted` 是结束。不能用最后写入时间判断，Codex 等长回复时不写文件。末尾 4 MB 里没有标记时才退回看最近写入，超过 30 分钟没写入的按卡死算。
+
 **单写入者**：`thread-writer-locks/<id>.lock` 被 flock 持有就是开在别处。Codex 会直接拒绝续接，所以不提供"仍要发送"。
 
 ## Pi
@@ -74,6 +76,10 @@ claude -p --input-format stream-json --output-format stream-json \
 ## 已知限制
 
 见 [路线图](../roadmap.md)。见文件。
+
+## 运行中插入的消息
+
+用户在 CLI 运行时输入的内容，Claude 写成 `attachment` 行：`attachment.type` 是 `queued_command`，`humanTurn` 为真才是用户写的，内容在 `prompt`（字符串或内容块）。程序排队的命令同样走这里，不显示。文字里的 `[Image #3]` 是终端的占位，读取时去掉。
 
 ## 压缩
 

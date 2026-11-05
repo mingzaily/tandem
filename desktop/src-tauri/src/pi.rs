@@ -11,7 +11,7 @@ use crate::attachments::Prepared;
 use crate::cli_info::{CliInfo, ModelOption};
 use crate::codex::TurnRequest;
 use crate::login_env;
-use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, QUESTION_TOOL};
+use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, QUESTION_TOOL, TurnSink};
 use crate::sessions::{is_under, Agent, DiscoveredProject, Message, MessageKind, TaskContent, TaskSummary};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -20,7 +20,6 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, UNIX_EPOCH};
-use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::process::Command;
 
@@ -550,9 +549,9 @@ fn prompt_line(prompt: &str, attachments: &Prepared) -> String {
     command.to_string()
 }
 
-pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: Channel<TurnEvent>) -> Result<(), String> {
+pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: TurnSink) -> Result<(), String> {
     request.options.validate_pi()?;
-    let emit = |event| on_event.send(event).map_err(|error: tauri::Error| error.to_string());
+    let emit = |event| on_event.send(event);
     let (task_id, cwd, session_args) = match &request.task_id {
         Some(id) => {
             let path = find_task_file(&sessions_dir()?, id)?;

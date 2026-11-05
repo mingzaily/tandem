@@ -630,38 +630,100 @@ function UsageChip({ usage }: { usage: UsageWindows | null }) {
 const RING_SIZE = 20;
 const RING_STROKE = 2.5;
 
-function ContextRing({ usedTokens, windowTokens }: { usedTokens: number; windowTokens: number }) {
+function contextColor(percent: number): string {
+  if (percent > 90) return 'var(--error-flat)';
+  return percent > 70 ? 'var(--warning-fg)' : 'var(--msg-tool-card-chevron)';
+}
+
+function ContextRing({ usedTokens, windowTokens, onCompact }: ContextProps) {
   const percent = contextPercent(usedTokens, windowTokens);
   const radius = (RING_SIZE - RING_STROKE) / 2;
   const circumference = 2 * Math.PI * radius;
-  const color = percent > 90 ? 'var(--error-flat)' : percent > 70 ? 'var(--warning-fg)' : 'var(--msg-tool-card-chevron)';
+  const color = contextColor(percent);
   const center = RING_SIZE / 2;
+  const level = percent > 90 ? 'contextNearLimit' : percent > 70 ? 'contextElevated' : 'contextAvailable';
   return (
-    <span
-      title={t('contextRing', {
-        used: formatTokens(usedTokens),
-        total: formatTokens(windowTokens),
-        percent: String(percent),
-      })}
-      className="inline-flex h-6 shrink-0 items-center gap-1 text-12 font-medium leading-none tabular-nums text-[var(--msg-tool-card-chevron)]"
+    <ComposerMenu
+      label={t('contextTitle')}
+      title={t('contextRing', { used: formatTokens(usedTokens), total: formatTokens(windowTokens), percent: String(percent) })}
+      width={300}
+      align="right"
+      triggerClassName="!h-6 gap-1 !px-1.5 text-12 font-medium leading-none tabular-nums text-[var(--msg-tool-card-chevron)] hover:bg-[var(--surface-hover)]"
+      bodyClassName="flex flex-col gap-3 p-4"
+      trigger={
+        <>
+          <svg width={RING_SIZE} height={RING_SIZE} viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} aria-hidden className="-rotate-90">
+            <circle cx={center} cy={center} r={radius} fill="none" stroke="var(--msg-tool-card-border)" strokeWidth={RING_STROKE} />
+            <circle
+              cx={center}
+              cy={center}
+              r={radius}
+              fill="none"
+              stroke={color}
+              strokeWidth={RING_STROKE}
+              strokeLinecap="round"
+              strokeDasharray={circumference}
+              strokeDashoffset={circumference * (1 - percent / 100)}
+            />
+          </svg>
+          {percent}%
+        </>
+      }
     >
-      <svg width={RING_SIZE} height={RING_SIZE} viewBox={`0 0 ${RING_SIZE} ${RING_SIZE}`} aria-hidden className="-rotate-90">
-        <circle cx={center} cy={center} r={radius} fill="none" stroke="var(--msg-tool-card-border)" strokeWidth={RING_STROKE} />
-        <circle
-          cx={center}
-          cy={center}
-          r={radius}
-          fill="none"
-          stroke={color}
-          strokeWidth={RING_STROKE}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference * (1 - percent / 100)}
-        />
-      </svg>
-      {percent}%
-    </span>
+      {(close) => (
+        <>
+          <div className="flex flex-col gap-1">
+            <h3 className="text-14 font-medium text-[var(--text-primary)]">{t('contextTitle')}</h3>
+            <p className="text-12 leading-relaxed text-[var(--text-secondary)]">{t('contextMeaning')}</p>
+          </div>
+          <div>
+            <div className="flex items-end justify-between gap-3">
+              <span className="flex items-baseline gap-1 tabular-nums text-[var(--text-primary)]">
+                <span className="text-[26px] font-medium leading-none tracking-tight">{percent}</span>
+                <span className="text-14">%</span>
+                <span className="ml-1 text-12 text-[var(--text-secondary)]">{t('contextUsed')}</span>
+              </span>
+              <span className="text-12 font-medium" style={{ color }}>
+                {t(level)}
+              </span>
+            </div>
+            <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-[var(--msg-tool-card-border)]">
+              <div className="h-full rounded-full" style={{ width: `${percent}%`, backgroundColor: color }} />
+            </div>
+            <p className="mt-2 text-12 tabular-nums text-[var(--text-secondary)]">
+              {t('contextTokens', { used: formatTokens(usedTokens), total: formatTokens(windowTokens) })}
+            </p>
+          </div>
+          <div className="border-t border-[var(--border-default)] pt-3">
+            {onCompact ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    close();
+                    onCompact();
+                  }}
+                  className="inline-flex h-8 items-center rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+                >
+                  {t('contextCompact')}
+                </button>
+                <p className="mt-2 text-12 leading-relaxed text-[var(--text-secondary)]">{t('contextCompactHelp')}</p>
+              </>
+            ) : (
+              <p className="text-12 leading-relaxed text-[var(--text-secondary)]">{t('contextAutoHelp')}</p>
+            )}
+          </div>
+        </>
+      )}
+    </ComposerMenu>
   );
+}
+
+interface ContextProps {
+  usedTokens: number;
+  windowTokens: number;
+  /** Missing where the CLI manages this itself, or while the task cannot take a turn. */
+  onCompact?: () => void;
 }
 
 interface ComposerFooterProps {
@@ -671,10 +733,11 @@ interface ComposerFooterProps {
   label?: string;
   usage: UsageWindows | null;
   context: { usedTokens: number; windowTokens: number } | null;
+  onCompact?: () => void;
 }
 
 /** The line under the input box: where the task runs, plan usage and context. */
-export function ComposerFooter({ cwd, label, usage, context }: ComposerFooterProps) {
+export function ComposerFooter({ cwd, label, usage, context, onCompact }: ComposerFooterProps) {
   return (
     <div className="mt-2 flex min-h-6 items-center justify-between gap-3 px-1">
       <span title={cwd ?? undefined} className="flex min-w-0 items-center gap-1.5">
@@ -689,7 +752,7 @@ export function ComposerFooter({ cwd, label, usage, context }: ComposerFooterPro
       </span>
       <div className="flex shrink-0 items-center gap-3">
         <UsageChip usage={usage} />
-        {context ? <ContextRing {...context} /> : null}
+        {context ? <ContextRing {...context} onCompact={onCompact} /> : null}
       </div>
     </div>
   );

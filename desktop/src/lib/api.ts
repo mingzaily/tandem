@@ -197,7 +197,7 @@ export interface TraySummary {
   sources: TraySource[];
 }
 export const updateTray = (summary: TraySummary) =>
-  invoke<void>('update_tray', { update: { count: summary.tasks.length, summary } });
+  invoke<void>('update_tray', { update: { summary } });
 export const traySummary = () => invoke<TraySummary | null>('tray_summary');
 export const resizeTrayPanel = (height: number) => invoke<void>('resize_tray_panel', { height });
 export const trayPanelAction = (action: 'open' | 'settings' | 'quit' | 'task', taskId?: string) =>
@@ -207,6 +207,48 @@ export const onTraySummary = (handler: (summary: TraySummary) => void) =>
 export const onTrayOpenSettings = (handler: () => void) => listen('tray-open-settings', () => handler());
 export const notifyUser = (title: string, body: string) => invoke<void>('notify_user', { title, body });
 export const setKeepRunning = (value: boolean) => invoke<void>('set_keep_running', { value });
+export type RemoteLinkStatus = 'off' | 'connecting' | 'online' | 'failed';
+export interface RemoteClient {
+  clientId: string;
+  name: string;
+  pairedAtMs: number;
+  isOnline: boolean;
+}
+export interface RemoteState {
+  enabled: boolean;
+  relayUrl: string;
+  hasHostToken: boolean;
+  status: RemoteLinkStatus;
+  error: string | null;
+  pairing: { text: string; qr: string; expiresAtMs: number } | null;
+  clients: RemoteClient[];
+}
+export interface RemoteContext {
+  projects: string[];
+  conversationRoots: string[];
+  conversationDir: string | null;
+  archived: string[];
+  titles: Record<string, string>;
+  language: string;
+}
+export interface RemoteTurn {
+  runId: string;
+  agent: Agent;
+  isNew: boolean;
+  cwd: string | null;
+  prompt: string;
+  event: TurnEvent;
+}
+export const remoteState = () => invoke<RemoteState>('remote_state');
+export const remoteConfigure = (enabled: boolean, relayUrl: string, hostToken: string | null) =>
+  invoke<void>('remote_configure', { enabled, relayUrl, hostToken });
+export const remoteBeginPairing = () => invoke<void>('remote_begin_pairing');
+export const remoteCancelPairing = () => invoke<void>('remote_cancel_pairing');
+export const remoteRevoke = (clientId: string) => invoke<void>('remote_revoke', { clientId });
+export const remoteUpdateContext = (context: RemoteContext) => invoke<void>('remote_update_context', { context });
+export const onRemoteChanged = (handler: () => void) => listen('remote-changed', () => handler());
+export const onRemoteTurn = (handler: (turn: RemoteTurn) => void) =>
+  listen<RemoteTurn>('remote-turn', (event) => handler(event.payload));
 export const onTrayOpenTask = (handler: (id: string) => void) =>
   listen<string>('tray-open-task', (event) => handler(event.payload));
 export const pickProject = () => invoke<string | null>('pick_project');

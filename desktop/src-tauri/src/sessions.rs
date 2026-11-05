@@ -100,6 +100,7 @@ struct Line {
     is_compact_summary: bool,
     timestamp: Option<String>,
     message: Option<Box<RawValue>>,
+    attachment: Option<Box<RawValue>>,
 }
 
 struct Entry {
@@ -249,6 +250,19 @@ pub fn read_task(path: &Path) -> Result<TaskContent, String> {
             parents.insert(uuid.clone(), parent);
         }
         let kind = parsed.kind.as_deref();
+        if !parsed.is_sidechain && kind == Some("attachment") {
+            if let Some(message) = parsed.attachment.as_deref().and_then(queued_message) {
+                entries.push(Entry {
+                    uuid,
+                    is_user: true,
+                    is_meta: false,
+                    is_compact_summary: false,
+                    timestamp: parsed.timestamp,
+                    message,
+                });
+            }
+            continue;
+        }
         if parsed.is_sidechain || !matches!(kind, Some("user" | "assistant")) {
             continue;
         }
@@ -358,6 +372,27 @@ fn blocks(message: &RawMessage) -> &[Value] {
         .as_ref()
         .and_then(Value::as_array)
         .map_or(&[], Vec::as_slice)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QueuedCommand {
+    #[serde(rename = "type")]
+    kind: String,
+    prompt: Option<Box<RawValue>>,
+    #[serde(default)]
+    human_turn: bool,
+}
+
+/// What the user typed while a turn was running is recorded as an attachment, not a user line.
+/// Programs queue commands the same way, and those are not the user's words.
+fn queued_message(attachment: &RawValue) -> Option<Box<RawValue>> {
+    let queued: QueuedCommand = serde_json::from_str(attachment.get()).ok()?;
+    if queued.kind != "queued_command" || !queued.human_turn {
+        return None;
+    }
+    let prompt = queued.prompt?;
+    RawValue::from_string(format!(r#"{{"role":"user","content":{}}}"#, prompt.get())).ok()
 }
 
 fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
@@ -520,7 +555,28 @@ fn tool_result_text(content: Option<&Value>) -> String {
 }
 
 /// Hides CLI bookkeeping that is stored as user text, and shows slash commands by name.
+/// The terminal marks pasted images as `[Image #3]` in the text. The page shows the image itself.
+fn without_image_tags(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[Image #") {
+        let after = &rest[start + "[Image #".len()..];
+        let digits = after.chars().take_while(char::is_ascii_digit).count();
+        if digits == 0 || !after[digits..].starts_with(']') {
+            result.push_str(&rest[..start + 1]);
+            rest = &rest[start + 1..];
+            continue;
+        }
+        result.push_str(&rest[..start]);
+        rest = after[digits + 1..].strip_prefix(' ').unwrap_or(&after[digits + 1..]);
+    }
+    result.push_str(rest);
+    result
+}
+
 fn visible_user_text(text: &str) -> Option<String> {
+    let cleaned = without_image_tags(text);
+    let text = cleaned.as_str();
     let trimmed = text.trim();
     if trimmed.is_empty()
         || trimmed.starts_with("<local-command-")
@@ -530,6 +586,10 @@ fn visible_user_text(text: &str) -> Option<String> {
         return None;
     }
     if let Some(name) = between(trimmed, "<command-name>", "</command-name>") {
+        // The compaction it asks for already shows as a divider.
+        if name == "/compact" {
+            return None;
+        }
         let args = between(trimmed, "<command-args>", "</command-args>").unwrap_or_default();
         return Some(format!("{name} {args}").trim().to_owned());
     }
@@ -802,6 +862,45 @@ mod tests {
             user("u2", Some("c1"), json!("after")),
         ]);
         assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["before", "after"]);
+    }
+
+    #[test]
+    fn a_compact_command_leaves_only_its_divider() {
+        assert!(visible_user_text("<command-name>/compact</command-name>").is_none());
+        assert_eq!(visible_user_text("<command-name>/review</command-name>").as_deref(), Some("/review"));
+    }
+
+    #[test]
+    fn image_tags_leave_the_text_alone_otherwise() {
+        assert_eq!(without_image_tags("[Image #21] 太近了"), "太近了");
+        assert_eq!(without_image_tags("a[Image #1]b [Image #2]"), "ab ");
+        assert_eq!(without_image_tags("see [Image #x] and [Image"), "see [Image #x] and [Image");
+        assert!(visible_user_text("[Image #3]").is_none());
+    }
+
+    #[test]
+    fn shows_what_the_user_typed_during_a_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let queued = |uuid: &str, parent: &str, human: bool, text: &str| {
+            json!({
+                "type": "attachment", "uuid": uuid, "parentUuid": parent,
+                "attachment": {"type": "queued_command", "prompt": text, "humanTurn": human},
+            })
+        };
+        let hook = json!({"type": "attachment", "uuid": "h", "parentUuid": "q2", "attachment": {"type": "hook_success"}});
+        let blocks = json!({
+            "type": "attachment", "uuid": "q3", "parentUuid": "h",
+            "attachment": {"type": "queued_command", "humanTurn": true, "prompt": [{"type": "text", "text": "with blocks"}]},
+        });
+        let path = write_session(dir.path(), "p", ID, &[
+            user("u1", None, json!("first")),
+            queued("q1", "u1", true, "typed meanwhile"),
+            queued("q2", "q1", false, "from a program"),
+            hook,
+            blocks,
+            user("u2", Some("q3"), json!("last")),
+        ]);
+        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["first", "typed meanwhile", "with blocks", "last"]);
     }
 
     #[test]

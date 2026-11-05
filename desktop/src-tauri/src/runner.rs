@@ -6,7 +6,6 @@ use crate::cli_info::{self, UsageWindows};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, VecDeque}, path::Path, process::Stdio, sync::{Arc, Mutex}, time::Duration};
-use tauri::ipc::Channel;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -119,6 +118,20 @@ pub enum Decision {
     AllowForTask,
     Deny,
     Answer { answers: serde_json::Map<String, Value> },
+}
+
+/// Where a turn's events go. The page, phones or both, so the turn itself does not care.
+#[derive(Clone)]
+pub struct TurnSink(std::sync::Arc<dyn Fn(TurnEvent) -> Result<(), String> + Send + Sync>);
+
+impl TurnSink {
+    pub fn new(send: impl Fn(TurnEvent) -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self(std::sync::Arc::new(send))
+    }
+
+    pub fn send(&self, event: TurnEvent) -> Result<(), String> {
+        (self.0)(event)
+    }
 }
 
 const EXTERNAL_WRITER_ERROR: &str = "This task is open in another process";
@@ -459,7 +472,7 @@ pub async fn send_turn(
     prompt: String,
     attachments: Prepared,
     options: TurnOptions,
-    on_event: Channel<TurnEvent>,
+    on_event: TurnSink,
 ) -> Result<(), String> {
     options.validate()?;
     let target = tauri::async_runtime::spawn_blocking(move || resolve_target(task_id, cwd))
@@ -474,7 +487,7 @@ pub async fn send_turn(
     }
     let channels = runs.begin(&target.task_id)?;
     runs.grant_rules(&target.task_id, attachments.read_rules());
-    let emit = |event| on_event.send(event).map_err(|error| error.to_string());
+    let emit = |event| on_event.send(event);
     let result = async {
         emit(TurnEvent::Started { task_id: target.task_id.clone() })?;
         run_claude(runs, &target, &prompt, &attachments, &options, channels, &emit).await

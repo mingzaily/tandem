@@ -1,0 +1,231 @@
+@import 'tailwindcss';
+@import '../../desktop/design/tokens/tokens.css';
+@import '../../desktop/design/tokens/colors.css';
+@import '../../desktop/design/tokens/theme.css';
+:root {
+  font-family: var(--app-font-ui-default);
+  color: var(--text-primary);
+  background: var(--surface);
+  font-size: var(--app-ui-font-size);
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+button {
+  cursor: pointer;
+  min-height: 44px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--chat-input-border);
+  background: var(--chat-input-bg);
+}
+button:disabled,
+fieldset:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+main {
+  max-width: 720px;
+  margin: auto;
+  height: var(--viewport-height, 100dvh);
+  padding-top: env(safe-area-inset-top);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-default);
+}
+.status {
+  font-size: var(--text-12);
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 6px;
+}
+h1 {
+  font-size: var(--text-24);
+}
+h2 {
+  font-size: var(--text-13);
+  color: var(--text-secondary);
+  margin-top: 24px;
+}
+h3 {
+  font-size: var(--text-15);
+  font-weight: 600;
+}
+.pair,
+.task-list {
+  padding: 20px;
+  overflow: auto;
+}
+.task {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  width: 100%;
+  border-radius: 12px;
+  border: 0;
+  margin: 6px 0;
+  gap: 5px;
+}
+small {
+  color: var(--text-secondary);
+}
+textarea,
+input,
+select {
+  border: 1px solid var(--chat-input-border);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--chat-input-bg);
+  max-width: 100%;
+}
+textarea {
+  width: 100%;
+  min-height: 84px;
+  resize: none;
+  font-size: 16px;
+}
+input {
+  font-size: 16px;
+}
+label {
+  display: block;
+  margin: 8px 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+.primary {
+  background: var(--perm-allow-btn-bg);
+  color: var(--perm-allow-btn-text);
+}
+.card {
+  border: 1px solid var(--ask-card-border);
+  background: var(--ask-card-bg);
+  padding: 16px;
+  border-radius: 12px;
+  margin: 8px 0;
+}
+.code {
+  display: block;
+  text-align: center;
+  font-size: var(--text-36);
+  letter-spacing: 0.15em;
+}
+video {
+  width: 100%;
+  border-radius: 12px;
+}
+.stream {
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  padding: 0 16px;
+  overflow-wrap: anywhere;
+}
+.message {
+  padding: 12px;
+  white-space: pre-wrap;
+}
+.message.user {
+  background: var(--msg-user-bg);
+  border-radius: 16px;
+  margin-left: 24px;
+}
+.message.thinking,
+.message.tool_result {
+  color: var(--text-secondary);
+  font-size: var(--text-13);
+}
+.message p {
+  margin: 0;
+}
+footer {
+  padding: 8px 12px max(10px, env(safe-area-inset-bottom));
+  background: var(--surface);
+  max-height: 65%;
+  overflow: auto;
+}
+.settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: var(--text-12);
+}
+select {
+  display: block;
+  padding: 6px;
+  max-width: 160px;
+}
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.task-title {
+  padding: 10px 16px;
+  font-weight: 600;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--perm-code-bg);
+  padding: 10px;
+  border-radius: 8px;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 8px;
+  background: var(--ask-option-hover);
+}
+.chip {
+  background: var(--surface-chip);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.error {
+  color: var(--text-primary);
+  padding: 12px;
+  margin: 0;
+  background: var(--surface-chip);
+}
+
+.task-panel {
+  min-height: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px;
+}
+.task-list {
+  flex: 1;
+  min-height: 0;
+}

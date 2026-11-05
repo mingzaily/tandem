@@ -147,7 +147,7 @@ test(
       prompt: "你好",
       model: "demo",
       effort: "medium",
-      permissionMode: "default",
+      permissionMode: null,
     });
     const permission = await wait("permissionRequest");
     assert.ok(events.some((e) => e.type === "textDelta"));
@@ -175,7 +175,7 @@ test(
       client.request("turn.send", {
         taskId: null,
         cwd: "/arbitrary",
-        permissionMode: "bypassPermissions",
+        permissionMode: null,
       }),
       /NOT_ALLOWED/,
     );

@@ -39,4 +39,4 @@ Rust 后端（读会话文件、管理子进程）
 
 ## 5. 目录边界
 
-- `desktop/`、`pwa/`、`relay/` 互相独立构建。`pwa/` 可以引用 `desktop/design/tokens/`，其他跨目录依赖要先在决策记录里说明。
+- `desktop/`、`pwa/`、`relay/`、`site/` 互相独立构建。`pwa/` 可以引用 `desktop/design/tokens/`，其他跨目录依赖要先在决策记录里说明。

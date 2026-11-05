@@ -12,8 +12,9 @@
 |---|---|
 | `docs/` | 产品、设计、开发规则和工程管理文档 |
 | `desktop/` | 桌面客户端：`src/` 是界面，`src-tauri/` 是 Rust 后端，`design/tokens/` 是设计 token |
-| `pwa/` | 手机端 PWA（未开始） |
-| `relay/` | 自建中转（未开始，`packages/` 是待改造的 Cindy 代码） |
+| `pwa/` | 手机端 PWA |
+| `relay/` | 自建中转 |
+| `site/` | 文档站和产品官网（未开始） |
 
 `docs/reference/repos/` 下有 Cindy 和 ccgui 的代码，供实现时查阅，不上传，也不要改。
 

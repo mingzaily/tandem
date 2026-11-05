@@ -26,11 +26,18 @@
 ```bash
 claude -p --input-format stream-json --output-format stream-json \
   --verbose --include-partial-messages \
+  --permission-prompt-tool stdio \
   --session-id <新 uuid>   # 新任务
   --resume <uuid>          # 续接
 ```
 
 `parent_tool_use_id` 不为空的输出属于子 Agent，主对话不显示。权限被拒绝的工具在 `result.permission_denials` 里。
+
+运行期间 stdin 保持打开，用来回复工具授权和提问，收到 `result` 后关闭，进程随之退出。
+
+模型列表和套餐用量来自一个不发提示词的短进程（`cli_info::read`），每次启动查一次：发送 `initialize` 和 `get_usage` 控制请求，带 `--no-session-persistence`，不产生会话文件，也不请求模型。用户级的 hook 仍会运行。运行中的用量从 `rate_limit_event` 更新。
+
+上下文占用取活跃分支上最后一次请求的输入 token。窗口大小只在 `result` 的 `modelUsage` 里有，按模型缓存在本地，所以这个模型跑完一轮后才显示圆环。
 
 ## 已知限制
 
@@ -39,3 +46,7 @@ claude -p --input-format stream-json --output-format stream-json \
 ## 接入新 CLI 时
 
 先确认它的官方接口和实际文件格式，写进本文件，再实现。读取和驱动都要有基于构造数据的测试。
+
+## 附件
+
+用户消息里的图片块原样读给页面显示。CLI 会另写一条 `isMeta` 的 `[Image: source: …]`，跟其他 `isMeta` 行一样隐藏。附件文件保存为提示词末尾的 `Attached file: 路径` 行，页面读回来显示成文件标签，生成标题时跳过。

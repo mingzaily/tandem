@@ -48,7 +48,8 @@ Cindy 的名称、Logo、角色形象和宣传图不在 Apache-2.0 许可范围�
 ## Token
 
 - `desktop/design/tokens/tokens.css`：字号、间距、圆角、动效等基础 token。
-- `desktop/design/tokens/colors.css`：默认主题的颜色。浅色写在 `:root`，深色写在 `.dark`。
+- `desktop/design/tokens/colors.css`：基础颜色。浅色写在 `:root`，深色写在 `.dark`。
+- `desktop/design/tokens/theme.css`：覆盖 `colors.css` 的暖色主题值，界面实际看到的颜色以它为准。
 - `desktop/design/tokens/tailwind.generated.ts`：Tailwind 的字号、间距、圆角和字重映射。
 
 这些文件已归本仓库维护，要改 token 就直接改，并同时改好浅色和深色。来源见 `SOURCE.md`。

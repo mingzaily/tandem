@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from './api';
-import { applyTurnEvent, buildItems, buildRows, projectName, type Item } from './items';
+import { applyTurnEvent, buildItems, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Message => ({
   text: '',
@@ -109,5 +109,46 @@ describe('projectName', () => {
   it('uses the last path segment', () => {
     expect(projectName('/work/app/')).toBe('app');
     expect(projectName('/')).toBe('/');
+  });
+});
+
+describe('turnStatus', () => {
+  const tool = { type: 'tool', id: 't', name: 'Bash', input: '', result: null, isError: false, truncated: false } as const;
+  const text = (type: 'assistant' | 'thinking' | 'user') => ({ type, id: 'x', text: 'x' });
+
+  it('says what the turn is doing', () => {
+    expect(turnStatus([text('user')], false)).toBe('statusThinking');
+    expect(turnStatus([text('thinking')], false)).toBe('statusThinking');
+    expect(turnStatus([text('assistant')], false)).toBe('statusReplying');
+    expect(turnStatus([tool], false)).toBe('statusCallingTool');
+    expect(turnStatus([{ ...tool, result: 'done' }], false)).toBe('statusThinking');
+  });
+
+  it('puts waiting for the user first', () => {
+    expect(turnStatus([tool], true)).toBe('statusAwaitingYou');
+  });
+
+  it('joins images to the text after them and turns attached file lines into files', () => {
+    const base = { isError: false, truncated: false };
+    const items = buildItems([
+      { ...base, id: 'a', kind: 'user', text: '', image: 'data:image/png;base64,AA' },
+      { ...base, id: 'b', kind: 'user', text: 'look\n\nAttached file: /logs/app (1).log' },
+      { ...base, id: 'c', kind: 'assistant', text: 'ok' },
+      { ...base, id: 'd', kind: 'user', text: '', image: 'data:image/png;base64,BB' },
+      { ...base, id: 'e', kind: 'assistant', text: 'seen' },
+    ]);
+    expect(items[0]).toMatchObject({
+      type: 'user',
+      text: 'look',
+      images: ['data:image/png;base64,AA'],
+      files: [{ name: 'app (1).log', path: '/logs/app (1).log' }],
+    });
+    expect(items[2]).toMatchObject({ type: 'user', text: '', images: ['data:image/png;base64,BB'] });
+    expect(items).toHaveLength(4);
+  });
+
+  it('leaves text without attached files alone', () => {
+    expect(splitAttachedFiles('line\n\n')).toEqual({ text: 'line\n\n', files: [] });
+    expect(splitAttachedFiles('Attached file: /a.log')).toEqual({ text: '', files: [{ name: 'a.log', path: '/a.log' }] });
   });
 });

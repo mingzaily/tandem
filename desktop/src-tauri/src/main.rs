@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod attachments;
+mod cli_info;
 mod commands;
 #[cfg(debug_assertions)]
 mod harness;
@@ -13,13 +15,26 @@ use tauri::Manager;
 fn main() {
     let started_at = Instant::now();
     tauri::Builder::default()
+        // No capability grants the page this plugin. Only the backend opens the dialog.
+        .plugin(tauri_plugin_dialog::init())
         .manage(runner::Runs::default())
+        .manage(attachments::Attachments::default())
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::DragDrop(drag) = event {
+                attachments::on_drag(window.app_handle(), drag);
+            }
+        })
         .manage(commands::StartedAt(started_at))
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
             commands::read_task,
             commands::send_turn,
             commands::cancel_turn,
+            commands::answer_request,
+            commands::cli_info,
+            commands::pick_attachments,
+            commands::add_pasted_image,
+            commands::remove_attachment,
             commands::open_external,
             commands::app_ready,
         ])

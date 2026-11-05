@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest';
 
 const root = resolve(import.meta.dirname, '../..');
 const lightValues = new Map<string, string>();
-for (const file of ['design/tokens/colors.css', 'design/tokens/tokens.css']) {
+// theme.css comes first because it overrides colors.css.
+for (const file of ['design/tokens/theme.css', 'design/tokens/colors.css', 'design/tokens/tokens.css']) {
   const light = readFileSync(join(root, file), 'utf8').split('.dark {')[0];
   for (const [, name, value] of light.matchAll(/^\s+(--[\w-]+): ([^;]+);/gm)) {
     if (!lightValues.has(name)) lightValues.set(name, value);
@@ -48,5 +49,14 @@ describe('design tokens', () => {
         .map(([, , name]) => `${path}: ${name}`),
     );
     expect(unwrapped).toEqual([]);
+  });
+
+  it('does not wrap tokens that hold whole colors in hsl()', () => {
+    const wrapped = sources.flatMap(({ path, text }) =>
+      [...text.matchAll(/hsl\(var\((--[\w-]+)\)/g)]
+        .filter(([, name]) => /^(#|rgba?\()/.test(resolveToken(name) ?? ''))
+        .map(([, name]) => `${path}: ${name}`),
+    );
+    expect(wrapped).toEqual([]);
   });
 });

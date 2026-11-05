@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ToolItem } from './items';
-import { describeTool, explorationSummary, formatAge, formatDuration } from './tools';
+import { describePermission, describeTool, explorationSummary, formatAge, formatDuration } from './tools';
 
 const tool = (name: string, input: unknown, overrides: Partial<ToolItem> = {}): ToolItem => ({
   type: 'tool',
@@ -62,5 +62,19 @@ describe('formats', () => {
     expect(formatAge(now - 3 * 3_600_000, now)).toMatch(/3/);
     expect(formatAge(now - 2 * 86_400_000, now)).toMatch(/2/);
     expect(formatAge(now + 1000, now)).not.toMatch(/-/);
+  });
+});
+
+describe('describePermission', () => {
+  it('shows the exact operation being approved', () => {
+    expect(describePermission('Bash', '{"command":"rm -rf x"}').detail).toBe('rm -rf x');
+    expect(describePermission('Write', '{"file_path":"/a/b"}').detail).toBe('/a/b');
+    expect(describePermission('Read', '{"file_path":"/a/b"}').detail).toBe('/a/b');
+  });
+
+  it('falls back to the full input for tools it does not know', () => {
+    const input = '{"url":"x"}';
+    expect(describePermission('mcp__x__y', input).detail).toBe(input);
+    expect(describePermission('mcp__x__y', input).title).toContain('mcp__x__y');
   });
 });

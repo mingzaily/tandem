@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{value::RawValue, Value};
+use crate::attachments::ATTACHED_FILE_PREFIX;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -13,6 +14,8 @@ use std::{
 const MAX_TASKS: usize = 300;
 const TITLE_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_TEXT_BYTES: usize = 20 * 1024;
+/// A 5 MB image, the most the API takes, is about this long as base64.
+const MAX_IMAGE_DATA_BYTES: usize = 7 * 1024 * 1024;
 const MAX_INPUT_BYTES: usize = 4 * 1024;
 const MAX_TITLE_CHARS: usize = 80;
 
@@ -49,6 +52,24 @@ pub struct Message {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<String>,
+    /// A data URL for an image the user sent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<String>,
+}
+
+/// What the context ring needs: the tokens the last request carried, and for which model.
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskContext {
+    pub used_tokens: u64,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskContent {
+    pub messages: Vec<Message>,
+    pub context: Option<TaskContext>,
 }
 
 #[derive(Deserialize)]
@@ -79,6 +100,21 @@ struct Entry {
 struct RawMessage {
     id: Option<String>,
     content: Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct RawUsage {
+    model: Option<String>,
+    usage: Option<Value>,
+}
+
+/// A request's size in the context window. Output tokens are not part of it yet.
+pub fn context_tokens(usage: &Value) -> Option<u64> {
+    let tokens: Vec<u64> = ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"]
+        .iter()
+        .filter_map(|key| usage.get(*key).and_then(Value::as_u64))
+        .collect();
+    (!tokens.is_empty()).then(|| tokens.iter().sum())
 }
 
 pub fn claude_projects_dir() -> Result<PathBuf, String> {
@@ -145,7 +181,7 @@ pub fn read_task_cwd(path: &Path) -> Option<String> {
     read_cwd_and_first_prompt(path).0
 }
 
-pub fn read_messages(path: &Path) -> Result<Vec<Message>, String> {
+pub fn read_task(path: &Path) -> Result<TaskContent, String> {
     let reader = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
     let mut parents: HashMap<String, String> = HashMap::new();
     let mut entries = Vec::new();
@@ -180,7 +216,16 @@ pub fn read_messages(path: &Path) -> Result<Vec<Message>, String> {
             append_messages(entry, &mut messages);
         }
     }
-    Ok(messages)
+    let context = entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(index, entry)| !entry.is_user && included.contains(index))
+        .find_map(|(_, entry)| {
+            let raw: RawUsage = serde_json::from_str(entry.message.get()).ok()?;
+            Some(TaskContext { used_tokens: context_tokens(&raw.usage?)?, model: raw.model })
+        });
+    Ok(TaskContent { messages, context })
 }
 
 /// Rewinding leaves abandoned branches in the file, so messages are selected from the newest leaf
@@ -291,6 +336,14 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
                     out.push(text_message(entry, index, MessageKind::Assistant, text));
                 }
             }
+            Some("image") if entry.is_user => {
+                if let Some(image) = image_data_url(block) {
+                    out.push(Message {
+                        image: Some(image),
+                        ..text_message(entry, index, MessageKind::User, "")
+                    });
+                }
+            }
             Some("thinking") => {
                 let text = block
                     .get("thinking")
@@ -311,6 +364,7 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
                     is_error: false,
                     truncated,
                     timestamp: entry.timestamp.clone(),
+                    image: None,
                 });
             }
             Some("tool_result") => {
@@ -331,11 +385,26 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
                         .unwrap_or(false),
                     truncated,
                     timestamp: entry.timestamp.clone(),
+                    image: None,
                 });
             }
             _ => {}
         }
     }
+}
+
+/// Task files can come from anywhere, so only plain image types reach the page.
+fn image_data_url(block: &Value) -> Option<String> {
+    let source = block.get("source")?;
+    let media_type = source.get("media_type")?.as_str()?;
+    let data = source.get("data")?.as_str()?;
+    if source.get("type")?.as_str()? != "base64"
+        || !crate::attachments::is_inline_media_type(media_type)
+        || data.len() > MAX_IMAGE_DATA_BYTES
+    {
+        return None;
+    }
+    Some(format!("data:{media_type};base64,{data}"))
 }
 
 fn message_id(entry: &Entry, block: usize) -> String {
@@ -353,6 +422,7 @@ fn text_message(entry: &Entry, block: usize, kind: MessageKind, text: &str) -> M
         is_error: false,
         truncated,
         timestamp: entry.timestamp.clone(),
+        image: None,
     }
 }
 
@@ -492,8 +562,22 @@ fn first_prompt_text(line: &Value) -> Option<String> {
         if block.get("type")?.as_str()? != "text" {
             return None;
         }
-        visible_user_text(block.get("text")?.as_str()?)
+        prompt_without_attachments(&visible_user_text(block.get("text")?.as_str()?)?)
     })
+}
+
+/// Attached files are named after the prompt, and are no use as a title unless nothing else is.
+fn prompt_without_attachments(text: &str) -> Option<String> {
+    let prompt = text
+        .lines()
+        .filter(|line| !line.starts_with(ATTACHED_FILE_PREFIX))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !prompt.trim().is_empty() {
+        return Some(prompt.trim_end().to_owned());
+    }
+    let first = text.lines().find_map(|line| line.strip_prefix(ATTACHED_FILE_PREFIX))?;
+    first.rsplit('/').next().map(str::to_owned)
 }
 
 /// A user-set title outranks the generated one. Both are appended, so the last of each wins.
@@ -536,6 +620,25 @@ fn read_title_from_tail(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_messages_for_test(path: &Path) -> Result<Vec<Message>, String> {
+        read_task(path).map(|content| content.messages)
+    }
+
+    #[test]
+    fn context_comes_from_the_last_request_on_the_active_branch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("task.jsonl");
+        let usage = |tokens: u64| format!(r#"{{"model":"m","content":[],"usage":{{"input_tokens":{tokens},"cache_read_input_tokens":1,"output_tokens":99}}}}"#);
+        let lines = [
+            format!(r#"{{"type":"assistant","uuid":"a","message":{}}}"#, usage(10)),
+            format!(r#"{{"type":"assistant","uuid":"side","isSidechain":true,"parentUuid":"a","message":{}}}"#, usage(500)),
+            format!(r#"{{"type":"assistant","uuid":"b","parentUuid":"a","message":{}}}"#, usage(20)),
+        ];
+        std::fs::write(&path, lines.join("\n")).unwrap();
+        let context = read_task(&path).unwrap().context;
+        assert_eq!(context, Some(TaskContext { used_tokens: 21, model: Some("m".into()) }));
+    }
     use serde_json::json;
     use std::io::Write;
 
@@ -577,7 +680,7 @@ mod tests {
                                            "content": [{"type": "text", "text": "missing"}]}])),
             assistant("a3", "u2", "m2", json!({"type": "text", "text": "done"})),
         ]);
-        let messages = read_messages(&path).unwrap();
+        let messages = read_messages_for_test(&path).unwrap();
         let kinds: Vec<_> = messages.iter().map(|message| message.kind).collect();
         assert_eq!(kinds, [
             MessageKind::User,
@@ -604,7 +707,7 @@ mod tests {
             assistant("a3", "u3", "m3", json!({"type": "text", "text": "second reply"})),
         ]);
         assert_eq!(
-            texts(&read_messages(&path).unwrap()),
+            texts(&read_messages_for_test(&path).unwrap()),
             ["first", "first reply", "second", "second reply"]
         );
     }
@@ -620,7 +723,7 @@ mod tests {
             user("r2", Some("a2"), json!([{"type": "tool_result", "tool_use_id": "t2", "content": "two"}])),
             assistant("a3", "r2", "m2", json!({"type": "text", "text": "done"})),
         ]);
-        let messages = read_messages(&path).unwrap();
+        let messages = read_messages_for_test(&path).unwrap();
         let results: Vec<_> = messages
             .iter()
             .filter(|message| message.kind == MessageKind::ToolResult)
@@ -637,7 +740,7 @@ mod tests {
             json!({"type": "system", "uuid": "c1", "parentUuid": null, "logicalParentUuid": "u1"}),
             user("u2", Some("c1"), json!("after")),
         ]);
-        assert_eq!(texts(&read_messages(&path).unwrap()), ["before", "after"]);
+        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["before", "after"]);
     }
 
     #[test]
@@ -654,7 +757,7 @@ mod tests {
             user("u2", Some("m1"), json!("<local-command-stdout>x</local-command-stdout>")),
             user("u3", Some("u2"), json!("<command-name>/review</command-name><command-args>a b</command-args>")),
         ]);
-        assert_eq!(texts(&read_messages(&path).unwrap()), ["real", "/review a b"]);
+        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["real", "/review a b"]);
     }
 
     #[test]
@@ -667,7 +770,7 @@ mod tests {
             .unwrap()
             .write_all(br#"{"type":"user","uuid":"u2"#)
             .unwrap();
-        assert_eq!(texts(&read_messages(&path).unwrap()), ["kept"]);
+        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["kept"]);
     }
 
     #[test]
@@ -687,7 +790,7 @@ mod tests {
         let mut line = user("u1", None, json!("hi"));
         line["timestamp"] = json!("2026-11-04T01:02:03.000Z");
         let path = write_session(dir.path(), "p", ID, &[line]);
-        let messages = read_messages(&path).unwrap();
+        let messages = read_messages_for_test(&path).unwrap();
         assert_eq!(messages[0].timestamp.as_deref(), Some("2026-11-04T01:02:03.000Z"));
     }
 
@@ -744,5 +847,20 @@ mod tests {
         assert!(find_task_file(dir.path(), ID).unwrap_err().contains("not found"));
         let path = write_session(dir.path(), "p", ID, &[]);
         assert_eq!(find_task_file(dir.path(), ID).unwrap(), path);
+    }
+
+    #[test]
+    fn user_images_reach_the_page_only_as_plain_image_types() {
+        let image = |media_type: &str| {
+            json!({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": "AA"}})
+        };
+        assert_eq!(image_data_url(&image("image/png")).unwrap(), "data:image/png;base64,AA");
+        assert!(image_data_url(&image("image/svg+xml")).is_none());
+    }
+
+    #[test]
+    fn titles_skip_attached_file_lines_unless_nothing_else_is_there() {
+        assert_eq!(prompt_without_attachments("fix it\n\nAttached file: /a/b.log").unwrap(), "fix it");
+        assert_eq!(prompt_without_attachments("Attached file: /a/b.log").unwrap(), "b.log");
     }
 }

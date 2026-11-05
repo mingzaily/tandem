@@ -83,6 +83,22 @@ export function describeTool(tool: ToolItem): ToolDisplay {
 }
 
 /** "Read 3 files · Searched twice", counted the way the group header reports exploration. */
+const COMMAND_TOOLS = new Set(['Bash']);
+const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS']);
+const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+
+/** Says what will happen, and shows the exact operation the user is approving. */
+export function describePermission(toolName: string, input: string): { title: string; detail: string } {
+  const fields = parseInput(input);
+  if (COMMAND_TOOLS.has(toolName) && asString(fields.command)) {
+    return { title: t('permissionTitleCommand'), detail: asString(fields.command) };
+  }
+  const path = asString(fields.file_path) || asString(fields.notebook_path) || asString(fields.path);
+  if (READ_TOOLS.has(toolName) && path) return { title: t('permissionTitleFileRead'), detail: path };
+  if (WRITE_TOOLS.has(toolName) && path) return { title: t('permissionTitleFileWrite'), detail: path };
+  return { title: t('permissionTitleTool', { tool: toolName }), detail: input };
+}
+
 export function explorationSummary(items: Item[]): string {
   let read = 0;
   let search = 0;

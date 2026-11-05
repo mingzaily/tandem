@@ -6,7 +6,12 @@ interface Timed {
   at?: number;
 }
 
-export type TextItem = Timed & { type: 'user' | 'assistant' | 'thinking' | 'notice'; text: string };
+export interface AttachedFile {
+  name: string;
+  path?: string;
+}
+export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice'; text: string };
+export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; files?: AttachedFile[] };
 export type ToolItem = Timed & {
   type: 'tool';
   name: string;
@@ -15,13 +20,26 @@ export type ToolItem = Timed & {
   isError: boolean;
   truncated: boolean;
 };
-export type Item = TextItem | ToolItem;
+export type Item = UserItem | TextItem | ToolItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
 export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
 export type Row = Item | WorkGroup;
 
 /** Claude Code records an interruption as user text, but the user did not write it. */
+const ATTACHED_FILE_PREFIX = 'Attached file: ';
+
+/** Files travel as lines after the prompt, the only form a task file can keep them in. */
+export function splitAttachedFiles(text: string): { text: string; files: AttachedFile[] } {
+  const lines = text.split('\n');
+  const files: AttachedFile[] = [];
+  while (lines.at(-1)?.startsWith(ATTACHED_FILE_PREFIX)) {
+    const path = (lines.pop() as string).slice(ATTACHED_FILE_PREFIX.length);
+    files.unshift({ name: path.split('/').pop() || path, path });
+  }
+  return { text: files.length > 0 ? lines.join('\n').trimEnd() : text, files };
+}
+
 const INTERRUPTION_PREFIX = '[Request interrupted by user';
 
 function timeOf(timestamp?: string): number | undefined {
@@ -33,8 +51,34 @@ function timeOf(timestamp?: string): number | undefined {
 export function buildItems(messages: Message[]): Item[] {
   const items: Item[] = [];
   const tools = new Map<string, ToolItem>();
+  // A message's images come before its text. With no text, they stand as a message of their own.
+  let images: string[] = [];
+  let imagesId = '';
+  const flushImages = () => {
+    if (images.length > 0) items.push({ type: 'user', id: imagesId, text: '', images });
+    images = [];
+  };
   for (const message of messages) {
     const at = timeOf(message.timestamp);
+    if (message.kind === 'user' && message.image) {
+      if (images.length === 0) imagesId = message.id;
+      images.push(message.image);
+      continue;
+    }
+    if (message.kind === 'user' && !message.text.startsWith(INTERRUPTION_PREFIX)) {
+      const { text, files } = splitAttachedFiles(message.text);
+      items.push({
+        type: 'user',
+        id: message.id,
+        at,
+        text,
+        ...(files.length > 0 ? { files } : {}),
+        ...(images.length > 0 ? { images } : {}),
+      });
+      images = [];
+      continue;
+    }
+    flushImages();
     if (message.kind === 'tool_use') {
       const tool: ToolItem = {
         type: 'tool',
@@ -58,9 +102,10 @@ export function buildItems(messages: Message[]): Item[] {
     } else if (message.kind === 'user' && message.text.startsWith(INTERRUPTION_PREFIX)) {
       items.push({ type: 'notice', id: message.id, at, text: message.text });
     } else {
-      items.push({ type: message.kind, id: message.id, at, text: message.text });
+      items.push({ type: message.kind as TextItem['type'], id: message.id, at, text: message.text });
     }
   }
+  flushImages();
   return items;
 }
 
@@ -98,10 +143,20 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
           ? { ...item, result: event.text, isError: event.isError }
           : item,
       );
-    case 'started':
-    case 'finished':
+    default:
       return items;
   }
+}
+
+export type TurnStatusKey = 'statusAwaitingYou' | 'statusCallingTool' | 'statusReplying' | 'statusThinking';
+
+/** What a running turn is doing now, for the line above the input box. */
+export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatusKey {
+  if (isWaitingForUser) return 'statusAwaitingYou';
+  const last = items[items.length - 1];
+  if (last?.type === 'tool' && last.result === null) return 'statusCallingTool';
+  if (last?.type === 'assistant') return 'statusReplying';
+  return 'statusThinking';
 }
 
 function workGroup(items: Item[], startAt: number | undefined, endAt: number | undefined): WorkGroup {

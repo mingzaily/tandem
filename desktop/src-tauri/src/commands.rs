@@ -1,6 +1,7 @@
-use crate::{runner, sessions};
+use crate::{attachments, cli_info, runner, sessions};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use tauri::{ipc::Channel, Manager, State, WebviewWindow};
+use tauri::{ipc::Channel, AppHandle, Manager, State, WebviewWindow};
+use tauri_plugin_dialog::DialogExt;
 
 pub struct StartedAt(pub Instant);
 
@@ -21,10 +22,10 @@ pub async fn list_tasks(window: WebviewWindow) -> Result<Vec<sessions::TaskSumma
 }
 
 #[tauri::command]
-pub async fn read_task(id: String) -> Result<Vec<sessions::Message>, String> {
+pub async fn read_task(id: String) -> Result<sessions::TaskContent, String> {
     blocking(move || {
         let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &id)?;
-        sessions::read_messages(&path)
+        sessions::read_task(&path)
     })
     .await
 }
@@ -34,10 +35,56 @@ pub async fn send_turn(
     runs: State<'_, runner::Runs>,
     task_id: Option<String>,
     cwd: Option<String>,
+    attachments: State<'_, attachments::Attachments>,
     prompt: String,
+    attachment_ids: Vec<String>,
+    options: runner::TurnOptions,
     on_event: Channel<runner::TurnEvent>,
 ) -> Result<(), String> {
-    runner::send_turn(runs.inner(), task_id, cwd, prompt, on_event).await
+    if prompt.trim().is_empty() && attachment_ids.is_empty() {
+        return Err("There is nothing to send".into());
+    }
+    let prepared = attachments.take(&attachment_ids)?;
+    runner::send_turn(runs.inner(), task_id, cwd, prompt, prepared, options, on_event).await
+}
+
+/// Runs the native dialog here, so the page never supplies a path.
+#[tauri::command]
+pub async fn pick_attachments(app: AppHandle) -> Result<attachments::AddResult, String> {
+    blocking(move || {
+        let picked = app.dialog().file().blocking_pick_files().unwrap_or_default();
+        let paths: Vec<_> = picked.into_iter().filter_map(|file| file.into_path().ok()).collect();
+        Ok(app.state::<attachments::Attachments>().add_paths(&paths))
+    })
+    .await
+}
+
+#[tauri::command]
+pub fn add_pasted_image(
+    attachments: State<'_, attachments::Attachments>,
+    data: String,
+) -> Result<attachments::Attachment, String> {
+    attachments.add_pasted_image(&data)
+}
+
+#[tauri::command]
+pub fn remove_attachment(attachments: State<'_, attachments::Attachments>, id: String) {
+    attachments.remove(&id);
+}
+
+#[tauri::command]
+pub fn answer_request(
+    runs: State<'_, runner::Runs>,
+    task_id: String,
+    request_id: String,
+    decision: runner::Decision,
+) -> Result<(), String> {
+    runs.answer(&task_id, &request_id, decision)
+}
+
+#[tauri::command]
+pub async fn cli_info() -> Result<cli_info::CliInfo, String> {
+    cli_info::read().await
 }
 
 #[tauri::command]

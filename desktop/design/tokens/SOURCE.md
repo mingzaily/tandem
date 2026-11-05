@@ -6,6 +6,7 @@
 |---|---|
 | `tokens.css` | `apps/desktop/src/renderer/styles/generated/tokens.css` |
 | `colors.css` | `apps/desktop/src/renderer/themes/colors.ts` 的 `GENERATED_DEFAULTS`，只保留默认浅色和深色 |
+| `theme.css` | `apps/desktop/src/renderer/themes/builtin/cindy-light.ts`、`cindy-dark.ts` 的覆盖值。浅色的选中行按用户提供的运行截图改成白底深字，并增加 `--brand-mark-accent` |
 | `tailwind.generated.ts` | `apps/desktop/tailwind.config.ts` 的生成区 |
 | `code-dark.css` | `apps/desktop/src/renderer/styles/globals.css` 的深色代码配色 |
 

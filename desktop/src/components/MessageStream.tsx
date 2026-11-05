@@ -8,7 +8,6 @@ import { Markdown } from './Markdown';
 
 const BOTTOM_THRESHOLD_PX = 48;
 const ESTIMATED_ROW_PX = 40;
-const CONTENT_MAX_WIDTH = 'max-w-[880px]';
 const ACTIVITY_ROW =
   'group flex w-full items-center gap-1.5 rounded-[8px] px-2 py-[3px] text-left outline-none select-none cursor-pointer transition-colors duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] hover:bg-[var(--msg-code-inline-bg)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] motion-reduce:transition-none';
 const CHEVRON_SLOT =
@@ -16,7 +15,14 @@ const CHEVRON_SLOT =
 
 type Toggle = (id: string) => void;
 
-export default function MessageStream({ items, isRunning }: { items: Item[]; isRunning: boolean }) {
+interface MessageStreamProps {
+  items: Item[];
+  isRunning: boolean;
+  /** A long task takes a moment to read, and is not empty in the meantime. */
+  isLoading: boolean;
+}
+
+export default function MessageStream({ items, isRunning, isLoading }: MessageStreamProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const rows = useMemo(() => buildRows(items, isRunning), [items, isRunning]);
@@ -46,6 +52,7 @@ export default function MessageStream({ items, isRunning }: { items: Item[]; isR
   }, []);
 
   if (rows.length === 0) {
+    if (isLoading) return null;
     return (
       <div className="flex h-full items-center justify-center text-14 text-[var(--text-secondary)]">
         {t('empty')}
@@ -75,7 +82,7 @@ export default function MessageStream({ items, isRunning }: { items: Item[]; isR
               style={{ transform: `translateY(${virtualRow.start}px)` }}
             >
               <div
-                className={`mx-auto w-full ${CONTENT_MAX_WIDTH} px-[50px] ${
+                className={`message-column ${
                   row.type === 'user' ? 'pb-2 pt-5' : 'py-1'
                 }`}
               >
@@ -102,10 +109,29 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
   switch (item.type) {
     case 'user':
       return (
-        <div className="flex justify-end">
-          <div className="selectable relative min-w-0 max-w-[488px] whitespace-pre-wrap rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-4 py-3 text-15 font-normal leading-[1.6] text-[var(--msg-user-text)] [overflow-wrap:anywhere]">
-            {item.text}
-          </div>
+        <div className="flex flex-col items-end gap-2">
+          {item.images?.length || item.files?.length ? (
+            <div className="flex max-w-[488px] flex-wrap justify-end gap-2">
+              {item.images?.map((src, index) => (
+                <img key={index} src={src} alt="" className="max-h-[160px] max-w-[240px] rounded-lg border border-[var(--msg-user-border)] object-contain" />
+              ))}
+              {item.files?.map((file) => (
+                <span
+                  key={file.path ?? file.name}
+                  title={file.path}
+                  className="inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-2.5 text-13 text-[var(--msg-user-text)]"
+                >
+                  <FileText size={14} strokeWidth={1.8} aria-hidden className="shrink-0" />
+                  <span className="truncate">{file.name}</span>
+                </span>
+              ))}
+            </div>
+          ) : null}
+          {item.text ? (
+            <div className="selectable relative min-w-0 max-w-[488px] whitespace-pre-wrap rounded-xl border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-4 py-3 text-15 font-normal leading-[1.6] text-[var(--msg-user-text)] [overflow-wrap:anywhere]">
+              {item.text}
+            </div>
+          ) : null}
         </div>
       );
     case 'assistant':

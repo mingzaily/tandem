@@ -1,5 +1,6 @@
 @import '../../design/tokens/tokens.css';
 @import '../../design/tokens/colors.css';
+@import '../../design/tokens/theme.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -12,8 +13,9 @@
     overflow: hidden;
   }
 
+  /* The window is transparent so the sidebar can show the native material behind it. */
   body {
-    background: var(--surface);
+    background: transparent;
     color: hsl(var(--foreground));
     font-family: var(--app-font-ui-default);
     font-size: var(--app-ui-font-size);
@@ -24,6 +26,32 @@
 
   ::selection {
     background: var(--focus-ring-soft);
+  }
+}
+
+/* The composer is 20px wider than the messages, and both follow the main area's width. */
+.content-area {
+  container-type: inline-size;
+}
+.composer-column,
+.message-column {
+  margin-inline: auto;
+  width: 100%;
+}
+.composer-column {
+  max-width: calc(934px + 2 * 40px);
+  padding-inline: 40px;
+}
+.message-column {
+  max-width: calc(914px + 2 * 50px);
+  padding-inline: 50px;
+}
+@container (max-width: 699px) {
+  .composer-column {
+    padding-inline: 10px;
+  }
+  .message-column {
+    padding-inline: 20px;
   }
 }
 
@@ -47,6 +75,26 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .task-running {
+    animation: none;
+  }
+}
+
+/* Breathes once per burst of activity, and never loops. */
+@keyframes status-shimmer {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.status-bar-shimmer {
+  color: var(--status-bar-accent);
+  animation: status-shimmer 1.5s steps(18, end) 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .status-bar-shimmer {
     animation: none;
   }
 }

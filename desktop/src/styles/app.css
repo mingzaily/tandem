@@ -29,6 +29,14 @@
   }
 }
 
+/* Shows the native window material unless the user turned that off. */
+.sidebar-surface {
+  background: var(--surface-translucent-sidebar);
+}
+[data-opaque-sidebar] .sidebar-surface {
+  background: hsl(var(--sidebar));
+}
+
 /* The composer is 20px wider than the messages, and both follow the main area's width. */
 .content-area {
   container-type: inline-size;

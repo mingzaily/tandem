@@ -33,6 +33,8 @@ claude -p --input-format stream-json --output-format stream-json \
 
 `parent_tool_use_id` 不为空的输出属于子 Agent，主对话不显示。权限被拒绝的工具在 `result.permission_denials` 里。
 
+新任务勾选 worktree 时加 `--worktree`。CLI 在 `<项目>/.claude/worktrees/<名字>` 下创建 worktree，任务的 `cwd` 就是这个目录，任务文件也在它对应的项目目录里。续接时从任务文件读 `cwd`，不用再传这个参数。侧栏按 `/.claude/worktrees/` 之前的路径归到原项目。
+
 运行期间 stdin 保持打开，用来回复工具授权和提问，收到 `result` 后关闭，进程随之退出。
 
 模型列表和套餐用量来自一个不发提示词的短进程（`cli_info::read`），每次启动查一次：发送 `initialize` 和 `get_usage` 控制请求，带 `--no-session-persistence`，不产生会话文件，也不请求模型。用户级的 hook 仍会运行。运行中的用量从 `rate_limit_event` 更新。
@@ -41,7 +43,7 @@ claude -p --input-format stream-json --output-format stream-json \
 
 ## 已知限制
 
-见 [路线图](../roadmap.md)。主要是：还没有审批，Codex 和 Pi 还没接入，还没有防止和终端同时写一个任务。
+见 [路线图](../roadmap.md)。主要是：Codex 和 Pi 还没接入，还没有防止和终端同时写一个任务。
 
 ## 接入新 CLI 时
 

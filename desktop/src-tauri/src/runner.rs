@@ -55,6 +55,9 @@ pub struct TurnOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    /// Only a new task can start in a worktree. A resumed one stays where it is.
+    #[serde(default)]
+    pub worktree: bool,
 }
 
 impl TurnOptions {
@@ -550,6 +553,9 @@ fn claude_args(target: &Target, options: &TurnOptions, task_rules: &[String]) ->
         args.push("--allowedTools".to_owned());
         args.extend(task_rules.iter().cloned());
     }
+    if target.is_new && options.worktree {
+        args.push("--worktree".to_owned());
+    }
     args.push(if target.is_new { "--session-id" } else { "--resume" }.to_owned());
     args.push(target.task_id.clone());
     args
@@ -791,6 +797,7 @@ mod tests {
             model: Some("opus".into()),
             effort: Some("high".into()),
             permission_mode: Some("acceptEdits".into()),
+            worktree: false,
         };
         let args = claude_args(&target, &options, &["Bash(ls:*)".into()]).join(" ");
         assert!(args.contains("--model opus --effort high --permission-mode acceptEdits"));
@@ -803,6 +810,7 @@ mod tests {
             model: Some(model.into()),
             effort: Some(effort.into()),
             permission_mode: Some(mode.into()),
+            worktree: false,
         };
         assert!(with("claude-opus-5-5[1m]", "max", "auto").validate().is_ok());
         assert!(with("--dangerously-skip-permissions", "max", "auto").validate().is_err());
@@ -934,5 +942,14 @@ mod tests {
         let value: Value = serde_json::from_str(&line).unwrap();
         assert_eq!(value["message"]["content"][0]["text"], "--flag \"quoted\"\nnext");
         assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn only_a_new_task_starts_a_worktree() {
+        let options = TurnOptions { worktree: true, ..TurnOptions::default() };
+        let new_task = Target { task_id: "a".into(), cwd: "/x".into(), is_new: true };
+        let resumed = Target { task_id: "a".into(), cwd: "/x".into(), is_new: false };
+        assert!(claude_args(&new_task, &options, &[]).contains(&"--worktree".to_owned()));
+        assert!(!claude_args(&resumed, &options, &[]).contains(&"--worktree".to_owned()));
     }
 }

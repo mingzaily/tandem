@@ -1,4 +1,4 @@
-use crate::{attachments, cli_info, runner, sessions};
+use crate::{agents, attachments, cli_info, git_info, runner, sessions};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{ipc::Channel, AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -57,6 +57,46 @@ pub async fn pick_attachments(app: AppHandle) -> Result<attachments::AddResult, 
         Ok(app.state::<attachments::Attachments>().add_paths(&paths))
     })
     .await
+}
+
+/// Runs the native dialog here, for the same reason as attachments.
+#[tauri::command]
+pub async fn pick_project(app: AppHandle) -> Result<Option<String>, String> {
+    blocking(move || {
+        let Some(picked) = app.dialog().file().blocking_pick_folder() else {
+            return Ok(None);
+        };
+        let path = picked.into_path().map_err(|error| error.to_string())?;
+        let path = std::fs::canonicalize(path).map_err(|error| error.to_string())?;
+        Ok(Some(path.to_string_lossy().into_owned()))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn git_branch(cwd: String) -> Result<Option<String>, String> {
+    blocking(move || Ok(git_info::current_branch(std::path::Path::new(&cwd)))).await
+}
+
+/// Opens the folder recorded in the task's own file, never a path from the page.
+#[tauri::command]
+pub async fn reveal_task_folder(id: String) -> Result<(), String> {
+    blocking(move || {
+        let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &id)?;
+        let cwd = sessions::read_task_cwd(&path).ok_or("The task has no working directory")?;
+        std::process::Command::new("open")
+            .arg(cwd)
+            .status()
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+/// Only runs when the settings page asks, because it starts each CLI once.
+#[tauri::command]
+pub async fn agent_status() -> Vec<agents::AgentStatus> {
+    agents::read().await
 }
 
 #[tauri::command]

@@ -26,7 +26,6 @@ export type Item = UserItem | TextItem | ToolItem;
 export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
 export type Row = Item | WorkGroup;
 
-/** Claude Code records an interruption as user text, but the user did not write it. */
 const ATTACHED_FILE_PREFIX = 'Attached file: ';
 
 /** Files travel as lines after the prompt, the only form a task file can keep them in. */
@@ -40,6 +39,7 @@ export function splitAttachedFiles(text: string): { text: string; files: Attache
   return { text: files.length > 0 ? lines.join('\n').trimEnd() : text, files };
 }
 
+/** Claude Code records an interruption as user text, but the user did not write it. */
 const INTERRUPTION_PREFIX = '[Request interrupted by user';
 
 function timeOf(timestamp?: string): number | undefined {
@@ -224,6 +224,12 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
   rows.push(...items.slice(liveStart));
   return rows;
 }
+
+const WORKTREE_FOLDER = '/.claude/worktrees/';
+
+/** A task in a worktree belongs to the project the worktree was made from. */
+export const projectRoot = (cwd: string) => cwd.split(WORKTREE_FOLDER)[0];
+export const worktreeName = (cwd: string): string | null => cwd.split(WORKTREE_FOLDER)[1]?.split('/')[0] ?? null;
 
 export function projectName(cwd: string): string {
   return cwd.split('/').filter(Boolean).pop() ?? cwd;

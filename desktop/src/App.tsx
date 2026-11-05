@@ -1,18 +1,24 @@
+import { getVersion } from '@tauri-apps/api/app';
+import { MoreHorizontal } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BrandLockup } from './components/BrandLockup';
 import { Composer } from './components/Composer';
-import { ComposerFooter, ModelSelect, PermissionSelect, ProjectSelect } from './components/ComposerControls';
+import { BranchPill, ComposerFooter, ModelSelect, PermissionSelect, ProjectSelect } from './components/ComposerControls';
 import { HomeSuggestions } from './components/HomeSuggestions';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { QuestionPrompt } from './components/QuestionPrompt';
 import { RunningStatus } from './components/RunningStatus';
-import { Sidebar } from './components/Sidebar';
+import { SettingsView } from './components/SettingsView';
+import { Sidebar, SIDEBAR_DEFAULT_WIDTH } from './components/Sidebar';
+import { TaskMenu, type TaskMenuAnchor } from './components/TaskMenu';
 import { TitleBarActions } from './components/TitleBarActions';
 import {
   answerRequest,
   appReady,
   cancelTurn,
+  gitBranch,
   listTasks,
+  pickProject,
   readCliInfo,
   readTask,
   sendTurn,
@@ -26,22 +32,31 @@ import {
 } from './lib/api';
 import { turnOptions, type TurnPrefs } from './lib/composerStatus';
 import { t } from './lib/i18n';
-import { applyTurnEvent, buildItems, turnStatus, type Item } from './lib/items';
+import { applyTurnEvent, buildItems, projectRoot, turnStatus, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
 import {
   loadCliInfo,
   loadContextWindows,
+  loadExtraProjects,
   loadSidebarCollapsed,
+  loadSidebarWidth,
+  loadTaskMeta,
   loadTurnPrefs,
   saveCliInfo,
   saveContextWindows,
+  saveExtraProjects,
   saveSidebarCollapsed,
+  saveSidebarWidth,
+  saveTaskMeta,
   saveTurnPrefs,
 } from './lib/preferences';
 
+import { applySettings, loadSettings, saveSettings, watchSystemTheme, type AppSettings } from './lib/settings';
+import { taskTitle, type TaskMeta } from './lib/taskMeta';
+
 const MessageStream = lazy(() => import('./components/MessageStream'));
 
-type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null };
+type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings' };
 type Notice = { text: string; isError: boolean };
 type TurnProgress = { startedAt: number; outputTokens: number; activity: number };
 
@@ -61,6 +76,17 @@ export function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   const [draftFill, setDraftFill] = useState<{ text: string }>();
   const [loadedId, setLoadedId] = useState<string | null>(null);
+  const [settings, setSettings] = useState(loadSettings);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
+  const [taskMeta, setTaskMeta] = useState(loadTaskMeta);
+  const [extraProjects, setExtraProjects] = useState(loadExtraProjects);
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth(SIDEBAR_DEFAULT_WIDTH));
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<TaskMenuAnchor | null>(null);
+  const [version, setVersion] = useState('');
+  const [branch, setBranch] = useState<string | null>(null);
+  const [useWorktree, setUseWorktree] = useState(false);
   const [history, setHistory] = useState<Item[]>([]);
   const [live, setLive] = useState<Record<string, Item[]>>({});
   const [notices, setNotices] = useState<Record<string, Notice>>({});
@@ -165,10 +191,11 @@ export function App() {
         setNotices(({ [id]: _removed, ...rest }) => rest);
       }
       const target = taskId ? { taskId } : { cwd: (selection as { cwd: string }).cwd };
+      const options = { ...turnOptions(prefs, cliInfo.models), worktree: taskId === null && useWorktree };
       const isNew = taskId === null;
       let ended = false;
       let isListed = !isNew;
-      void sendTurn(target, prompt, attachments, turnOptions(prefs, cliInfo.models), (event) => {
+      void sendTurn(target, prompt, attachments, options, (event) => {
         // The process can still print lines after its result, when the turn is already over.
         if (ended) return;
         if (event.type === 'started') {
@@ -266,7 +293,7 @@ export function App() {
         }
       });
     },
-    [selection, setSelection, prefs, cliInfo.models, loadHistory, refreshTasks, settleRequest, clearTurn],
+    [selection, setSelection, prefs, cliInfo.models, useWorktree, loadHistory, refreshTasks, settleRequest, clearTurn],
   );
 
   const answer = useCallback(
@@ -310,7 +337,8 @@ export function App() {
       : null;
 
   // Tasks arrive newest first, so the first project is the most recently used one.
-  const projects = useMemo(() => [...new Set((tasks ?? []).map((task) => task.cwd))], [tasks]);
+  const taskProjects = useMemo(() => [...new Set((tasks ?? []).map((task) => projectRoot(task.cwd)))], [tasks]);
+  const projects = useMemo(() => [...new Set([...taskProjects, ...extraProjects])], [taskProjects, extraProjects]);
   const newTaskCwd = selection.kind === 'new' ? (selection.cwd ?? projects[0] ?? null) : null;
 
   useEffect(() => {
@@ -319,12 +347,106 @@ export function App() {
     }
   }, [selection, setSelection, newTaskCwd]);
 
+  useEffect(() => {
+    getVersion().then(setVersion).catch(console.error);
+    watchSystemTheme(() => settingsRef.current);
+  }, []);
+
+  useEffect(() => {
+    setUseWorktree(false);
+    setBranch(null);
+    if (!newTaskCwd) return;
+    let isCurrent = true;
+    const read = () => {
+      gitBranch(newTaskCwd)
+        .then((result) => {
+          if (isCurrent) setBranch(result);
+        })
+        .catch(console.error);
+    };
+    read();
+    // The branch can change in a terminal while Tandem is in the background.
+    window.addEventListener('focus', read);
+    return () => {
+      isCurrent = false;
+      window.removeEventListener('focus', read);
+    };
+  }, [newTaskCwd]);
+
+  const changeSettings = useCallback((next: AppSettings) => {
+    setSettings(next);
+    saveSettings(next);
+    applySettings(next);
+  }, []);
+
+  const changeTaskMeta = useCallback((next: TaskMeta) => {
+    setTaskMeta(next);
+    saveTaskMeta(next);
+  }, []);
+
+  const changeExtraProjects = useCallback((next: string[]) => {
+    setExtraProjects(next);
+    saveExtraProjects(next);
+  }, []);
+
+  const addProject = useCallback(() => {
+    pickProject()
+      .then((cwd) => {
+        if (!cwd) return;
+        setExtraProjects((current) => {
+          if (current.includes(cwd)) return current;
+          const next = [...current, cwd];
+          saveExtraProjects(next);
+          return next;
+        });
+        setSelection({ kind: 'new', cwd });
+      })
+      .catch(console.error);
+  }, [setSelection]);
+
+  const openSettings = useCallback(() => navigate({ kind: 'settings' }), [navigate]);
+  const closeMenu = useCallback(() => setMenuAnchor(null), []);
+
   const toggleSidebar = useCallback(() => {
     setSidebarCollapsed((current) => {
       saveSidebarCollapsed(!current);
       return !current;
     });
   }, []);
+
+  // Reads the page state each time, so it never needs to be bound again.
+  const shortcuts = useRef<Record<string, () => void>>({});
+  shortcuts.current = {
+    ',': openSettings,
+    n: () => navigate({ kind: 'new', cwd: selectedTask ? projectRoot(selectedTask.cwd) : (newTaskCwd ?? projects[0] ?? null) }),
+    b: toggleSidebar,
+    '[': () => setNav(goBack),
+    ']': () => setNav(goForward),
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const run = event.metaKey && !event.shiftKey && !event.altKey ? shortcuts.current[event.key] : undefined;
+      if (!run) return;
+      event.preventDefault();
+      run();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  if (selection.kind === 'settings') {
+    return (
+      <SettingsView
+        settings={settings}
+        onChange={changeSettings}
+        extraProjects={extraProjects}
+        onExtraProjectsChange={changeExtraProjects}
+        taskProjects={taskProjects}
+        version={version}
+        onBack={() => setNav(goBack)}
+      />
+    );
+  }
 
   return (
     <div className="relative flex h-full">
@@ -342,13 +464,26 @@ export function App() {
           selectedId={selectedId}
           running={running}
           waiting={waiting}
+          meta={taskMeta}
+          extraProjects={extraProjects}
+          width={sidebarWidth}
+          renamingId={renamingId}
+          version={version}
+          onWidthChange={(width, isFinal) => {
+            setSidebarWidth(width);
+            if (isFinal) saveSidebarWidth(width);
+          }}
           onSelect={(id) => navigate({ kind: 'task', id })}
           onNewTask={(cwd) =>
             navigate({
               kind: 'new',
-              cwd: cwd ?? selectedTask?.cwd ?? newTaskCwd ?? projects[0] ?? null,
+              cwd: cwd ?? (selectedTask ? projectRoot(selectedTask.cwd) : null) ?? newTaskCwd ?? projects[0] ?? null,
             })
           }
+          onMetaChange={changeTaskMeta}
+          onRenameDone={() => setRenamingId(null)}
+          onOpenMenu={setMenuAnchor}
+          onOpenSettings={openSettings}
         />
       )}
       <main className="content-area flex min-w-0 flex-1 flex-col bg-[hsl(var(--content-area))]">
@@ -358,9 +493,23 @@ export function App() {
             sidebarCollapsed ? 'pl-[176px]' : 'pl-4'
           } ${selectedId ? 'border-b border-[hsl(var(--titlebar-border))]' : ''}`}
         >
-          <span data-tauri-drag-region className="truncate text-13 font-medium">
-            {selectedTask?.title ?? ''}
+          <span data-tauri-drag-region className="min-w-0 flex-1 truncate text-13 font-medium">
+            {selectedTask ? taskTitle(taskMeta, selectedTask) : ''}
           </span>
+          {selectedTask ? (
+            <button
+              type="button"
+              aria-label={t('taskMenu')}
+              title={t('taskMenu')}
+              onClick={(event) => {
+                const bounds = event.currentTarget.getBoundingClientRect();
+                setMenuAnchor({ id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 });
+              }}
+              className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[hsl(var(--titlebar-icon))] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            >
+              <MoreHorizontal size={15} aria-hidden />
+            </button>
+          ) : null}
         </header>
         {selectedId ? (
           <>
@@ -404,6 +553,7 @@ export function App() {
                   key={selectedId}
                   running={isRunning}
                   placeholder={t('placeholderContinue')}
+                  sendWithCmdEnter={settings.sendWithCmdEnter}
                   toolbarLeft={
                     <PermissionSelect prefs={prefs} models={cliInfo.models} disabled={isRunning} onChange={changePrefs} />
                   }
@@ -422,11 +572,15 @@ export function App() {
             <div className="composer-column">
               <div className="mb-[15px] flex flex-wrap items-end justify-between gap-x-3 gap-y-2">
                 <BrandLockup />
-                <ProjectSelect
-                  value={newTaskCwd}
-                  options={projects}
-                  onChange={(cwd) => setSelection({ kind: 'new', cwd })}
-                />
+                <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+                  <ProjectSelect
+                    value={newTaskCwd}
+                    options={projects}
+                    onChange={(cwd) => setSelection({ kind: 'new', cwd })}
+                    onAddProject={addProject}
+                  />
+                  {branch ? <BranchPill branch={branch} worktree={useWorktree} onWorktreeChange={setUseWorktree} /> : null}
+                </div>
               </div>
               <Composer
                 key="new"
@@ -434,6 +588,7 @@ export function App() {
                 disabled={!newTaskCwd}
                 placeholder={t('placeholder')}
                 fill={draftFill}
+                sendWithCmdEnter={settings.sendWithCmdEnter}
                 toolbarLeft={<PermissionSelect prefs={prefs} models={cliInfo.models} onChange={changePrefs} />}
                 toolbarRight={<ModelSelect prefs={prefs} models={cliInfo.models} onChange={changePrefs} />}
                 onSend={send}
@@ -448,6 +603,18 @@ export function App() {
           </div>
         )}
       </main>
+      {menuAnchor ? (
+        <TaskMenu
+          anchor={menuAnchor}
+          meta={taskMeta}
+          onMetaChange={changeTaskMeta}
+          onRename={(id) => {
+            setSidebarCollapsed(false);
+            setRenamingId(id);
+          }}
+          onClose={closeMenu}
+        />
+      ) : null}
     </div>
   );
 }

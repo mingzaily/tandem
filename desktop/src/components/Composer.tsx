@@ -35,6 +35,7 @@ interface ComposerProps {
   placeholder: string;
   /** Replaces the draft whenever a new object arrives, so the same text can be filled twice. */
   fill?: { text: string };
+  sendWithCmdEnter?: boolean;
   toolbarLeft: ReactNode;
   toolbarRight: ReactNode;
   onSend: (prompt: string, attachments: Attachment[]) => void;
@@ -46,6 +47,7 @@ export function Composer({
   disabled = false,
   placeholder,
   fill,
+  sendWithCmdEnter = false,
   toolbarLeft,
   toolbarRight,
   onSend,
@@ -177,7 +179,8 @@ export function Composer({
         }}
         onKeyDown={(event) => {
           // Enter also confirms an input method's candidate, which must not send the message.
-          if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+          if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+          if (sendWithCmdEnter ? event.metaKey : !event.shiftKey) {
             event.preventDefault();
             submit();
           }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from './api';
-import { applyTurnEvent, buildItems, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
+import { applyTurnEvent, buildItems, projectRoot, worktreeName, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Message => ({
   text: '',
@@ -150,5 +150,12 @@ describe('turnStatus', () => {
   it('leaves text without attached files alone', () => {
     expect(splitAttachedFiles('line\n\n')).toEqual({ text: 'line\n\n', files: [] });
     expect(splitAttachedFiles('Attached file: /a.log')).toEqual({ text: '', files: [{ name: 'a.log', path: '/a.log' }] });
+  });
+
+  it('groups a worktree under its project', () => {
+    expect(projectRoot('/code/app/.claude/worktrees/quiet-owl')).toBe('/code/app');
+    expect(worktreeName('/code/app/.claude/worktrees/quiet-owl/sub')).toBe('quiet-owl');
+    expect(projectRoot('/code/app')).toBe('/code/app');
+    expect(worktreeName('/code/app')).toBeNull();
   });
 });

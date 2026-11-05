@@ -1,10 +1,14 @@
 import type { CliInfo } from './api';
 import { DEFAULT_PREFS, type TurnPrefs } from './composerStatus';
+import { EMPTY_TASK_META, type TaskMeta } from './taskMeta';
 
 const PREFS_KEY = 'tandem.turnPrefs';
 const CLI_INFO_KEY = 'tandem.cliInfo';
 const CONTEXT_WINDOWS_KEY = 'tandem.contextWindows';
 const SIDEBAR_KEY = 'tandem.sidebar';
+const SIDEBAR_WIDTH_KEY = 'tandem.sidebarWidth';
+const TASK_META_KEY = 'tandem.taskMeta';
+const EXTRA_PROJECTS_KEY = 'tandem.extraProjects';
 
 /** Browser storage can be missing or cleared. Everything here can be lost without harm. */
 function load<T>(key: string, fallback: T): T {
@@ -32,3 +36,9 @@ export const loadContextWindows = () => load<Record<string, number>>(CONTEXT_WIN
 export const saveContextWindows = (windows: Record<string, number>) => save(CONTEXT_WINDOWS_KEY, windows);
 export const loadSidebarCollapsed = () => load<{ collapsed: boolean }>(SIDEBAR_KEY, { collapsed: false }).collapsed;
 export const saveSidebarCollapsed = (collapsed: boolean) => save(SIDEBAR_KEY, { collapsed });
+export const loadSidebarWidth = (fallback: number) => load<{ width: number }>(SIDEBAR_WIDTH_KEY, { width: fallback }).width;
+export const saveSidebarWidth = (width: number) => save(SIDEBAR_WIDTH_KEY, { width });
+export const loadTaskMeta = () => load<TaskMeta>(TASK_META_KEY, EMPTY_TASK_META);
+export const saveTaskMeta = (meta: TaskMeta) => save(TASK_META_KEY, meta);
+export const loadExtraProjects = () => load<{ cwds: string[] }>(EXTRA_PROJECTS_KEY, { cwds: [] }).cwds;
+export const saveExtraProjects = (cwds: string[]) => save(EXTRA_PROJECTS_KEY, { cwds });

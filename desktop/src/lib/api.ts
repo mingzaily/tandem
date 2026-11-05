@@ -62,6 +62,7 @@ export interface TurnOptions {
   model: string | null;
   effort: string | null;
   permissionMode: string | null;
+  worktree?: boolean;
 }
 
 export interface QuestionOption {
@@ -126,6 +127,15 @@ export interface AddResult {
   added: Attachment[];
   errors: string[];
 }
+export interface AgentStatus {
+  command: string;
+  path?: string | null;
+  version?: string | null;
+}
+export const pickProject = () => invoke<string | null>('pick_project');
+export const gitBranch = (cwd: string) => invoke<string | null>('git_branch', { cwd });
+export const revealTaskFolder = (id: string) => invoke<void>('reveal_task_folder', { id });
+export const agentStatus = () => invoke<AgentStatus[]>('agent_status');
 export const pickAttachments = () => invoke<AddResult>('pick_attachments');
 export const addPastedImage = (data: string) => invoke<Attachment>('add_pasted_image', { data });
 export const removeAttachment = (id: string) => invoke<void>('remove_attachment', { id });

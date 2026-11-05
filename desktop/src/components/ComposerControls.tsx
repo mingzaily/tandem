@@ -3,7 +3,9 @@ import {
   ChevronDown,
   CodeXml,
   Folder,
+  FolderPlus,
   Gauge,
+  GitBranch,
   Hand,
   Monitor,
   Sparkles,
@@ -228,12 +230,13 @@ export interface ProjectPicker {
   value: string | null;
   options: string[];
   onChange: (cwd: string) => void;
+  onAddProject: () => void;
 }
 
 const PROJECT_PILL =
   'max-w-[220px] gap-1.5 !border-[var(--create-agent-control-border)] !bg-[var(--create-agent-control-bg)] !px-3 text-12 font-medium text-[var(--create-agent-control-text)] enabled:hover:!bg-[var(--create-agent-control-bg-hover)]';
 
-export function ProjectSelect({ value, options, onChange }: ProjectPicker) {
+export function ProjectSelect({ value, options, onChange, onAddProject }: ProjectPicker) {
   return (
     <ComposerMenu
       label={t('chooseProject')}
@@ -241,7 +244,6 @@ export function ProjectSelect({ value, options, onChange }: ProjectPicker) {
       width={280}
       align="right"
       side="below"
-      disabled={options.length === 0}
       triggerClassName={PROJECT_PILL}
       trigger={
         <>
@@ -252,8 +254,9 @@ export function ProjectSelect({ value, options, onChange }: ProjectPicker) {
       }
     >
       {(close) => (
-        <ul role="listbox" aria-label={t('chooseProject')} className="flex flex-col gap-0.5">
-          {options.map((cwd) => (
+        <>
+          <ul role="listbox" aria-label={t('chooseProject')} className="flex flex-col gap-0.5">
+            {options.map((cwd) => (
             <li key={cwd} role="option" aria-selected={cwd === value}>
               <button
                 type="button"
@@ -269,10 +272,50 @@ export function ProjectSelect({ value, options, onChange }: ProjectPicker) {
                 {cwd === value ? <Check size={13} aria-hidden className="shrink-0" /> : null}
               </button>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+          {options.length > 0 ? <div className="my-1 border-t border-[var(--border-default)]" /> : null}
+          <button
+            type="button"
+            onClick={() => {
+              close();
+              onAddProject();
+            }}
+            className={MENU_ROW}
+          >
+            <FolderPlus size={14} strokeWidth={1.8} aria-hidden className="shrink-0 text-[var(--cmd-palette-item-icon)]" />
+            <span className="min-w-0 flex-1 truncate">{t('addProject')}</span>
+          </button>
+        </>
       )}
     </ComposerMenu>
+  );
+}
+
+interface BranchPillProps {
+  branch: string;
+  worktree: boolean;
+  onWorktreeChange: (worktree: boolean) => void;
+}
+
+/** The branch is shown, not changed: switching it could disturb work in the checkout. */
+export function BranchPill({ branch, worktree, onWorktreeChange }: BranchPillProps) {
+  return (
+    <span className="inline-flex h-[30px] min-w-0 max-w-[260px] items-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-12 font-medium text-[var(--create-agent-control-text)]">
+      <GitBranch size={12} strokeWidth={2} aria-hidden className="shrink-0 text-[var(--create-agent-control-icon)]" />
+      <span title={branch} className="min-w-0 truncate">{branch}</span>
+      <span aria-hidden className="mx-0.5 h-3 w-px shrink-0 bg-[var(--create-agent-control-border)]" />
+      <label title={t('worktreeToggle')} className="flex shrink-0 cursor-pointer items-center gap-1.5">
+        <input
+          type="checkbox"
+          aria-label={t('worktreeToggle')}
+          checked={worktree}
+          onChange={(event) => onWorktreeChange(event.target.checked)}
+          className="size-3.5 accent-[var(--switch-track-on)]"
+        />
+        worktree
+      </label>
+    </span>
   );
 }
 

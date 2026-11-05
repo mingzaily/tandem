@@ -45,6 +45,10 @@ Cindy 的名称、Logo、角色形象和宣传图不在 Apache-2.0 许可范围�
 
 规范里的 `apps/desktop/...`、`packages/...` 路径指 Cindy 的代码。引用的 `assets/` 图片和手柄、iOS 等专题文档没有复制，相关链接会失效。Cindy 字样是来源说明，不要带进界面。
 
+## 设置页
+
+几何和 token 照搬原版的 `components/settings/`：左侧导航 260px，内容最宽 920px，卡片用 `--settings-theme-card-*`。分页只放已经能用的选项，没做的功能不放占位。用户可见的文字不提 Cindy。
+
 ## Token
 
 - `desktop/design/tokens/tokens.css`：字号、间距、圆角、动效等基础 token。

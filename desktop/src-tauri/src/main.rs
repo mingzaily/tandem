@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agents;
 mod attachments;
 mod cli_info;
 mod commands;
 #[cfg(debug_assertions)]
 mod harness;
+mod git_info;
 mod login_env;
 mod runner;
 mod sessions;
@@ -33,6 +35,10 @@ fn main() {
             commands::answer_request,
             commands::cli_info,
             commands::pick_attachments,
+            commands::pick_project,
+            commands::git_branch,
+            commands::reveal_task_folder,
+            commands::agent_status,
             commands::add_pasted_image,
             commands::remove_attachment,
             commands::open_external,

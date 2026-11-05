@@ -16,7 +16,7 @@ use uuid::Uuid;
 const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_HELD: usize = 20;
 /// The page reads these lines back from the task file to show file chips.
-pub const ATTACHED_FILE_PREFIX: &str = "Attached file: ";
+pub const ATTACHED_FILE_PREFIX: &str = "Attached file, readable with your tools even outside the workspace: ";
 pub const DROPPED_EVENT: &str = "attachments-dropped";
 pub const DRAG_EVENT: &str = "attachment-drag";
 
@@ -178,6 +178,24 @@ impl Prepared {
         content
     }
 
+    /// The same content in Codex's input format, where an image is a data URL.
+    pub fn codex_input(&self, prompt: &str) -> Vec<Value> {
+        self.content(prompt)
+            .into_iter()
+            .map(|block| {
+                let Some(source) = block.get("source") else {
+                    return json!({"type": "text", "text": block["text"]});
+                };
+                let url = format!(
+                    "data:{};base64,{}",
+                    source["media_type"].as_str().unwrap_or_default(),
+                    source["data"].as_str().unwrap_or_default()
+                );
+                json!({"type": "image", "url": url})
+            })
+            .collect()
+    }
+
     /// Attaching a file means the agent may read that one file, wherever it is. Nothing nearby
     /// is opened up. A path that a rule could not name exactly gets the normal permission prompt.
     pub fn read_rules(&self) -> Vec<String> {
@@ -254,7 +272,7 @@ mod tests {
         let content = prepared.content("look");
         assert_eq!(content[0]["source"]["media_type"], "image/png");
         let text = content[1]["text"].as_str().unwrap();
-        assert!(text.starts_with("look\n\nAttached file: /"));
+        assert!(text.starts_with("look\n\nAttached file, readable with your tools even outside the workspace: /"));
         assert!(text.ends_with("app (1).log"));
         assert_eq!(prepared.read_rules().len(), 1);
         assert!(prepared.read_rules()[0].starts_with("Read(//"));

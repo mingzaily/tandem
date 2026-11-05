@@ -213,7 +213,7 @@ function AgentsTab() {
               hint={agent.path ? [agent.version, agent.path].filter(Boolean).join(' · ') : t('agentNotFound', { command: agent.command })}
             >
               <span className="text-12 text-[var(--text-secondary)]">
-                {agent.command === 'claude' ? t('agentConnected') : agent.path ? t('agentInstalledOnly') : t('agentMissing')}
+                {agent.command !== 'pi' && agent.path ? t('agentConnected') : agent.path ? t('agentInstalledOnly') : t('agentMissing')}
               </span>
             </Row>
           </div>

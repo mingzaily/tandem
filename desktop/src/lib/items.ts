@@ -26,7 +26,7 @@ export type Item = UserItem | TextItem | ToolItem;
 export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
 export type Row = Item | WorkGroup;
 
-const ATTACHED_FILE_PREFIX = 'Attached file: ';
+const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
 
 /** Files travel as lines after the prompt, the only form a task file can keep them in. */
 export function splitAttachedFiles(text: string): { text: string; files: AttachedFile[] } {

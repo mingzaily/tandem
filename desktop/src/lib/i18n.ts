@@ -59,6 +59,16 @@ const zhCN = {
   worktreeBadge: '在 worktree {name} 中运行',
   worktreeToggle: '在新的 worktree 中运行',
   navNew: '新建',
+  writerCodexOpen: '这个任务开在其他程序里，比如 ChatGPT。Codex 不允许同时写入，先关掉它才能发送。',
+  modeAskHintCodex: '可以改工作区里的文件，需要更多权限时会问你',
+  modeAutoHintCodex: '可以改工作区里的文件，不再询问，超出范围的操作直接失败',
+  modeBypassHintCodex: '不限制沙箱，也不询问，可以改任何文件和联网',
+  writerBusyTerminal: '这个任务正在终端里运行。现在发送会让记录分叉，建议等它结束。',
+  writerOpenTerminal: '这个任务还开在终端里。现在发送会让记录分叉，建议先退出终端里的会话。',
+  writerBusyProgram: '这个任务正在其他程序里运行。现在发送会让记录分叉，建议等它结束。',
+  writerOpenProgram: '这个任务还开在其他程序里。现在发送会让记录分叉，建议先关掉它。',
+  writerSendAnyway: '仍要发送',
+  writerBadge: '在别处打开',
   untitled: '未命名任务',
   attach: '添加图片或文件',
   removeAttachment: '移除 {name}',
@@ -144,6 +154,9 @@ const zhCN = {
   modelDefault: '默认',
   effortMenu: '推理强度',
   effortDefault: '默认',
+  effort_none: '不思考',
+  effort_minimal: '极低',
+  effort_ultra: '超高',
   effort_low: '低',
   effort_medium: '中',
   effort_high: '高',
@@ -233,6 +246,16 @@ const en: typeof zhCN = {
   worktreeBadge: 'Runs in worktree {name}',
   worktreeToggle: 'Run in a new worktree',
   navNew: 'New',
+  writerCodexOpen: 'This task is open in another program, such as ChatGPT. Codex does not allow two writers, so close it before sending.',
+  modeAskHintCodex: 'Can change files in the workspace and asks when it needs more',
+  modeAutoHintCodex: 'Can change files in the workspace without asking. Anything beyond that fails',
+  modeBypassHintCodex: 'No sandbox and no questions. It can change any file and use the network',
+  writerBusyTerminal: 'This task is running in a terminal. Sending now would split its history, so wait for it to finish.',
+  writerOpenTerminal: 'This task is still open in a terminal. Sending now would split its history, so exit that session first.',
+  writerBusyProgram: 'This task is running in another program. Sending now would split its history, so wait for it to finish.',
+  writerOpenProgram: 'This task is still open in another program. Sending now would split its history, so close it first.',
+  writerSendAnyway: 'Send anyway',
+  writerBadge: 'Open elsewhere',
   untitled: 'Untitled task',
   attach: 'Add images or files',
   removeAttachment: 'Remove {name}',
@@ -318,6 +341,9 @@ const en: typeof zhCN = {
   modelDefault: 'Default',
   effortMenu: 'Effort',
   effortDefault: 'Default',
+  effort_none: 'None',
+  effort_minimal: 'Minimal',
+  effort_ultra: 'Ultra',
   effort_low: 'Low',
   effort_medium: 'Medium',
   effort_high: 'High',
@@ -353,6 +379,9 @@ const usesChinese = language === 'system' ? navigator.language.toLowerCase().sta
 const strings = usesChinese ? zhCN : en;
 
 export type StringKey = keyof typeof zhCN;
+
+/** For keys built at run time, such as a level name an agent reports. */
+export const hasString = (key: string): key is StringKey => key in strings;
 
 export function t(key: StringKey, values: Record<string, string> = {}): string {
   return strings[key].replace(/\{(\w+)\}/g, (_, name: string) => values[name] ?? '');

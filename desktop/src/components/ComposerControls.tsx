@@ -13,7 +13,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { ModelOption, UsageWindows } from '../lib/api';
+import type { Agent, ModelOption, UsageWindows } from '../lib/api';
 import {
   contextPercent,
   describeUsage,
@@ -21,7 +21,7 @@ import {
   type PermissionMode,
   type TurnPrefs,
 } from '../lib/composerStatus';
-import { t, type StringKey } from '../lib/i18n';
+import { hasString, t, type StringKey } from '../lib/i18n';
 import { projectName } from '../lib/items';
 import { AgentMark } from './AgentMark';
 import { ComposerMenu, MENU_ROW } from './ComposerMenu';
@@ -46,6 +46,7 @@ const MODES: { id: PermissionMode; label: StringKey; hint: StringKey; icon: Luci
 ];
 
 interface SelectProps {
+  agent: Agent;
   prefs: TurnPrefs;
   models: ModelOption[];
   disabled?: boolean;
@@ -55,17 +56,25 @@ interface SelectProps {
 const selectedModel = (prefs: TurnPrefs, models: ModelOption[]) =>
   models.find((option) => option.value === (prefs.model ?? 'default'));
 
-export function PermissionSelect({ prefs, models, disabled, onChange }: SelectProps) {
+const CODEX_HINTS: Partial<Record<PermissionMode, StringKey>> = {
+  ask: 'modeAskHintCodex',
+  auto: 'modeAutoHintCodex',
+  bypassPermissions: 'modeBypassHintCodex',
+};
+
+export function PermissionSelect({ agent, prefs, models, disabled, onChange }: SelectProps) {
+  const modes = agent === 'codex' ? MODES.filter((mode) => mode.id !== 'acceptEdits') : MODES;
+  const hintFor = (mode: (typeof MODES)[number]) => t((agent === 'codex' && CODEX_HINTS[mode.id]) || mode.hint);
   const [confirming, setConfirming] = useState(false);
   const autoUnavailable = selectedModel(prefs, models)?.supportsAutoMode === false;
   const activeId = prefs.permissionMode === 'auto' && autoUnavailable ? 'ask' : prefs.permissionMode;
-  const active = MODES.find((mode) => mode.id === activeId) ?? MODES[0];
+  const active = modes.find((mode) => mode.id === activeId) ?? modes[0];
   const ActiveIcon = active.icon;
 
   return (
     <ComposerMenu
       label={t('permissionModes')}
-      title={t(active.hint)}
+      title={hintFor(active)}
       width={224}
       disabled={disabled}
       triggerClassName={active.tone ?? 'text-[var(--text-primary)]'}
@@ -81,7 +90,7 @@ export function PermissionSelect({ prefs, models, disabled, onChange }: SelectPr
         confirming ? (
           <div className="p-2">
             <p className="text-13 font-medium text-[var(--perm-bypass-selected-text)]">{t('modeBypassConfirm')}</p>
-            <p className="mt-1 text-12 leading-[1.5] text-[var(--text-secondary)]">{t('modeBypassHint')}</p>
+            <p className="mt-1 text-12 leading-[1.5] text-[var(--text-secondary)]">{agent === 'codex' ? t('modeBypassHintCodex') : t('modeBypassHint')}</p>
             <div className="mt-3 flex justify-end gap-2">
               <button
                 type="button"
@@ -105,14 +114,14 @@ export function PermissionSelect({ prefs, models, disabled, onChange }: SelectPr
           </div>
         ) : (
           <ul role="listbox" aria-label={t('permissionModes')} className="flex flex-col gap-0.5">
-            {MODES.map((mode) => {
+            {modes.map((mode) => {
               const Icon = mode.icon;
               const isSelected = mode.id === active.id;
               return (
                 <li key={mode.id} role="option" aria-selected={isSelected}>
                   <button
                     type="button"
-                    title={t(mode.hint)}
+                    title={hintFor(mode)}
                     disabled={mode.id === 'auto' && autoUnavailable}
                     onClick={() => {
                       if (mode.id === 'bypassPermissions' && !isSelected) {
@@ -138,30 +147,92 @@ export function PermissionSelect({ prefs, models, disabled, onChange }: SelectPr
   );
 }
 
+const AGENT_NAMES: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex' };
+
 /** "default" has no name of its own, so it shows the model it stands for. */
-function triggerName(model: ModelOption | undefined, models: ModelOption[]): string {
-  if (!model) return 'Claude Code';
+function triggerName(model: ModelOption | undefined, models: ModelOption[], agent: Agent): string {
+  if (!model) return AGENT_NAMES[agent];
   if (model.value !== 'default') return model.displayName;
   const same = models.find((option) => option.value !== 'default' && option.resolvedModel === model.resolvedModel);
   return same?.displayName ?? t('modelDefault');
 }
 
-export function ModelSelect({ prefs, models, disabled, onChange }: SelectProps) {
+interface OtherAgent {
+  agent: Agent;
+  prefs: TurnPrefs;
+  models: ModelOption[];
+  onChoose: (prefs: TurnPrefs) => void;
+}
+
+interface ModelSelectProps extends SelectProps {
+  /** A new task can still use the other agent. An existing task stays with its own. */
+  other?: OtherAgent;
+}
+
+export function ModelSelect({ agent, prefs, models, disabled, onChange, other }: ModelSelectProps) {
   const model = selectedModel(prefs, models);
   const levels = model?.supportsEffort ? model.supportedEffortLevels : [];
   const effort = prefs.effort && levels.includes(prefs.effort) ? prefs.effort : null;
-  const effortLabel = (level: string) => t(`effort_${level}` as StringKey) || level;
+  const effortLabel = (level: string) => {
+    const key = `effort_${level}`;
+    return hasString(key) ? t(key) : level;
+  };
+  const hasOther = Boolean(other && other.models.length > 0);
+
+  const list = (
+    listAgent: Agent,
+    listPrefs: TurnPrefs,
+    listModels: ModelOption[],
+    choose: (next: TurnPrefs) => void,
+    isActive: boolean,
+    close: () => void,
+  ) => {
+    const chosen = selectedModel(listPrefs, listModels);
+    return (
+      <>
+        {hasOther ? (
+          <p className="flex items-center gap-1.5 px-3 pb-1 pt-1.5 text-12 text-[var(--model-section-label)]">
+            <AgentMark agent={listAgent} size={12} />
+            {AGENT_NAMES[listAgent]}
+          </p>
+        ) : null}
+        <ul role="listbox" aria-label={AGENT_NAMES[listAgent]} className="flex flex-col gap-0.5">
+          {listModels.map((option) => {
+            const isSelected = isActive && option === chosen;
+            return (
+              <li key={option.value} role="option" aria-selected={isSelected}>
+                <button
+                  type="button"
+                  title={option.description}
+                  onClick={() => {
+                    choose({ ...listPrefs, model: option.value === 'default' ? null : option.value });
+                    close();
+                  }}
+                  className={`${MENU_ROW} ${isSelected ? 'font-medium' : ''}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {option.value === 'default' ? t('modelDefault') : option.displayName}
+                  </span>
+                  {isSelected ? <Check size={13} aria-hidden className="shrink-0 text-[var(--model-item-check)]" /> : null}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </>
+    );
+  };
 
   return (
     <ComposerMenu
       label={t('modelMenu')}
       align="right"
       width={280}
-      disabled={disabled || models.length === 0}
+      disabled={disabled || (models.length === 0 && !hasOther)}
       trigger={
         <>
-          <AgentMark size={13} className="mr-0.5 shrink-0 text-[var(--model-trigger-text)]" />
-          <span className="truncate text-[var(--model-trigger-text)]">{triggerName(model, models)}</span>
+          <AgentMark agent={agent} size={13} className="mr-0.5 shrink-0 text-[var(--model-trigger-text)]" />
+          <span className="truncate text-[var(--model-trigger-text)]">{triggerName(model, models, agent)}</span>
           {effort ? (
             <span className="ml-1 inline-flex shrink-0 items-center gap-1 text-[var(--model-trigger-meta)]">
               <Gauge size={13} strokeWidth={1.8} aria-hidden />
@@ -174,29 +245,12 @@ export function ModelSelect({ prefs, models, disabled, onChange }: SelectProps) 
     >
       {(close) => (
         <>
-          <ul role="listbox" aria-label={t('modelMenu')} className="flex flex-col gap-0.5">
-            {models.map((option) => {
-              const isSelected = option === model;
-              return (
-                <li key={option.value} role="option" aria-selected={isSelected}>
-                  <button
-                    type="button"
-                    title={option.description}
-                    onClick={() => {
-                      onChange({ ...prefs, model: option.value === 'default' ? null : option.value });
-                      close();
-                    }}
-                    className={`${MENU_ROW} ${isSelected ? 'font-medium' : ''}`}
-                  >
-                    <span className="min-w-0 flex-1 truncate">
-                      {option.value === 'default' ? t('modelDefault') : option.displayName}
-                    </span>
-                    {isSelected ? <Check size={13} aria-hidden className="shrink-0 text-[var(--model-item-check)]" /> : null}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+          {list(agent, prefs, models, onChange, true, close)}
+          {other && hasOther ? (
+            <div className="mt-1.5 border-t border-[var(--border-default)] pt-1.5">
+              {list(other.agent, other.prefs, other.models, other.onChoose, false, close)}
+            </div>
+          ) : null}
           {levels.length > 0 ? (
             <div className="mt-2 border-t border-[var(--border-default)] px-1 pt-2">
               <p className="px-2 pb-1.5 text-12 text-[var(--model-section-label)]">{t('effortMenu')}</p>
@@ -294,27 +348,33 @@ export function ProjectSelect({ value, options, onChange, onAddProject }: Projec
 
 interface BranchPillProps {
   branch: string;
+  /** Only Claude Code can start a task in a worktree from here. */
+  canUseWorktree: boolean;
   worktree: boolean;
   onWorktreeChange: (worktree: boolean) => void;
 }
 
 /** The branch is shown, not changed: switching it could disturb work in the checkout. */
-export function BranchPill({ branch, worktree, onWorktreeChange }: BranchPillProps) {
+export function BranchPill({ branch, canUseWorktree, worktree, onWorktreeChange }: BranchPillProps) {
   return (
     <span className="inline-flex h-[30px] min-w-0 max-w-[260px] items-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-12 font-medium text-[var(--create-agent-control-text)]">
       <GitBranch size={12} strokeWidth={2} aria-hidden className="shrink-0 text-[var(--create-agent-control-icon)]" />
       <span title={branch} className="min-w-0 truncate">{branch}</span>
-      <span aria-hidden className="mx-0.5 h-3 w-px shrink-0 bg-[var(--create-agent-control-border)]" />
-      <label title={t('worktreeToggle')} className="flex shrink-0 cursor-pointer items-center gap-1.5">
-        <input
-          type="checkbox"
-          aria-label={t('worktreeToggle')}
-          checked={worktree}
-          onChange={(event) => onWorktreeChange(event.target.checked)}
-          className="size-3.5 accent-[var(--switch-track-on)]"
-        />
-        worktree
-      </label>
+      {canUseWorktree ? (
+        <>
+          <span aria-hidden className="mx-0.5 h-3 w-px shrink-0 bg-[var(--create-agent-control-border)]" />
+          <label title={t('worktreeToggle')} className="flex shrink-0 cursor-pointer items-center gap-1.5">
+            <input
+              type="checkbox"
+              aria-label={t('worktreeToggle')}
+              checked={worktree}
+              onChange={(event) => onWorktreeChange(event.target.checked)}
+              className="size-3.5 accent-[var(--switch-track-on)]"
+            />
+            worktree
+          </label>
+        </>
+      ) : null}
     </span>
   );
 }

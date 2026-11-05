@@ -1,4 +1,4 @@
-import { Archive, ChevronRight, CirclePlus, Folder, FolderOpen, GitBranch, MoreHorizontal, Plus, Search, Settings } from 'lucide-react';
+import { Archive, ChevronRight, CirclePlus, Folder, FolderOpen, GitBranch, MoreHorizontal, Plus, Search, Settings, SquareTerminal } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import type { TaskSummary } from '../lib/api';
@@ -23,6 +23,8 @@ interface SidebarProps {
   selectedId: string | null;
   running: Set<string>;
   waiting: Set<string>;
+  /** Tasks open in another process, with whether each is working now. */
+  external: Map<string, boolean>;
   meta: TaskMeta;
   extraProjects: string[];
   width: number;
@@ -37,7 +39,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'meta' | 'onSelect' | 'onMetaChange' | 'onRenameDone' | 'onOpenMenu'> {
+interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'external' | 'meta' | 'onSelect' | 'onMetaChange' | 'onRenameDone' | 'onOpenMenu'> {
   task: TaskSummary;
   indented: boolean;
   now: number;
@@ -69,9 +71,9 @@ function RenameField({ title, onDone }: { title: string; onDone: (title: string 
 }
 
 function TaskRow(props: TaskRowProps) {
-  const { task, indented, now, isRenaming, selectedId, running, waiting, meta, onSelect, onMetaChange, onRenameDone, onOpenMenu } = props;
+  const { task, indented, now, isRenaming, selectedId, running, waiting, external, meta, onSelect, onMetaChange, onRenameDone, onOpenMenu } = props;
   const active = task.id === selectedId;
-  const isRunning = running.has(task.id);
+  const isRunning = running.has(task.id) || external.get(task.id) === true;
   const isWaiting = waiting.has(task.id);
   const worktree = worktreeName(task.cwd);
   const title = taskTitle(meta, task);
@@ -91,7 +93,7 @@ function TaskRow(props: TaskRowProps) {
       {isRenaming ? (
         <div className={`${PILL_ROW} ${indented ? 'pl-5' : 'pl-3'} pr-2 font-medium`}>
           <span className="flex w-[15px] shrink-0 items-center justify-center">
-            <AgentMark />
+            <AgentMark agent={task.agent} />
           </span>
           <RenameField
             title={title}
@@ -114,12 +116,17 @@ function TaskRow(props: TaskRowProps) {
             }`}
             {...(isRunning ? { role: 'img', 'aria-label': t('running') } : {})}
           >
-            <AgentMark />
+            <AgentMark agent={task.agent} />
           </span>
           <span className="min-w-0 flex-1 truncate">{title || t('untitled')}</span>
           {worktree ? (
             <span title={t('worktreeBadge', { name: worktree })} className="shrink-0 text-[var(--sidebar-list-muted)]">
               <GitBranch size={12} strokeWidth={1.8} aria-label={t('worktreeBadge', { name: worktree })} />
+            </span>
+          ) : null}
+          {external.has(task.id) ? (
+            <span title={t('writerBadge')} className="shrink-0 text-[var(--sidebar-list-muted)]">
+              <SquareTerminal size={12} strokeWidth={1.8} aria-label={t('writerBadge')} />
             </span>
           ) : null}
           {isWaiting ? (

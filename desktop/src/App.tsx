@@ -16,15 +16,20 @@ import {
   answerRequest,
   appReady,
   cancelTurn,
+  externalWriters,
   gitBranch,
+  listCodexTasks,
   listTasks,
   pickProject,
+  readCodexInfo,
   readCliInfo,
   readTask,
   sendTurn,
+  type Agent,
   type Attachment,
   type CliInfo,
   type Decision,
+  type ExternalWriter,
   type PendingRequest,
   type TaskContext,
   type TaskSummary,
@@ -35,24 +40,32 @@ import { t } from './lib/i18n';
 import { applyTurnEvent, buildItems, projectRoot, turnStatus, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
 import {
-  loadCliInfo,
   loadContextWindows,
   loadExtraProjects,
   loadSidebarCollapsed,
   loadSidebarWidth,
   loadTaskMeta,
-  loadTurnPrefs,
-  saveCliInfo,
+  loadInfoFor,
+  loadNewTaskAgent,
+  loadPrefsFor,
+  saveInfoFor,
+  saveNewTaskAgent,
+  savePrefsFor,
   saveContextWindows,
   saveExtraProjects,
   saveSidebarCollapsed,
   saveSidebarWidth,
   saveTaskMeta,
-  saveTurnPrefs,
 } from './lib/preferences';
 
 import { applySettings, loadSettings, saveSettings, watchSystemTheme, type AppSettings } from './lib/settings';
 import { taskTitle, type TaskMeta } from './lib/taskMeta';
+
+/** Listing Codex tasks starts a helper process, so a run of window focus changes shares one. */
+const CODEX_LIST_MIN_INTERVAL_MS = 30_000;
+
+/** Only reads a few small files, so this is cheap enough to do while the window is in use. */
+const WRITER_POLL_MS = 5000;
 
 const MessageStream = lazy(() => import('./components/MessageStream'));
 
@@ -67,7 +80,14 @@ function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice
 }
 
 export function App() {
-  const [tasks, setTasks] = useState<TaskSummary[] | null>(null);
+  const [claudeTasks, setClaudeTasks] = useState<TaskSummary[] | null>(null);
+  const [codexTasks, setCodexTasks] = useState<TaskSummary[]>([]);
+  const lastCodexList = useRef(0);
+  const tasks = useMemo(
+    () =>
+      claudeTasks && [...claudeTasks, ...codexTasks].sort((first, second) => second.updatedAtMs - first.updatedAtMs),
+    [claudeTasks, codexTasks],
+  );
   const [nav, setNav] = useState(() => startHistory<Selection>({ kind: 'new', cwd: null }));
   const selection = currentEntry(nav);
   // Choosing a project, or a new task getting its id, is still the same page.
@@ -87,6 +107,8 @@ export function App() {
   const [version, setVersion] = useState('');
   const [branch, setBranch] = useState<string | null>(null);
   const [useWorktree, setUseWorktree] = useState(false);
+  const [writers, setWriters] = useState<ExternalWriter[]>([]);
+  const [overriddenWriters, setOverriddenWriters] = useState<Set<string>>(new Set());
   const [history, setHistory] = useState<Item[]>([]);
   const [live, setLive] = useState<Record<string, Item[]>>({});
   const [notices, setNotices] = useState<Record<string, Notice>>({});
@@ -94,8 +116,17 @@ export function App() {
   const [progress, setProgress] = useState<Record<string, TurnProgress>>({});
   const [contexts, setContexts] = useState<Record<string, TaskContext>>({});
   const [contextWindows, setContextWindows] = useState(loadContextWindows);
-  const [cliInfo, setCliInfo] = useState<CliInfo>(loadCliInfo);
-  const [prefs, setPrefs] = useState<TurnPrefs>(loadTurnPrefs);
+  const [infos, setInfos] = useState<Record<Agent, CliInfo>>(() => ({
+    claude: loadInfoFor('claude'),
+    codex: loadInfoFor('codex'),
+  }));
+  const [allPrefs, setAllPrefs] = useState<Record<Agent, TurnPrefs>>(() => ({
+    claude: loadPrefsFor('claude'),
+    codex: loadPrefsFor('codex'),
+  }));
+  const [newTaskAgent, setNewTaskAgent] = useState<Agent>(loadNewTaskAgent);
+  const [newTaskAgents, setNewTaskAgents] = useState<Record<string, Agent>>({});
+  const [newTaskError, setNewTaskError] = useState<string | null>(null);
   const [newTaskCwds, setNewTaskCwds] = useState<Record<string, string>>({});
   // The CLI has not written a new task's file yet, so its live items are all there is to show.
   const unwrittenTasks = useRef(new Set<string>());
@@ -103,18 +134,33 @@ export function App() {
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
-  const refreshTasks = useCallback(async () => {
+  const refreshCodexTasks = useCallback(async (force: boolean) => {
+    if (!force && Date.now() - lastCodexList.current < CODEX_LIST_MIN_INTERVAL_MS) return;
+    lastCodexList.current = Date.now();
     try {
-      setTasks(await listTasks());
+      setCodexTasks(await listCodexTasks());
     } catch (error) {
-      setTasks([]);
       console.error(error);
     }
   }, []);
 
-  const loadHistory = useCallback(async (id: string) => {
+  const refreshTasks = useCallback(
+    async (forceCodex = false) => {
+      try {
+        setClaudeTasks(await listTasks());
+      } catch (error) {
+        setClaudeTasks([]);
+        console.error(error);
+      }
+      // Separately, so a slow helper process never holds back the Claude list.
+      void refreshCodexTasks(forceCodex);
+    },
+    [refreshCodexTasks],
+  );
+
+  const loadHistory = useCallback(async (agent: Agent, id: string) => {
     try {
-      const { messages, context } = await readTask(id);
+      const { messages, context } = await readTask(agent, id);
       if (selectedIdRef.current === id) setHistory(buildItems(messages));
       if (context) setContexts((current) => ({ ...current, [id]: context }));
     } catch (error) {
@@ -130,8 +176,9 @@ export function App() {
   useEffect(() => {
     void refreshTasks();
     // Tasks can change in a terminal while Tandem is in the background.
-    window.addEventListener('focus', refreshTasks);
-    return () => window.removeEventListener('focus', refreshTasks);
+    const onFocus = () => void refreshTasks();
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
   }, [refreshTasks]);
 
   // The window opens after the first render, and tasks fill in without holding it back.
@@ -149,8 +196,15 @@ export function App() {
     readCliInfo()
       .then((info) => {
         if (!isCurrent) return;
-        setCliInfo(info);
-        saveCliInfo(info);
+        setInfos((current) => ({ ...current, claude: info }));
+        saveInfoFor('claude', info);
+      })
+      .catch(console.error);
+    readCodexInfo()
+      .then((info) => {
+        if (!isCurrent) return;
+        setInfos((current) => ({ ...current, codex: info }));
+        saveInfoFor('codex', info);
       })
       .catch(console.error);
     return () => {
@@ -158,11 +212,18 @@ export function App() {
     };
   }, [tasksLoaded]);
 
+  const selectedTaskAgent = tasks?.find((task) => task.id === selectedId)?.agent;
+  const selectedAgent: Agent = selectedId
+    ? (selectedTaskAgent ?? newTaskAgents[selectedId] ?? 'claude')
+    : newTaskAgent;
+  const prefs = allPrefs[selectedAgent];
+  const info = infos[selectedAgent];
+
   useEffect(() => {
     setHistory([]);
     setLoadedId(null);
-    if (selectedId && !unwrittenTasks.current.has(selectedId)) void loadHistory(selectedId);
-  }, [selectedId, loadHistory]);
+    if (selectedId && !unwrittenTasks.current.has(selectedId)) void loadHistory(selectedAgent, selectedId);
+  }, [selectedId, selectedAgent, loadHistory]);
 
   const settleRequest = useCallback((taskId: string, requestId: string) => {
     setPending((current) => ({
@@ -191,11 +252,17 @@ export function App() {
         setNotices(({ [id]: _removed, ...rest }) => rest);
       }
       const target = taskId ? { taskId } : { cwd: (selection as { cwd: string }).cwd };
-      const options = { ...turnOptions(prefs, cliInfo.models), worktree: taskId === null && useWorktree };
+      const agent = selectedAgent;
+      setNewTaskError(null);
+      const options = {
+        ...turnOptions(prefs, info.models),
+        worktree: agent === 'claude' && taskId === null && useWorktree,
+        ignoreExternalWriter: taskId !== null && overriddenWriters.has(taskId),
+      };
       const isNew = taskId === null;
       let ended = false;
       let isListed = !isNew;
-      void sendTurn(target, prompt, attachments, options, (event) => {
+      void sendTurn(agent, target, prompt, attachments, options, (event) => {
         // The process can still print lines after its result, when the turn is already over.
         if (ended) return;
         if (event.type === 'started') {
@@ -208,6 +275,7 @@ export function App() {
           if (isNew) {
             unwrittenTasks.current.add(id);
             setNewTaskCwds((current) => ({ ...current, [id]: (selection as { cwd: string }).cwd }));
+            setNewTaskAgents((current) => ({ ...current, [id]: agent }));
             setLive((current) => ({ ...current, [id]: [userItem] }));
             setSelection({ kind: 'task', id });
           }
@@ -228,7 +296,7 @@ export function App() {
           // The first response means the task file exists, so the task can join the list.
           if (!isListed) {
             isListed = true;
-            void refreshTasks();
+            void refreshTasks(agent === 'codex');
           }
           return;
         }
@@ -241,10 +309,10 @@ export function App() {
           return;
         }
         if (event.type === 'rateLimits') {
-          setCliInfo((current) => {
-            const next = { ...current, usage: event.windows };
-            saveCliInfo(next);
-            return next;
+          setInfos((current) => {
+            const next = { ...current[agent], usage: event.windows };
+            saveInfoFor(agent, next);
+            return { ...current, [agent]: next };
           });
           return;
         }
@@ -270,9 +338,9 @@ export function App() {
           const notice = finishedNotice(event);
           if (notice) setNotices((current) => ({ ...current, [id]: notice }));
           void (async () => {
-            if (selectedIdRef.current === id) await loadHistory(id);
+            if (selectedIdRef.current === id) await loadHistory(agent, id);
             setLive(({ [id]: _removed, ...rest }) => rest);
-            await refreshTasks();
+            await refreshTasks(agent === 'codex');
           })();
           return;
         }
@@ -290,10 +358,13 @@ export function App() {
           setLive(({ [id]: _removed, ...rest }) => rest);
           unwrittenTasks.current.delete(id);
           clearTurn(id);
+        } else {
+          // Codex can fail before it has a thread, and then there is no task to show this on.
+          setNewTaskError(t('turnFailed', { error: String(error) }));
         }
       });
     },
-    [selection, setSelection, prefs, cliInfo.models, useWorktree, loadHistory, refreshTasks, settleRequest, clearTurn],
+    [selection, setSelection, selectedAgent, prefs, info.models, useWorktree, overriddenWriters, loadHistory, refreshTasks, settleRequest, clearTurn],
   );
 
   const answer = useCallback(
@@ -309,12 +380,15 @@ export function App() {
     [settleRequest],
   );
 
-  const changePrefs = useCallback((next: TurnPrefs) => {
-    setPrefs(next);
-    saveTurnPrefs(next);
+  const changePrefsFor = useCallback((agent: Agent, next: TurnPrefs) => {
+    setAllPrefs((current) => ({ ...current, [agent]: next }));
+    savePrefsFor(agent, next);
   }, []);
+  const changePrefs = (next: TurnPrefs) => changePrefsFor(selectedAgent, next);
+  const otherAgent: Agent = newTaskAgent === 'claude' ? 'codex' : 'claude';
 
   const running = useMemo(() => new Set(Object.keys(live)), [live]);
+  const external = useMemo(() => new Map(writers.map((writer) => [writer.taskId, writer.isBusy])), [writers]);
   const waiting = useMemo(
     () => new Set(Object.keys(pending).filter((id) => pending[id].length > 0)),
     [pending],
@@ -372,6 +446,36 @@ export function App() {
       window.removeEventListener('focus', read);
     };
   }, [newTaskCwd]);
+
+  useEffect(() => {
+    const read = () => {
+      if (document.hidden) return;
+      externalWriters().then(setWriters).catch(console.error);
+    };
+    read();
+    const timer = window.setInterval(read, WRITER_POLL_MS);
+    window.addEventListener('focus', read);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', read);
+    };
+  }, []);
+
+  // When another process stops working on the open task, show what it wrote.
+  const selectedWriter = selectedId ? writers.find((writer) => writer.taskId === selectedId) : undefined;
+  const isHeldByWriter = Boolean(
+    selectedId && selectedWriter && !(selectedWriter.canOverride && overriddenWriters.has(selectedId)),
+  );
+  const wasBusyElsewhere = useRef<{ id: string | null; isBusy: boolean }>({ id: null, isBusy: false });
+  useEffect(() => {
+    const isBusy = selectedWriter?.isBusy ?? false;
+    const previous = wasBusyElsewhere.current;
+    wasBusyElsewhere.current = { id: selectedId, isBusy };
+    if (selectedId && previous.id === selectedId && previous.isBusy && !isBusy) {
+      void loadHistory(selectedAgent, selectedId);
+      void refreshTasks();
+    }
+  }, [selectedId, selectedAgent, selectedWriter?.isBusy, loadHistory, refreshTasks]);
 
   const changeSettings = useCallback((next: AppSettings) => {
     setSettings(next);
@@ -464,6 +568,7 @@ export function App() {
           selectedId={selectedId}
           running={running}
           waiting={waiting}
+          external={external}
           meta={taskMeta}
           extraProjects={extraProjects}
           width={sidebarWidth}
@@ -525,6 +630,12 @@ export function App() {
             </div>
             <div className="composer-column pb-3 pt-2">
               {notice ? <NoticeLine notice={notice} /> : null}
+              {isHeldByWriter && selectedWriter ? (
+                <WriterNotice
+                  writer={selectedWriter}
+                  onSendAnyway={() => setOverriddenWriters((current) => new Set(current).add(selectedWriter.taskId))}
+                />
+              ) : null}
               {isRunning && selectedProgress ? (
                 <RunningStatus
                   status={turnStatus(liveItems ?? [], selectedPending !== undefined)}
@@ -552,19 +663,20 @@ export function App() {
                 <Composer
                   key={selectedId}
                   running={isRunning}
+                  disabled={isHeldByWriter}
                   placeholder={t('placeholderContinue')}
                   sendWithCmdEnter={settings.sendWithCmdEnter}
                   toolbarLeft={
-                    <PermissionSelect prefs={prefs} models={cliInfo.models} disabled={isRunning} onChange={changePrefs} />
+                    <PermissionSelect agent={selectedAgent} prefs={prefs} models={info.models} disabled={isRunning} onChange={changePrefs} />
                   }
                   toolbarRight={
-                    <ModelSelect prefs={prefs} models={cliInfo.models} disabled={isRunning} onChange={changePrefs} />
+                    <ModelSelect agent={selectedAgent} prefs={prefs} models={info.models} disabled={isRunning} onChange={changePrefs} />
                   }
                   onSend={send}
                   onStop={() => void cancelTurn(selectedId)}
                 />
               </div>
-              <ComposerFooter cwd={selectedTask?.cwd ?? (selectedId ? newTaskCwds[selectedId] : null) ?? null} usage={cliInfo.usage} context={context} />
+              <ComposerFooter cwd={selectedTask?.cwd ?? (selectedId ? newTaskCwds[selectedId] : null) ?? null} usage={info.usage} context={context} />
             </div>
           </>
         ) : (
@@ -579,7 +691,14 @@ export function App() {
                     onChange={(cwd) => setSelection({ kind: 'new', cwd })}
                     onAddProject={addProject}
                   />
-                  {branch ? <BranchPill branch={branch} worktree={useWorktree} onWorktreeChange={setUseWorktree} /> : null}
+                  {branch ? (
+                    <BranchPill
+                      branch={branch}
+                      canUseWorktree={newTaskAgent === 'claude'}
+                      worktree={useWorktree}
+                      onWorktreeChange={setUseWorktree}
+                    />
+                  ) : null}
                 </div>
               </div>
               <Composer
@@ -589,12 +708,31 @@ export function App() {
                 placeholder={t('placeholder')}
                 fill={draftFill}
                 sendWithCmdEnter={settings.sendWithCmdEnter}
-                toolbarLeft={<PermissionSelect prefs={prefs} models={cliInfo.models} onChange={changePrefs} />}
-                toolbarRight={<ModelSelect prefs={prefs} models={cliInfo.models} onChange={changePrefs} />}
+                toolbarLeft={<PermissionSelect agent={selectedAgent} prefs={prefs} models={info.models} onChange={changePrefs} />}
+                toolbarRight={
+                  <ModelSelect
+                    agent={selectedAgent}
+                    prefs={prefs}
+                    models={info.models}
+                    onChange={changePrefs}
+                    other={{
+                      agent: otherAgent,
+                      prefs: allPrefs[otherAgent],
+                      models: infos[otherAgent].models,
+                      onChoose: (next) => {
+                        changePrefsFor(otherAgent, next);
+                        setNewTaskAgent(otherAgent);
+                        saveNewTaskAgent(otherAgent);
+                        setUseWorktree(false);
+                      },
+                    }}
+                  />
+                }
                 onSend={send}
                 onStop={() => undefined}
               />
-              <ComposerFooter cwd={null} usage={cliInfo.usage} context={null} />
+              <ComposerFooter cwd={null} usage={info.usage} context={null} />
+              {newTaskError ? <NoticeLine notice={{ text: newTaskError, isError: true }} /> : null}
               {tasks !== null && projects.length === 0 ? (
                 <p className="mt-3 text-13 text-[var(--text-secondary)]">{t('noProject')}</p>
               ) : null}
@@ -606,6 +744,7 @@ export function App() {
       {menuAnchor ? (
         <TaskMenu
           anchor={menuAnchor}
+          agent={tasks?.find((task) => task.id === menuAnchor.id)?.agent ?? 'claude'}
           meta={taskMeta}
           onMetaChange={changeTaskMeta}
           onRename={(id) => {
@@ -614,6 +753,32 @@ export function App() {
           }}
           onClose={closeMenu}
         />
+      ) : null}
+    </div>
+  );
+}
+
+function WriterNotice({ writer, onSendAnyway }: { writer: ExternalWriter; onSendAnyway: () => void }) {
+  const key = !writer.canOverride
+    ? 'writerCodexOpen'
+    : writer.fromTerminal
+      ? writer.isBusy
+        ? 'writerBusyTerminal'
+        : 'writerOpenTerminal'
+      : writer.isBusy
+        ? 'writerBusyProgram'
+        : 'writerOpenProgram';
+  return (
+    <div role="status" className="mb-2 flex items-center justify-between gap-3 px-1 text-13 text-[var(--warning-fg)]">
+      <span className="min-w-0">{t(key)}</span>
+      {writer.canOverride ? (
+        <button
+          type="button"
+          onClick={onSendAnyway}
+          className="h-7 shrink-0 rounded-full border border-[var(--border-default)] px-3 text-12 text-[var(--text-primary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        >
+          {t('writerSendAnyway')}
+        </button>
       ) : null}
     </div>
   );

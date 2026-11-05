@@ -3,6 +3,7 @@
 mod agents;
 mod attachments;
 mod cli_info;
+mod codex;
 mod commands;
 #[cfg(debug_assertions)]
 mod harness;
@@ -10,6 +11,7 @@ mod git_info;
 mod login_env;
 mod runner;
 mod sessions;
+mod writers;
 
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -21,6 +23,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .manage(runner::Runs::default())
         .manage(attachments::Attachments::default())
+        .manage(codex::Reader::default())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::DragDrop(drag) = event {
                 attachments::on_drag(window.app_handle(), drag);
@@ -39,6 +42,10 @@ fn main() {
             commands::git_branch,
             commands::reveal_task_folder,
             commands::agent_status,
+            commands::external_writers,
+            commands::list_codex_tasks,
+            commands::read_codex_task,
+            commands::codex_info,
             commands::add_pasted_image,
             commands::remove_attachment,
             commands::open_external,

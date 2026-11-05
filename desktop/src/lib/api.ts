@@ -1,11 +1,14 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 
+export type Agent = 'claude' | 'codex';
+
 export interface TaskSummary {
   id: string;
   title: string;
   cwd: string;
   updatedAtMs: number;
+  agent: Agent;
 }
 
 export type MessageKind = 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result';
@@ -63,6 +66,7 @@ export interface TurnOptions {
   effort: string | null;
   permissionMode: string | null;
   worktree?: boolean;
+  ignoreExternalWriter?: boolean;
 }
 
 export interface QuestionOption {
@@ -108,7 +112,10 @@ export type TurnEvent =
 export type PendingRequest = Extract<TurnEvent, { type: 'permissionRequest' | 'question' }>;
 
 export const listTasks = () => invoke<TaskSummary[]>('list_tasks');
-export const readTask = (id: string) => invoke<TaskContent>('read_task', { id });
+export const listCodexTasks = () => invoke<TaskSummary[]>('list_codex_tasks');
+export const readTask = (agent: Agent, id: string) =>
+  invoke<TaskContent>(agent === 'codex' ? 'read_codex_task' : 'read_task', { id });
+export const readCodexInfo = () => invoke<CliInfo>('codex_info');
 export const cancelTurn = (taskId: string) => invoke<void>('cancel_turn', { taskId });
 export const answerRequest = (taskId: string, requestId: string, decision: Decision) =>
   invoke<void>('answer_request', { taskId, requestId, decision });
@@ -132,9 +139,17 @@ export interface AgentStatus {
   path?: string | null;
   version?: string | null;
 }
+export interface ExternalWriter {
+  taskId: string;
+  pid: number;
+  isBusy: boolean;
+  fromTerminal: boolean;
+  canOverride: boolean;
+}
+export const externalWriters = () => invoke<ExternalWriter[]>('external_writers');
 export const pickProject = () => invoke<string | null>('pick_project');
 export const gitBranch = (cwd: string) => invoke<string | null>('git_branch', { cwd });
-export const revealTaskFolder = (id: string) => invoke<void>('reveal_task_folder', { id });
+export const revealTaskFolder = (agent: Agent, id: string) => invoke<void>('reveal_task_folder', { agent, id });
 export const agentStatus = () => invoke<AgentStatus[]>('agent_status');
 export const pickAttachments = () => invoke<AddResult>('pick_attachments');
 export const addPastedImage = (data: string) => invoke<Attachment>('add_pasted_image', { data });
@@ -145,6 +160,7 @@ export const onAttachmentDrag = (handler: (isOver: boolean) => void) =>
   listen<boolean>('attachment-drag', (event) => handler(event.payload));
 
 export function sendTurn(
+  agent: Agent,
   target: { taskId: string } | { cwd: string },
   prompt: string,
   attachments: Attachment[],
@@ -154,6 +170,7 @@ export function sendTurn(
   const channel = new Channel<TurnEvent>();
   channel.onmessage = onEvent;
   return invoke('send_turn', {
+    agent,
     taskId: 'taskId' in target ? target.taskId : null,
     cwd: 'cwd' in target ? target.cwd : null,
     attachmentIds: attachments.map((attachment) => attachment.id),

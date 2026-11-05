@@ -1,7 +1,7 @@
 //! Runs one Claude Code turn per process, so the CLI holds a task only while a turn is running.
 
 use crate::attachments::Prepared;
-use crate::{login_env, sessions};
+use crate::{codex, login_env, sessions, writers};
 use crate::cli_info::{self, UsageWindows};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -15,7 +15,7 @@ use tokio::{
 
 const STDERR_TAIL_LINES: usize = 20;
 const TERMINATE_GRACE: Duration = Duration::from_secs(3);
-const QUESTION_TOOL: &str = "AskUserQuestion";
+pub const QUESTION_TOOL: &str = "AskUserQuestion";
 const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The default mode is left out, so it stays whatever the user set for the CLI.
 const PERMISSION_MODES: [&str; 3] = ["acceptEdits", "auto", "bypassPermissions"];
@@ -58,9 +58,24 @@ pub struct TurnOptions {
     /// Only a new task can start in a worktree. A resumed one stays where it is.
     #[serde(default)]
     pub worktree: bool,
+    /// The user chose to send although another process has this task open.
+    #[serde(default)]
+    pub ignore_external_writer: bool,
 }
 
 impl TurnOptions {
+    /// Codex has its own effort levels, and they change with its models.
+    pub fn validate_codex(&self) -> Result<(), String> {
+        let is_word = |effort: &str| !effort.is_empty() && effort.chars().all(|c| c.is_ascii_lowercase());
+        if self.effort.as_deref().is_some_and(|effort| !is_word(effort)) {
+            return Err("Invalid effort level".into());
+        }
+        if self.permission_mode.as_deref().is_some_and(|mode| !PERMISSION_MODES.contains(&mode)) {
+            return Err("Invalid permission mode".into());
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), String> {
         let model_is_valid = |model: &str| {
             !model.is_empty()
@@ -89,13 +104,23 @@ pub enum Decision {
     Answer { answers: serde_json::Map<String, Value> },
 }
 
+const EXTERNAL_WRITER_ERROR: &str = "This task is open in another process";
+
 /// A request the CLI is waiting on. The input stays here, so the page answers a request and
 /// cannot change what the tool will run.
 #[derive(Debug)]
-struct PendingRequest {
-    tool_name: String,
-    input: Value,
+pub struct PendingRequest {
+    pub tool_name: String,
+    pub input: Value,
     rules: Vec<Value>,
+    /// Codex answers by JSON-RPC id, unlike Claude's control responses.
+    codex_rpc_id: Option<String>,
+}
+
+impl PendingRequest {
+    pub fn for_codex(tool_name: &str, input: Value) -> Self {
+        Self { tool_name: tool_name.to_owned(), input, rules: Vec::new(), codex_rpc_id: None }
+    }
 }
 
 struct Run {
@@ -104,9 +129,9 @@ struct Run {
     pending: HashMap<String, PendingRequest>,
 }
 
-struct RunChannels {
-    cancel: oneshot::Receiver<()>,
-    input: mpsc::UnboundedReceiver<String>,
+pub struct RunChannels {
+    pub cancel: oneshot::Receiver<()>,
+    pub input: mpsc::UnboundedReceiver<String>,
 }
 
 #[derive(Default)]
@@ -118,7 +143,7 @@ pub struct Runs {
 }
 
 impl Runs {
-    fn begin(&self, task_id: &str) -> Result<RunChannels, String> {
+    pub fn begin(&self, task_id: &str) -> Result<RunChannels, String> {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
         if runs.contains_key(task_id) {
             return Err("This task is already running".into());
@@ -130,6 +155,10 @@ impl Runs {
             Run { cancel: cancel_sender, input: input_sender, pending: HashMap::new() },
         );
         Ok(RunChannels { cancel, input })
+    }
+
+    pub fn is_running(&self, task_id: &str) -> bool {
+        self.runs.lock().is_ok_and(|runs| runs.contains_key(task_id))
     }
 
     fn grant_rules(&self, task_id: &str, rules: Vec<String>) {
@@ -146,7 +175,7 @@ impl Runs {
         }
     }
 
-    fn finish(&self, task_id: &str) {
+    pub fn finish(&self, task_id: &str) {
         if let Ok(mut runs) = self.runs.lock() {
             runs.remove(task_id);
         }
@@ -168,7 +197,12 @@ impl Runs {
         }
     }
 
-    fn remove_pending(&self, task_id: &str, request_id: &str) {
+    pub fn add_codex_pending(&self, task_id: &str, shown_id: String, rpc_id: String, mut request: PendingRequest) {
+        request.codex_rpc_id = Some(rpc_id);
+        self.add_pending(task_id, shown_id, request);
+    }
+
+    pub fn remove_pending(&self, task_id: &str, request_id: &str) {
         if let Ok(mut runs) = self.runs.lock() {
             if let Some(run) = runs.get_mut(task_id) {
                 run.pending.remove(request_id);
@@ -188,8 +222,10 @@ impl Runs {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
         let run = runs.get_mut(task_id).ok_or("This task is not running")?;
         let request = run.pending.get(request_id).ok_or("This request has already ended")?;
-        let response = decision_response(request, &decision)?;
-        let line = control_success(request_id, response);
+        let line = match &request.codex_rpc_id {
+            Some(rpc_id) => codex::rpc_reply(rpc_id, codex::decision_result(request, &decision)?),
+            None => control_success(request_id, decision_response(request, &decision)?),
+        };
         if matches!(decision, Decision::AllowForTask) {
             let mut task_rules = self.task_rules.lock().map_err(|error| error.to_string())?;
             let granted = task_rules.entry(task_id.to_owned()).or_default();
@@ -317,7 +353,7 @@ fn parse_control(value: &Value) -> Option<ControlAction> {
             let rules = suggested_rules(request);
             Some(ControlAction::Ask {
                 request_id,
-                request: PendingRequest { tool_name, input, rules },
+                request: PendingRequest { tool_name, input, rules, codex_rpc_id: None },
                 event,
             })
         }
@@ -380,6 +416,14 @@ fn resolve_target(task_id: Option<String>, cwd: Option<String>) -> Result<Target
     })
 }
 
+pub fn external_writers() -> Result<Vec<writers::ExternalWriter>, String> {
+    let projects = sessions::claude_projects_dir()?;
+    let sessions_dir = projects.parent().ok_or("The CLI config folder was not found")?.join("sessions");
+    let mut writers = writers::read_writers(&sessions_dir);
+    writers.extend(writers::read_codex_writers(&codex::codex_home()?.join("thread-writer-locks")));
+    Ok(writers)
+}
+
 pub async fn send_turn(
     runs: &Runs,
     task_id: Option<String>,
@@ -393,6 +437,13 @@ pub async fn send_turn(
     let target = tauri::async_runtime::spawn_blocking(move || resolve_target(task_id, cwd))
         .await
         .map_err(|error| error.to_string())??;
+    // The page warns from what it last saw. This covers a terminal that opened since then.
+    if !target.is_new && !options.ignore_external_writer {
+        let is_open_elsewhere = external_writers()?.iter().any(|writer| writer.task_id == target.task_id);
+        if is_open_elsewhere {
+            return Err(EXTERNAL_WRITER_ERROR.to_owned());
+        }
+    }
     let channels = runs.begin(&target.task_id)?;
     runs.grant_rules(&target.task_id, attachments.read_rules());
     let emit = |event| on_event.send(event).map_err(|error| error.to_string());
@@ -798,6 +849,7 @@ mod tests {
             effort: Some("high".into()),
             permission_mode: Some("acceptEdits".into()),
             worktree: false,
+            ignore_external_writer: false,
         };
         let args = claude_args(&target, &options, &["Bash(ls:*)".into()]).join(" ");
         assert!(args.contains("--model opus --effort high --permission-mode acceptEdits"));
@@ -811,6 +863,7 @@ mod tests {
             effort: Some(effort.into()),
             permission_mode: Some(mode.into()),
             worktree: false,
+            ignore_external_writer: false,
         };
         assert!(with("claude-opus-5-5[1m]", "max", "auto").validate().is_ok());
         assert!(with("--dangerously-skip-permissions", "max", "auto").validate().is_err());

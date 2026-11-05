@@ -32,6 +32,13 @@
 - 附件文件给一条 `Read(//路径)` 规则，只放行这一个文件，同样存在内存里，只作用于当前任务。路径含通配符或逗号时不给规则，走普通确认。
 - 任务文件里的图片只有 png、jpeg、gif、webp 会传给页面。
 
+## Codex
+
+- 启动和续接线程只传 `sandbox: read-only`，权限只放在 `turn/start`。不要在 `thread/start`、`thread/resume` 或它们的 `config` 里传可写沙箱，那会让 `app-server` 改写用户的 `config.toml`。改动这里要先在临时 `CODEX_HOME` 里验证。
+- 模式对应：默认权限是 `on-request` 加工作区可写，自动审批是 `never` 加工作区可写，完全访问是 `never` 加无沙箱。
+- 不用 `acceptWithExecpolicyAmendment`，它会写用户的规则文件。
+- 写入者探测对 `thread-writer-locks/<id>.lock` 取一瞬间的共享锁，每 5 秒一次。
+
 ## 项目和窗口
 
 - 添加项目的路径由后端打开的系统对话框返回。新建任务的工作目录来自页面，这是用户选择项目的方式。

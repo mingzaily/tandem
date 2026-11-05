@@ -1,4 +1,5 @@
-use crate::{agents, attachments, cli_info, git_info, runner, sessions};
+use crate::sessions::Agent;
+use crate::{agents, attachments, cli_info, codex, git_info, runner, sessions, writers};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{ipc::Channel, AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -33,6 +34,7 @@ pub async fn read_task(id: String) -> Result<sessions::TaskContent, String> {
 #[tauri::command]
 pub async fn send_turn(
     runs: State<'_, runner::Runs>,
+    agent: Agent,
     task_id: Option<String>,
     cwd: Option<String>,
     attachments: State<'_, attachments::Attachments>,
@@ -45,7 +47,13 @@ pub async fn send_turn(
         return Err("There is nothing to send".into());
     }
     let prepared = attachments.take(&attachment_ids)?;
-    runner::send_turn(runs.inner(), task_id, cwd, prompt, prepared, options, on_event).await
+    match agent {
+        Agent::Claude => runner::send_turn(runs.inner(), task_id, cwd, prompt, prepared, options, on_event).await,
+        Agent::Codex => {
+            let request = codex::TurnRequest { task_id, cwd, prompt, attachments: prepared, options };
+            codex::send_turn(runs.inner(), request, on_event).await
+        }
+    }
 }
 
 /// Runs the native dialog here, so the page never supplies a path.
@@ -80,17 +88,46 @@ pub async fn git_branch(cwd: String) -> Result<Option<String>, String> {
 
 /// Opens the folder recorded in the task's own file, never a path from the page.
 #[tauri::command]
-pub async fn reveal_task_folder(id: String) -> Result<(), String> {
-    blocking(move || {
-        let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &id)?;
-        let cwd = sessions::read_task_cwd(&path).ok_or("The task has no working directory")?;
-        std::process::Command::new("open")
-            .arg(cwd)
-            .status()
-            .map_err(|error| error.to_string())?;
-        Ok(())
-    })
-    .await
+pub async fn reveal_task_folder(reader: State<'_, codex::Reader>, agent: Agent, id: String) -> Result<(), String> {
+    let cwd = match agent {
+        Agent::Claude => {
+            blocking(move || {
+                let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &id)?;
+                sessions::read_task_cwd(&path).ok_or_else(|| "The task has no working directory".to_owned())
+            })
+            .await?
+        }
+        Agent::Codex => reader.task_cwd(&id).await?,
+    };
+    std::process::Command::new("open")
+        .arg(cwd)
+        .status()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_codex_tasks(reader: State<'_, codex::Reader>) -> Result<Vec<sessions::TaskSummary>, String> {
+    reader.list_tasks().await
+}
+
+#[tauri::command]
+pub async fn read_codex_task(reader: State<'_, codex::Reader>, id: String) -> Result<sessions::TaskContent, String> {
+    reader.read_task(&id).await
+}
+
+#[tauri::command]
+pub async fn codex_info(reader: State<'_, codex::Reader>) -> Result<cli_info::CliInfo, String> {
+    reader.info().await
+}
+
+/// Tasks open in another process. Tandem's own running turns are left out.
+#[tauri::command]
+pub fn external_writers(runs: State<'_, runner::Runs>) -> Result<Vec<writers::ExternalWriter>, String> {
+    Ok(runner::external_writers()?
+        .into_iter()
+        .filter(|writer| !runs.is_running(&writer.task_id))
+        .collect())
 }
 
 /// Only runs when the settings page asks, because it starts each CLI once.

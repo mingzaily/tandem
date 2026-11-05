@@ -132,7 +132,7 @@ describe('turnStatus', () => {
     const base = { isError: false, truncated: false };
     const items = buildItems([
       { ...base, id: 'a', kind: 'user', text: '', image: 'data:image/png;base64,AA' },
-      { ...base, id: 'b', kind: 'user', text: 'look\n\nAttached file: /logs/app (1).log' },
+      { ...base, id: 'b', kind: 'user', text: 'look\n\nAttached file, readable with your tools even outside the workspace: /logs/app (1).log' },
       { ...base, id: 'c', kind: 'assistant', text: 'ok' },
       { ...base, id: 'd', kind: 'user', text: '', image: 'data:image/png;base64,BB' },
       { ...base, id: 'e', kind: 'assistant', text: 'seen' },
@@ -149,7 +149,7 @@ describe('turnStatus', () => {
 
   it('leaves text without attached files alone', () => {
     expect(splitAttachedFiles('line\n\n')).toEqual({ text: 'line\n\n', files: [] });
-    expect(splitAttachedFiles('Attached file: /a.log')).toEqual({ text: '', files: [{ name: 'a.log', path: '/a.log' }] });
+    expect(splitAttachedFiles('Attached file, readable with your tools even outside the workspace: /a.log')).toEqual({ text: '', files: [{ name: 'a.log', path: '/a.log' }] });
   });
 
   it('groups a worktree under its project', () => {

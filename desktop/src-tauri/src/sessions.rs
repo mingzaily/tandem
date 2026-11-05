@@ -26,6 +26,15 @@ pub struct TaskSummary {
     pub title: String,
     pub cwd: String,
     pub updated_at_ms: u64,
+    pub agent: Agent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum Agent {
+    #[default]
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq)]
@@ -467,6 +476,7 @@ fn visible_user_text(text: &str) -> Option<String> {
     if trimmed.is_empty()
         || trimmed.starts_with("<local-command-")
         || trimmed.starts_with("<system-reminder>")
+        || trimmed.starts_with("<task-notification>")
     {
         return None;
     }
@@ -517,6 +527,7 @@ fn summarize(path: &Path, updated_at_ms: u64) -> Option<TaskSummary> {
         title: shorten(&title),
         cwd,
         updated_at_ms,
+        agent: Agent::Claude,
     })
 }
 
@@ -860,7 +871,13 @@ mod tests {
 
     #[test]
     fn titles_skip_attached_file_lines_unless_nothing_else_is_there() {
-        assert_eq!(prompt_without_attachments("fix it\n\nAttached file: /a/b.log").unwrap(), "fix it");
-        assert_eq!(prompt_without_attachments("Attached file: /a/b.log").unwrap(), "b.log");
+        assert_eq!(prompt_without_attachments("fix it\n\nAttached file, readable with your tools even outside the workspace: /a/b.log").unwrap(), "fix it");
+        assert_eq!(prompt_without_attachments("Attached file, readable with your tools even outside the workspace: /a/b.log").unwrap(), "b.log");
+    }
+
+    #[test]
+    fn hides_background_task_notifications() {
+        assert!(visible_user_text("<task-notification>\n<task-id>a</task-id>").is_none());
+        assert_eq!(visible_user_text("a real question").unwrap(), "a real question");
     }
 }

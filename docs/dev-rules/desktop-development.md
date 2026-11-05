@@ -33,6 +33,8 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
   src-tauri/target/debug/bundle/macos/Tandem.app/Contents/MacOS/tandem
 ```
 
+测试脚本改过的 `localStorage` 要在结束时还原，调试版和正式版共用这份数据。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
+
 `TANDEM_DRIVE_ATTACH=路径:路径` 按拖入窗口的方式送入附件，系统文件对话框驱动不了时用它测试。
 
 脚本在窗口加载约 1 秒后执行，可以操作 DOM。设置这个变量时窗口会浮在最上层且不抢焦点，否则页面会被挂起。这段代码只编译进调试版（`#[cfg(debug_assertions)]`），正式版没有这个入口。

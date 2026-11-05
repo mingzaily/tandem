@@ -1,5 +1,5 @@
 import { Archive, ArchiveRestore, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
-import { revealTaskFolder } from '../lib/api';
+import { revealTaskFolder, type Agent } from '../lib/api';
 import { t } from '../lib/i18n';
 import { toggleArchived, togglePin, type TaskMeta } from '../lib/taskMeta';
 import { MENU_ROW } from './ComposerMenu';
@@ -13,13 +13,14 @@ export interface TaskMenuAnchor {
 
 interface TaskMenuProps {
   anchor: TaskMenuAnchor;
+  agent: Agent;
   meta: TaskMeta;
   onMetaChange: (meta: TaskMeta) => void;
   onRename: (id: string) => void;
   onClose: () => void;
 }
 
-export function TaskMenu({ anchor, meta, onMetaChange, onRename, onClose }: TaskMenuProps) {
+export function TaskMenu({ anchor, agent, meta, onMetaChange, onRename, onClose }: TaskMenuProps) {
   const { id } = anchor;
   const isPinned = meta.pins.includes(id);
   const isArchived = meta.archived.includes(id);
@@ -42,9 +43,9 @@ export function TaskMenu({ anchor, meta, onMetaChange, onRename, onClose }: Task
     {
       label: t('taskCopyResume'),
       icon: Copy,
-      run: () => void navigator.clipboard.writeText(`claude --resume ${id}`).catch(console.error),
+      run: () => void navigator.clipboard.writeText(agent === 'codex' ? `codex resume ${id}` : `claude --resume ${id}`).catch(console.error),
     },
-    { label: t('taskReveal'), icon: FolderOpen, run: () => void revealTaskFolder(id).catch(console.error) },
+    { label: t('taskReveal'), icon: FolderOpen, run: () => void revealTaskFolder(agent, id).catch(console.error) },
   ];
   return (
     <FloatingMenu x={anchor.x} y={anchor.y} label={t('taskMenu')} onClose={onClose}>

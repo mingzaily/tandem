@@ -10,6 +10,7 @@ use tokio::{
 };
 
 const TIMEOUT: Duration = Duration::from_secs(20);
+const EFFORTS_TIMEOUT: Duration = Duration::from_secs(3);
 const INITIALIZE_ID: &str = "tandem-initialize";
 const USAGE_ID: &str = "tandem-usage";
 
@@ -23,6 +24,8 @@ pub struct ModelOption {
     pub supports_effort: bool,
     pub supported_effort_levels: Vec<String>,
     pub supports_auto_mode: bool,
+    /// The level this model runs at when Tandem passes none.
+    pub default_effort: Option<String>,
 }
 
 /// `resets_at` is passed on as the CLI sent it: seconds in the stream, an ISO date from `get_usage`.
@@ -94,6 +97,47 @@ fn apply_line(line: &str, info: &mut CliInfo, seen: &mut (bool, bool)) -> bool {
     seen.0 && seen.1
 }
 
+/// Claude reports the effort it would use only for the current model, so this walks through them.
+/// The change lasts as long as this process and is saved nowhere. Each answer is awaited, because
+/// the next question would otherwise see the previous model.
+async fn read_default_efforts<W, R>(stdin: &mut W, lines: &mut tokio::io::Lines<R>, info: &mut CliInfo)
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    for model in info.models.iter_mut().filter(|model| model.supports_effort) {
+        let requests = [
+            ("tandem-set-model", json!({"subtype": "set_model", "model": model.value})),
+            ("tandem-get-settings", json!({"subtype": "get_settings"})),
+        ];
+        let mut settings = Value::Null;
+        for (id, body) in requests {
+            let line = format!("{}\n", json!({"type": "control_request", "request_id": id, "request": body}));
+            if stdin.write_all(line.as_bytes()).await.is_err() {
+                return;
+            }
+            loop {
+                let Ok(Some(answer)) = lines.next_line().await else {
+                    return;
+                };
+                let Ok(value) = serde_json::from_str::<Value>(&answer) else {
+                    continue;
+                };
+                let response = value.get("response").unwrap_or(&Value::Null);
+                if response.get("request_id").and_then(Value::as_str) == Some(id) {
+                    settings = response.clone();
+                    break;
+                }
+            }
+        }
+        model.default_effort = applied_effort(&settings).filter(|effort| model.supported_effort_levels.contains(effort));
+    }
+}
+
+fn applied_effort(settings: &Value) -> Option<String> {
+    settings.get("response")?.get("applied")?.get("effort")?.as_str().map(str::to_owned)
+}
+
 pub async fn read() -> Result<CliInfo, String> {
     let env = login_env::login_env().await;
     let program = login_env::find_in_path("claude", env.get("PATH"))
@@ -143,6 +187,10 @@ pub async fn read() -> Result<CliInfo, String> {
         }
     };
     let finished = tokio::time::timeout(TIMEOUT, reading).await;
+    if finished.is_ok() {
+        // Nice to have: without it the page says "default" instead of naming the level.
+        let _ = tokio::time::timeout(EFFORTS_TIMEOUT, read_default_efforts(&mut stdin, &mut lines, &mut info)).await;
+    }
     drop(stdin);
     let _ = child.kill().await;
     finished.map_err(|_| "claude did not answer in time".to_owned())?;
@@ -152,6 +200,13 @@ pub async fn read() -> Result<CliInfo, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_effort_a_model_would_use() {
+        let answer = json!({"subtype": "success", "response": {"applied": {"model": "m", "effort": "high"}}});
+        assert_eq!(applied_effort(&answer).as_deref(), Some("high"));
+        assert_eq!(applied_effort(&json!({"subtype": "error"})), None);
+    }
 
     #[test]
     fn collects_models_and_usage_from_both_answers() {

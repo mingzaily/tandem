@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
 import { buildRows, type Item, type TextItem, type ToolItem, type WorkGroup } from '../lib/items';
 import { describeTool, explorationSummary, formatDuration } from '../lib/tools';
+import { ZoomableImage } from './ImageLightbox';
 import { Markdown } from './Markdown';
 
 const BOTTOM_THRESHOLD_PX = 48;
@@ -113,7 +114,7 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
           {item.images?.length || item.files?.length ? (
             <div className="flex max-w-[488px] flex-wrap justify-end gap-2">
               {item.images?.map((src, index) => (
-                <img key={index} src={src} alt="" className="max-h-[160px] max-w-[240px] rounded-lg border border-[var(--msg-user-border)] object-contain" />
+                <ZoomableImage key={index} src={src} className="max-h-[160px] max-w-[240px] rounded-lg border border-[var(--msg-user-border)] object-contain" />
               ))}
               {item.files?.map((file) => (
                 <span
@@ -143,6 +144,17 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
             <Ban size={13} />
           </span>
           {t('interrupted')}
+        </div>
+      );
+    case 'compaction':
+      return (
+        <div role="separator" aria-label={t('compacted')} className="flex w-full select-none items-center gap-3 py-2">
+          <div className="h-px flex-1 bg-[var(--msg-tool-card-border)]" />
+          <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-[var(--msg-tool-card-border)] px-2.5 py-1 text-12 text-[var(--msg-tool-card-chevron)]">
+            <Layers size={12} aria-hidden className="shrink-0" />
+            {t('compacted')}
+          </div>
+          <div className="h-px flex-1 bg-[var(--msg-tool-card-border)]" />
         </div>
       );
     case 'thinking':

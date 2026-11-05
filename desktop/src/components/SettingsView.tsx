@@ -1,10 +1,33 @@
 import { ArrowLeft, Bot, FolderOpen, FolderPlus, Info, Palette, Settings, X, type LucideIcon } from 'lucide-react';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
-import { agentStatus, pickProject, type AgentStatus } from '../lib/api';
+import {
+  agentStatus,
+  discoverProjects,
+  installAgent,
+  loginAgent,
+  openExternal,
+  pickProject,
+  stopAgentJob,
+  type AgentStatus,
+  type DiscoveredProject,
+} from '../lib/api';
 import { t, type StringKey } from '../lib/i18n';
 import { projectName } from '../lib/items';
-import { MAX_UI_FONT_SIZE, MIN_UI_FONT_SIZE, type AppSettings, type LanguageSetting, type ThemeSetting } from '../lib/settings';
+import { loadAgentStatus, saveAgentStatus } from '../lib/preferences';
+import { AgentMark } from './AgentMark';
+import {
+  DARK_THEMES,
+  LIGHT_THEMES,
+  MAX_UI_FONT_SIZE,
+  MIN_UI_FONT_SIZE,
+  type AppSettings,
+  type LanguageSetting,
+  type ThemeChoice,
+  type ThemeSetting,
+} from '../lib/settings';
+
+const JOB_LINES = 8;
 
 type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'about';
 
@@ -103,11 +126,54 @@ const THEMES: { id: ThemeSetting; label: StringKey }[] = [
   { id: 'dark', label: 'themeDark' },
 ];
 
+/** A small picture drawn with the theme's own colors, because the tokens work on any element. */
+function ThemeSwatch({ theme }: { theme: ThemeChoice }) {
+  return (
+    <span
+      aria-hidden
+      data-theme={theme.id}
+      className={`relative block h-[60px] w-[92px] overflow-hidden rounded-[8px] border border-[var(--settings-theme-card-border)] bg-[var(--surface)] ${theme.isDark ? 'dark' : ''}`}
+    >
+      <span className="absolute inset-y-0 left-0 w-[24px] border-r border-[var(--border-default)] bg-[hsl(var(--sidebar))]" />
+      <span className="absolute left-[32px] top-[12px] h-[5px] w-[36px] rounded-full bg-[var(--text-primary)] opacity-70" />
+      <span className="absolute left-[32px] top-[23px] h-[5px] w-[50px] rounded-full bg-[var(--text-secondary)] opacity-40" />
+      <span className="absolute bottom-[7px] left-[30px] right-[6px] h-[13px] rounded-full border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)]" />
+      <span className="absolute bottom-[10px] right-[9px] size-[7px] rounded-full bg-[var(--send-btn-bg)]" />
+    </span>
+  );
+}
+
+function ThemeGroup({ title, themes, value, onChange }: { title: string; themes: ThemeChoice[]; value: string; onChange: (id: string) => void }) {
+  return (
+    <Section title={title}>
+      <div role="radiogroup" aria-label={title} className="flex flex-wrap gap-3 px-4 py-4">
+        {themes.map((theme) => (
+          <button
+            key={theme.id}
+            type="button"
+            role="radio"
+            aria-checked={value === theme.id}
+            onClick={() => onChange(theme.id)}
+            className={`flex w-[104px] flex-col items-center gap-1.5 rounded-xl p-1.5 text-12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
+              value === theme.id
+                ? 'bg-[var(--settings-menu-bg-selected)] font-medium text-[var(--text-primary)]'
+                : 'text-[var(--text-secondary)] hover:bg-[var(--settings-menu-bg-hover)]'
+            }`}
+          >
+            <ThemeSwatch theme={theme} />
+            <span className="w-full truncate text-center">{theme.name === 'Plain' ? t('themePlain') : theme.name}</span>
+          </button>
+        ))}
+      </div>
+    </Section>
+  );
+}
+
 function AppearanceTab({ settings, onChange }: TabProps) {
   return (
     <>
-      <Section title={t('themeSection')}>
-        <div role="radiogroup" aria-label={t('themeSection')} className="flex gap-3 px-4 py-4">
+      <Section title={t('modeSection')}>
+        <div role="radiogroup" aria-label={t('modeSection')} className="flex gap-3 px-4 py-4">
           {THEMES.map(({ id, label }) => (
             <button
               key={id}
@@ -127,6 +193,8 @@ function AppearanceTab({ settings, onChange }: TabProps) {
           ))}
         </div>
       </Section>
+      <ThemeGroup title={t('lightThemes')} themes={LIGHT_THEMES} value={settings.lightTheme} onChange={(lightTheme) => onChange({ ...settings, lightTheme })} />
+      <ThemeGroup title={t('darkThemes')} themes={DARK_THEMES} value={settings.darkTheme} onChange={(darkTheme) => onChange({ ...settings, darkTheme })} />
       <Section title={t('displaySection')}>
         <Row label={t('fontSizeLabel')} hint={t('fontSizeHint')}>
           <span className="flex items-center gap-3">
@@ -169,6 +237,15 @@ function GeneralTab({ settings, onChange }: TabProps) {
           <Chips label={t('languageLabel')} value={settings.language} options={languages} onChange={(language) => onChange({ ...settings, language })} />
         </Row>
       </Section>
+      <Section title={t('windowSection')}>
+        <Row label={t('keepInMenuBarLabel')} hint={t('keepInMenuBarHint')}>
+          <Switch label={t('keepInMenuBarLabel')} checked={settings.keepInMenuBar} onChange={(keepInMenuBar) => onChange({ ...settings, keepInMenuBar })} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('notifyLabel')} hint={t('notifyHint')}>
+          <Switch label={t('notifyLabel')} checked={settings.notifyWhenDone} onChange={(notifyWhenDone) => onChange({ ...settings, notifyWhenDone })} />
+        </Row>
+      </Section>
       <Section title={t('inputSection')}>
         <Row label={t('cmdEnterLabel')} hint={t('cmdEnterHint')}>
           <Switch
@@ -182,48 +259,160 @@ function GeneralTab({ settings, onChange }: TabProps) {
   );
 }
 
-const AGENT_NAMES: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' };
+const AGENT_NAMES: Record<AgentStatus['command'], string> = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' };
+const AGENT_BUTTON =
+  'inline-flex h-8 shrink-0 items-center rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+const LINK = /https?:\/\/\S+/;
+
+interface AgentJob {
+  command: AgentStatus['command'];
+  lines: string[];
+  isRunning: boolean;
+  failed: boolean;
+}
+
+function agentHint(agent: AgentStatus): string {
+  if (!agent.installed) return t('agentInstallHint');
+  const parts: (string | null)[] = [agent.version];
+  if (agent.login) {
+    parts.push(agent.login.loggedIn ? t('agentLoggedIn') : t('agentNotLoggedIn'));
+    if (agent.login.loggedIn) parts.push(agent.login.detail);
+  } else {
+    parts.push(t('agentPiHint'));
+  }
+  return parts.filter(Boolean).join(' · ');
+}
 
 function AgentsTab() {
-  const [agents, setAgents] = useState<AgentStatus[] | null>(null);
+  // Checking takes seconds, so the last result shows at once while a new one comes in.
+  const [agents, setAgents] = useState<AgentStatus[] | null>(loadAgentStatus);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let isCurrent = true;
+  const [job, setJob] = useState<AgentJob | null>(null);
+  const isMounted = useRef(true);
+
+  const refresh = useCallback(() => {
     agentStatus()
       .then((result) => {
-        if (isCurrent) setAgents(result);
+        saveAgentStatus(result);
+        if (isMounted.current) setAgents(result);
       })
       .catch((reason) => {
-        if (isCurrent) setError(String(reason));
+        if (isMounted.current) setError(String(reason));
       });
-    return () => {
-      isCurrent = false;
-    };
   }, []);
+
+  useEffect(() => {
+    isMounted.current = true;
+    refresh();
+    return () => {
+      isMounted.current = false;
+    };
+  }, [refresh]);
+
+  const run = (command: AgentStatus['command'], start: typeof installAgent) => {
+    setJob({ command, lines: [], isRunning: true, failed: false });
+    start(command, (event) => {
+      if (event.type === 'line') {
+        setJob((current) => current && { ...current, lines: [...current.lines, event.text].slice(-JOB_LINES) });
+        return;
+      }
+      setJob((current) => current && { ...current, isRunning: false, failed: !event.ok });
+      if (event.ok) setJob(null);
+      refresh();
+    }).catch((reason) => {
+      setJob((current) => current && { ...current, lines: [...current.lines, String(reason)], isRunning: false, failed: true });
+    });
+  };
+
   return (
     <Section title={t('agentsSection')}>
       {agents === null ? (
         <p className="px-4 py-4 text-13 text-[var(--text-secondary)]">{error ?? t('agentsChecking')}</p>
       ) : (
-        agents.map((agent, index) => (
-          <div key={agent.command}>
-            {index > 0 ? <div className={DIVIDER} /> : null}
-            <Row
-              label={AGENT_NAMES[agent.command] ?? agent.command}
-              hint={agent.path ? [agent.version, agent.path].filter(Boolean).join(' · ') : t('agentNotFound', { command: agent.command })}
-            >
-              <span className="text-12 text-[var(--text-secondary)]">
-                {agent.command !== 'pi' && agent.path ? t('agentConnected') : agent.path ? t('agentInstalledOnly') : t('agentMissing')}
-              </span>
-            </Row>
-          </div>
-        ))
+        agents.map((agent, index) => {
+          const jobHere = job?.command === agent.command ? job : null;
+          const link = jobHere?.lines.join('\n').match(LINK)?.[0];
+          return (
+            <div key={agent.command}>
+              {index > 0 ? <div className={DIVIDER} /> : null}
+              <div className={ROW}>
+                <span className="flex min-w-0 items-center gap-3">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-chip)] text-[var(--text-primary)]">
+                    <AgentMark agent={agent.command} size={16} />
+                  </span>
+                  <span className="flex min-w-0 flex-col gap-1">
+                    <span className={ROW_LABEL}>{AGENT_NAMES[agent.command]}</span>
+                    <span className={`${ROW_HINT} selectable [overflow-wrap:anywhere]`}>{agentHint(agent)}</span>
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {jobHere?.isRunning ? (
+                    <>
+                      {link ? (
+                        <button type="button" onClick={() => void openExternal(link)} className={AGENT_BUTTON}>
+                          {t('openLink')}
+                        </button>
+                      ) : null}
+                      <button type="button" onClick={() => void stopAgentJob()} className={AGENT_BUTTON}>
+                        {t('agentStop')}
+                      </button>
+                    </>
+                  ) : !agent.installed ? (
+                    <button type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)} className={AGENT_BUTTON}>
+                      {t('agentInstall')}
+                    </button>
+                  ) : agent.login ? (
+                    <button type="button" disabled={job?.isRunning} onClick={() => run(agent.command, loginAgent)} className={AGENT_BUTTON}>
+                      {agent.login.loggedIn ? t('agentRelogin') : t('agentLogin')}
+                    </button>
+                  ) : null}
+                </span>
+              </div>
+              {jobHere && jobHere.lines.length + (jobHere.failed ? 1 : 0) > 0 ? (
+                <div className="selectable px-4 pb-4 font-mono text-12 leading-[1.5] text-[var(--text-secondary)] [overflow-wrap:anywhere]">
+                  {jobHere.lines.map((line, lineIndex) => (
+                    <div key={lineIndex}>{line}</div>
+                  ))}
+                  {jobHere.failed ? <div className="mt-1 font-sans text-[var(--text-danger)]">{t('agentJobFailed')}</div> : null}
+                </div>
+              ) : null}
+            </div>
+          );
+        })
       )}
     </Section>
   );
 }
 
-function ProjectsTab({ extraProjects, onExtraProjectsChange, taskProjects }: ProjectsProps) {
+const PROJECT_BUTTON =
+  'inline-flex h-8 shrink-0 items-center gap-2 rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+
+function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir }: TabProps & ProjectsProps) {
+  const [discovered, setDiscovered] = useState<DiscoveredProject[] | null>(null);
+  useEffect(() => {
+    let isCurrent = true;
+    discoverProjects()
+      .then((result) => {
+        if (isCurrent) setDiscovered(result);
+      })
+      .catch((error) => {
+        console.error(error);
+        if (isCurrent) setDiscovered([]);
+      });
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
+  const remaining = (discovered ?? []).filter((project) => !extraProjects.includes(project.cwd));
+  const changeConversationDir = (next: string | null) => {
+    const previous = settings.conversationDir;
+    const past = previous && previous !== next ? [...settings.pastConversationDirs, previous] : settings.pastConversationDirs;
+    onChange({
+      ...settings,
+      conversationDir: next,
+      pastConversationDirs: [...new Set(past)].filter((dir) => dir !== next),
+    });
+  };
   return (
     <>
       <Section title={t('addedProjects')}>
@@ -255,23 +444,55 @@ function ProjectsTab({ extraProjects, onExtraProjectsChange, taskProjects }: Pro
                 })
                 .catch(console.error);
             }}
-            className="inline-flex h-8 items-center gap-2 rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+            className={PROJECT_BUTTON}
           >
             <FolderPlus size={14} strokeWidth={1.8} aria-hidden />
             {t('addProject')}
           </button>
         </div>
       </Section>
-      {taskProjects.length > 0 ? (
-        <Section title={t('taskProjects')}>
-          {taskProjects.map((cwd, index) => (
-            <div key={cwd}>
-              {index > 0 ? <div className={DIVIDER} /> : null}
-              <Row label={projectName(cwd)} hint={cwd} />
-            </div>
-          ))}
-        </Section>
-      ) : null}
+      <Section title={t('discoveredProjects')}>
+        {discovered === null ? <Row label={t('discoveredChecking')} /> : null}
+        {discovered !== null && remaining.length === 0 ? <Row label={t('discoveredNone')} hint={t('discoveredProjectsHint')} /> : null}
+        {remaining.map((project, index) => (
+          <div key={project.cwd}>
+            {index > 0 ? <div className={DIVIDER} /> : null}
+            <Row label={projectName(project.cwd)} hint={project.cwd}>
+              <button
+                type="button"
+                onClick={() => onExtraProjectsChange([...extraProjects, project.cwd])}
+                className={PROJECT_BUTTON}
+              >
+                {t('joinProject')}
+              </button>
+            </Row>
+          </div>
+        ))}
+      </Section>
+      <Section title={t('conversationWorkspace')}>
+        <Row label={settings.conversationDir ?? defaultConversationDir} hint={t('conversationWorkspaceHint')} />
+        <div className={DIVIDER} />
+        <div className="flex gap-2 px-4 py-3">
+          <button
+            type="button"
+            onClick={() => {
+              pickProject()
+                .then((dir) => {
+                  if (dir) changeConversationDir(dir);
+                })
+                .catch(console.error);
+            }}
+            className={PROJECT_BUTTON}
+          >
+            {t('conversationChange')}
+          </button>
+          {settings.conversationDir ? (
+            <button type="button" onClick={() => changeConversationDir(null)} className={PROJECT_BUTTON}>
+              {t('conversationReset')}
+            </button>
+          ) : null}
+        </div>
+      </Section>
     </>
   );
 }
@@ -306,7 +527,7 @@ interface TabProps {
 interface ProjectsProps {
   extraProjects: string[];
   onExtraProjectsChange: (projects: string[]) => void;
-  taskProjects: string[];
+  defaultConversationDir: string;
 }
 
 interface SettingsViewProps extends TabProps, ProjectsProps {
@@ -314,7 +535,7 @@ interface SettingsViewProps extends TabProps, ProjectsProps {
   onBack: () => void;
 }
 
-export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, taskProjects, version, onBack }: SettingsViewProps) {
+export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack }: SettingsViewProps) {
   const [tab, setTab] = useState<TabId>('general');
   const active = TABS.find(({ id }) => id === tab) ?? TABS[0];
   return (
@@ -360,7 +581,7 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
           {tab === 'appearance' ? <AppearanceTab settings={settings} onChange={onChange} /> : null}
           {tab === 'agents' ? <AgentsTab /> : null}
           {tab === 'projects' ? (
-            <ProjectsTab extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} taskProjects={taskProjects} />
+            <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} />
           ) : null}
           {tab === 'about' ? <AboutTab version={version} /> : null}
         </div>

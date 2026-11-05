@@ -20,7 +20,9 @@ export type ToolItem = Timed & {
   isError: boolean;
   truncated: boolean;
 };
-export type Item = UserItem | TextItem | ToolItem;
+/** The CLI summarised the conversation here. */
+export type CompactionItem = Timed & { type: 'compaction' };
+export type Item = UserItem | TextItem | ToolItem | CompactionItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
 export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
@@ -60,6 +62,10 @@ export function buildItems(messages: Message[]): Item[] {
   };
   for (const message of messages) {
     const at = timeOf(message.timestamp);
+    if (message.kind === 'compaction') {
+      items.push({ type: 'compaction', id: message.id, at });
+      continue;
+    }
     if (message.kind === 'user' && message.image) {
       if (images.length === 0) imagesId = message.id;
       images.push(message.image);
@@ -216,6 +222,12 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
       turn = [];
       startAt = item.at;
       rows.push(item);
+    } else if (item.type === 'compaction') {
+      // Work on either side stays apart, so the divider is never folded away.
+      if (turn.length > 0) pushTurn(rows, turn, startAt);
+      turn = [];
+      startAt = item.at;
+      rows.push(item);
     } else {
       turn.push(item);
     }
@@ -225,10 +237,41 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
   return rows;
 }
 
+/** Saved projects keep their order. One the order has not seen yet comes first, so it gets noticed. */
+export function orderProjects<T>(groups: [string, T][], order: string[]): [string, T][] {
+  const rank = new Map(order.map((cwd, index) => [cwd, index]));
+  const known = groups.filter(([cwd]) => rank.has(cwd));
+  known.sort(([a], [b]) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
+  return [...groups.filter(([cwd]) => !rank.has(cwd)), ...known];
+}
+
+/** The order after moving one project so it lands before the row now at `to`. */
+export function moveProject(cwds: string[], cwd: string, to: number): string[] {
+  const from = cwds.indexOf(cwd);
+  if (from < 0) return cwds;
+  const next = cwds.filter((item) => item !== cwd);
+  next.splice(from < to ? to - 1 : to, 0, cwd);
+  return next;
+}
+
+/** Stands in for a project on the new task page: the folder is created when the task starts. */
+export const CONVERSATION_CWD = 'tandem:conversation';
+
 const WORKTREE_FOLDER = '/.claude/worktrees/';
 
 /** A task in a worktree belongs to the project the worktree was made from. */
 export const projectRoot = (cwd: string) => cwd.split(WORKTREE_FOLDER)[0];
+
+export function isUnder(cwd: string, root: string): boolean {
+  const base = root.replace(/\/+$/, '');
+  return cwd === base || cwd.startsWith(`${base}/`);
+}
+
+/** The added project a task belongs to, the deepest one when projects are nested. */
+export function groupRoot(cwd: string, roots: string[]): string {
+  const matches = roots.filter((root) => isUnder(cwd, root));
+  return matches.sort((first, second) => second.length - first.length)[0] ?? projectRoot(cwd);
+}
 export const worktreeName = (cwd: string): string | null => cwd.split(WORKTREE_FOLDER)[1]?.split('/')[0] ?? null;
 
 export function projectName(cwd: string): string {

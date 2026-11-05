@@ -49,6 +49,8 @@ claude -p --input-format stream-json --output-format stream-json \
 
 **读取**：`thread/list`（`useStateDbOnly`，`sourceKinds` 去掉子 Agent）、`thread/items/list`（倒序分页）、`model/list`、`account/rateLimits/read`。这个进程没有加载线程，不持有写入锁，空闲 60 秒退出。
 
+**分叉断链的例外**：分叉出来的任务，父任务的 rollout 不在了时，`thread/items/list` 会报 `invalid paginated history lineage … missing source rollout`。这时只读它自己的 rollout（`event_msg` 里的 `item_completed`，字段形状和官方接口不同，由 `normalized_item` 转换），分叉之前的历史缺失，分叉之后的内容正常显示。这是上面"不解析它的文件"唯一的例外，只在这个报错时走。
+
 **运行**：`initialize` → `thread/start` 或 `thread/resume` → `turn/start`，然后处理 `item/*` 通知，到 `turn/completed` 为止（失败也是它，看 `turn.status`）。之后结束进程释放锁。还没跑过一轮的线程没有 rollout，不能 resume。
 
 **请求**：`item/commandExecution/requestApproval`、`item/fileChange/requestApproval`、`item/tool/requestUserInput` 显示成卡片。其他请求也要回复，否则这一轮会一直等。
@@ -57,9 +59,35 @@ claude -p --input-format stream-json --output-format stream-json \
 
 **单写入者**：`thread-writer-locks/<id>.lock` 被 flock 持有就是开在别处。Codex 会直接拒绝续接，所以不提供"仍要发送"。
 
+## Pi
+
+**位置**：`$PI_CODING_AGENT_DIR/sessions/--<工作目录>--/<时间>_<uuid>.jsonl`，默认是 `~/.pi/agent`。只读顶层文件，里面的子目录是子 Agent 的运行记录。有的文件是符号链接，要按真实路径去重。第一行是 `session` 头，带 `cwd`。
+
+**消息内容**：每条有 `id` 和 `parentId`，最后一条就是当前位置，沿父节点回溯得到当前分支。角色是 `user`、`assistant`、`toolResult`。标题优先取最后一条 `session_info.name`，其次是首条提示词。
+
+**驱动**：`pi --mode rpc`（`--session <路径>` 续接，`--session-id <uuid>` 新建），每轮一个进程。发 `prompt`，处理事件，到 `agent_settled` 为止，然后关闭 stdin 让它写完退出。停止发 `abort`。
+
+**模型列表**：`pi --mode rpc --no-session --no-extensions`，0.3 秒，不连用户的 MCP。带扩展启动要 2.8 秒。
+
+**对话框**：扩展的 `confirm`、`select`、`input`、`editor` 显示成卡片，其他 `extension_ui_request` 只影响它自己的显示，忽略。
+
 ## 已知限制
 
-见 [路线图](../roadmap.md)。主要是：Pi 还没接入。
+见 [路线图](../roadmap.md)。见文件。
+
+## 压缩
+
+CLI 压缩对话时写的摘要是给模型看的，不显示内容，页面只画一条“对话已压缩”分隔线（`MessageKind::Compaction`）。来源：Claude 的 `isCompactSummary` 行，这行也不能当标题；Codex 的 `contextCompaction` 条目；Pi 的 `compaction` 条目。
+
+## 默认推理强度
+
+用户没选强度时不传参数，由 CLI 自己决定，但页面要显示实际的级别，不写“默认”两个字了事。每个模型的来源：
+
+- Claude：`initialize` 不报。对每个模型依次发 `set_model`、`get_settings`，读 `applied.effort`。要等上一条的回复再发下一条，否则读到的是上一个模型的。这个切换只在这个临时进程里，不落盘。
+- Codex：`config/read` 的 `model_reasoning_effort`，模型支持时优先；否则用 `model/list` 的 `defaultReasoningEffort`。
+- Pi：`get_state` 的 `thinkingLevel`，模型支持时才算。
+
+读不到时滑块多一档“默认”。滑到模型自己的默认档等于不选，CLI 的配置继续生效。
 
 ## 接入新 CLI 时
 

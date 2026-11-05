@@ -15,10 +15,10 @@ use crate::attachments::Prepared;
 use crate::cli_info::{CliInfo, ModelOption, UsageWindow, UsageWindows};
 use crate::login_env;
 use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, TurnOptions};
-use crate::sessions::{Agent, Message, MessageKind, TaskContent, TaskContext, TaskSummary};
+use crate::sessions::{Agent, DiscoveredProject, Message, MessageKind, TaskContent, TaskContext, TaskSummary};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -40,6 +40,9 @@ const WEEK_MINUTES: u64 = 10080;
 const SOURCE_KINDS: [&str; 4] = ["cli", "vscode", "exec", "appServer"];
 const METHOD_NOT_FOUND: i64 = -32601;
 const DEFAULT_MODEL: &str = "default";
+/// A fork whose parent's file is gone. The official read refuses the whole thread, though its own
+/// file is still there.
+const BROKEN_LINEAGE: &str = "history lineage";
 
 struct Conn {
     child: Child,
@@ -137,6 +140,8 @@ fn rpc_result(value: &Value) -> Result<Value, String> {
 struct ReaderState {
     conn: Option<Conn>,
     last_used: Option<Instant>,
+    /// Where each listed thread's file is, to tell when it changed without starting a process.
+    paths: HashMap<String, PathBuf>,
 }
 
 /// The read-only server, started when needed. It exits when idle, so it costs nothing at rest.
@@ -180,27 +185,70 @@ impl Reader {
         });
     }
 
-    pub async fn list_tasks(&self) -> Result<Vec<TaskSummary>, String> {
-        if !is_installed().await {
-            return Ok(Vec::new());
-        }
-        let params = json!({
+    async fn list_threads(&self, cwds: Option<&[String]>) -> Result<Vec<Value>, String> {
+        let mut params = json!({
             "limit": LIST_LIMIT,
             "useStateDbOnly": true,
             "sortKey": "updated_at",
             "sourceKinds": SOURCE_KINDS,
         });
+        if let Some(cwds) = cwds {
+            params["cwd"] = json!(cwds);
+        }
         let mut results = self.call_all(vec![("thread/list", params)]).await?;
-        let result = results.pop().unwrap_or(Value::Null);
-        Ok(result
-            .get("data")
-            .and_then(Value::as_array)
-            .map(|threads| threads.iter().filter_map(thread_summary).collect())
+        Ok(results
+            .pop()
+            .and_then(|result| result.get("data").and_then(Value::as_array).cloned())
             .unwrap_or_default())
+    }
+
+    /// Codex filters by exact folder, so `cwds` has to name each one.
+    pub async fn list_tasks(&self, cwds: &[String]) -> Result<Vec<TaskSummary>, String> {
+        if cwds.is_empty() || !is_installed().await {
+            return Ok(Vec::new());
+        }
+        let threads = self.list_threads(Some(cwds)).await?;
+        let mut state = self.0.lock().await;
+        for thread in &threads {
+            if let (Some(id), Some(path)) = (
+                thread.get("id").and_then(Value::as_str),
+                thread.get("path").and_then(Value::as_str),
+            ) {
+                state.paths.insert(id.to_owned(), path.into());
+            }
+        }
+        Ok(threads.iter().filter_map(thread_summary).collect())
+    }
+
+    pub async fn discover_projects(&self) -> Result<Vec<DiscoveredProject>, String> {
+        if !is_installed().await {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .list_threads(None)
+            .await?
+            .iter()
+            .filter_map(thread_summary)
+            .map(|task| DiscoveredProject { cwd: task.cwd, last_active_ms: task.updated_at_ms })
+            .collect())
+    }
+
+    pub async fn task_file(&self, id: &str) -> Option<PathBuf> {
+        self.0.lock().await.paths.get(id).cloned()
     }
 
     pub async fn read_task(&self, id: &str) -> Result<TaskContent, String> {
         require_uuid(id)?;
+        match self.read_items(id).await {
+            Err(error) if error.contains(BROKEN_LINEAGE) => {
+                let path = self.task_file(id).await.ok_or(error)?;
+                read_own_rollout(&path)
+            }
+            result => result,
+        }
+    }
+
+    async fn read_items(&self, id: &str) -> Result<TaskContent, String> {
         let mut newest_first = Vec::new();
         let mut cursor = Value::Null;
         loop {
@@ -233,15 +281,113 @@ impl Reader {
             return Ok(CliInfo { models: Vec::new(), usage: None });
         }
         let mut results = self
-            .call_all(vec![("model/list", json!({"limit": 50})), ("account/rateLimits/read", json!({}))])
+            .call_all(vec![
+                ("model/list", json!({"limit": 50})),
+                ("account/rateLimits/read", json!({})),
+                ("config/read", json!({"includeLayers": false})),
+            ])
             .await?;
+        let config = results.pop().unwrap_or(Value::Null);
         let limits = results.pop().unwrap_or(Value::Null);
         let models = results.pop().unwrap_or(Value::Null);
+        let config_effort = config.pointer("/config/model_reasoning_effort").and_then(Value::as_str);
         Ok(CliInfo {
-            models: model_options(&models),
+            models: model_options(&models, config_effort),
             usage: limits.get("rateLimits").map(usage_windows),
         })
     }
+}
+
+/// `SomeName` and `some_name` from the file, as the `someName` the app server would report.
+fn camel_case(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    let mut upper_next = false;
+    for (index, c) in name.chars().enumerate() {
+        if c == '_' {
+            upper_next = true;
+        } else if upper_next {
+            result.extend(c.to_uppercase());
+            upper_next = false;
+        } else if index == 0 {
+            result.extend(c.to_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+fn normalized_item(item: &Value) -> Value {
+    let Some(object) = item.as_object() else {
+        return item.clone();
+    };
+    let mut result = Map::new();
+    for (key, value) in object {
+        result.insert(camel_case(key), value.clone());
+    }
+    for block in result.get_mut("content").and_then(Value::as_array_mut).into_iter().flatten() {
+        if let Some(kind) = block.get("type").and_then(Value::as_str) {
+            let kind = camel_case(kind);
+            block["type"] = json!(kind);
+        }
+    }
+    if let Some(kind) = result.get("type").and_then(Value::as_str) {
+        let kind = camel_case(kind);
+        result.insert("type".to_owned(), json!(kind));
+    }
+    // A few fields differ in shape as well as in name.
+    if result.get("type").and_then(Value::as_str) == Some("agentMessage") && !result.contains_key("text") {
+        let text = block_text(result.get("content"));
+        result.insert("text".to_owned(), json!(text));
+    }
+    if let Some(summary) = result.get("summaryText") {
+        let summary = json!([block_text(Some(summary))]);
+        result.insert("summary".to_owned(), summary);
+    }
+    if let Some(changes) = result.get("changes").and_then(Value::as_object) {
+        let list: Vec<Value> = changes
+            .iter()
+            .map(|(path, change)| json!({"path": path, "diff": rollout_diff(change)}))
+            .collect();
+        result.insert("changes".to_owned(), Value::Array(list));
+    }
+    Value::Object(result)
+}
+
+/// A new file carries its whole text instead of a diff, so every line counts as added.
+fn rollout_diff(change: &Value) -> String {
+    if let Some(diff) = change.get("unified_diff").or_else(|| change.get("diff")).and_then(Value::as_str) {
+        return diff.to_owned();
+    }
+    let content = change.get("content").and_then(Value::as_str).unwrap_or_default();
+    content.lines().map(|line| format!("+{line}\n")).collect()
+}
+
+fn block_text(blocks: Option<&Value>) -> String {
+    blocks
+        .and_then(Value::as_array)
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|block| block.as_str().or_else(|| block.get("text").and_then(Value::as_str)))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default()
+}
+
+/// The thread's own part of the history, read from its file because the official read refused it.
+fn read_own_rollout(path: &Path) -> Result<TaskContent, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let items: Vec<Value> = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line.pointer("/payload/type").and_then(Value::as_str) == Some("item_completed"))
+        .filter_map(|line| line.pointer("/payload/item").map(normalized_item))
+        .collect();
+    let start = items.len().saturating_sub(MAX_ITEMS);
+    let messages = items[start..].iter().flat_map(item_messages).collect();
+    Ok(TaskContent { messages, context: None })
 }
 
 async fn is_installed() -> bool {
@@ -288,7 +434,16 @@ fn thread_summary(thread: &Value) -> Option<TaskSummary> {
     })
 }
 
-fn model_options(result: &Value) -> Vec<ModelOption> {
+/// The user's config picks the level for every model that has it, and each model has its own otherwise.
+fn default_effort(model: &Value, config_effort: Option<&str>, levels: &[String]) -> Option<String> {
+    let own = model.get("defaultReasoningEffort").and_then(Value::as_str);
+    config_effort
+        .filter(|effort| levels.iter().any(|level| level == effort))
+        .or(own.filter(|effort| levels.iter().any(|level| level == effort)))
+        .map(str::to_owned)
+}
+
+fn model_options(result: &Value, config_effort: Option<&str>) -> Vec<ModelOption> {
     let Some(models) = result.get("data").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -306,6 +461,7 @@ fn model_options(result: &Value) -> Vec<ModelOption> {
             description: model.get("description").and_then(Value::as_str).unwrap_or_default().to_owned(),
             resolved_model: id.to_owned(),
             supports_effort: !levels.is_empty(),
+            default_effort: default_effort(model, config_effort, &levels),
             supported_effort_levels: levels,
             supports_auto_mode: true,
         })
@@ -397,6 +553,18 @@ struct ToolCall {
     result: Option<(String, bool)>,
 }
 
+/// The path, and line counts from the patch when there is one, since Codex sends no before and after.
+fn file_change_input(change: &Value) -> String {
+    let path = change.get("path");
+    let Some(diff) = change.get("diff").and_then(Value::as_str).filter(|diff| !diff.is_empty()) else {
+        return json!({"file_path": path}).to_string();
+    };
+    let is_change = |line: &&str, mark: char, header: &str| line.starts_with(mark) && !line.starts_with(header);
+    let added = diff.lines().filter(|line| is_change(line, '+', "+++")).count();
+    let removed = diff.lines().filter(|line| is_change(line, '-', "---")).count();
+    json!({"file_path": path, "added": added, "removed": removed}).to_string()
+}
+
 fn file_change_calls(item: &Value, id: &str) -> Vec<ToolCall> {
     let status = item.get("status").and_then(Value::as_str).unwrap_or_default();
     let is_error = matches!(status, "failed" | "declined");
@@ -410,7 +578,7 @@ fn file_change_calls(item: &Value, id: &str) -> Vec<ToolCall> {
                 .map(|(index, change)| ToolCall {
                     id: format!("{id}:{index}"),
                     name: "Edit".to_owned(),
-                    input: json!({"file_path": change.get("path")}).to_string(),
+                    input: file_change_input(change),
                     result: finished.then(|| {
                         (change.get("diff").and_then(Value::as_str).unwrap_or(status).to_owned(), is_error)
                     }),
@@ -469,9 +637,11 @@ fn tool_calls(item: &Value) -> Vec<ToolCall> {
     }
 }
 
+/// Summaries arrive as Markdown headings in bold, and this row shows plain text.
 fn reasoning_text(item: &Value) -> String {
     let summary = strings(item.get("summary"));
-    if summary.trim().is_empty() { strings(item.get("content")) } else { summary }
+    let text = if summary.trim().is_empty() { strings(item.get("content")) } else { summary };
+    text.replace("**", "")
 }
 
 fn item_messages(item: &Value) -> Vec<Message> {
@@ -486,6 +656,7 @@ fn item_messages(item: &Value) -> Vec<Message> {
             let text = reasoning_text(item);
             if text.trim().is_empty() { Vec::new() } else { vec![message(id, MessageKind::Thinking, text)] }
         }
+        Some("contextCompaction") => vec![message(id, MessageKind::Compaction, String::new())],
         _ => tool_calls(item).into_iter().flat_map(tool_messages).collect(),
     }
 }
@@ -660,7 +831,10 @@ struct TurnState {
 fn notification_events(method: &str, params: &Value, state: &mut TurnState) -> Vec<TurnEvent> {
     match method {
         "item/agentMessage/delta" => delta_event(params).map(|text| TurnEvent::TextDelta { text }).into_iter().collect(),
-        "item/reasoning/summaryTextDelta" => delta_event(params).map(|text| TurnEvent::ThinkingDelta { text }).into_iter().collect(),
+        "item/reasoning/summaryTextDelta" => delta_event(params)
+            .map(|text| TurnEvent::ThinkingDelta { text: text.replace("**", "") })
+            .into_iter()
+            .collect(),
         "item/started" | "item/completed" => item_events(method == "item/completed", params.get("item").unwrap_or(&Value::Null), state),
         "thread/tokenUsage/updated" => token_events(params, state),
         "account/rateLimits/updated" => params
@@ -977,10 +1151,19 @@ mod tests {
             {"id": "b", "displayName": "B", "hidden": false, "isDefault": false, "description": "", "supportedReasoningEfforts": [{"reasoningEffort": "low"}]},
             {"id": "a", "displayName": "A", "hidden": false, "isDefault": true, "description": "", "supportedReasoningEfforts": []},
             {"id": "h", "displayName": "H", "hidden": true, "isDefault": false, "description": "", "supportedReasoningEfforts": []},
-        ]}));
+        ]}), None);
         let values: Vec<&str> = options.iter().map(|option| option.value.as_str()).collect();
         assert_eq!(values, ["default", "b", "a"]);
         assert_eq!(options[0].resolved_model, "a");
+    }
+
+    #[test]
+    fn the_config_picks_the_default_effort_when_the_model_has_it() {
+        let model = json!({"defaultReasoningEffort": "low"});
+        let levels = ["low".to_owned(), "max".to_owned()];
+        assert_eq!(default_effort(&model, Some("max"), &levels).as_deref(), Some("max"));
+        assert_eq!(default_effort(&model, Some("xhigh"), &levels).as_deref(), Some("low"));
+        assert_eq!(default_effort(&model, None, &levels).as_deref(), Some("low"));
     }
 
     #[test]
@@ -1033,5 +1216,45 @@ mod tests {
         let TurnEvent::PermissionRequest { tool_name, input, .. } = event else { panic!("expected a request") };
         assert_eq!(tool_name, "Edit");
         assert!(input.contains("/a.rs"));
+    }
+
+    #[test]
+    fn counts_patch_lines_without_the_file_headers() {
+        let change = json!({"path": "/a.rs", "diff": "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1,2 @@\n-old\n+new\n+more\n"});
+        let input: Value = serde_json::from_str(&file_change_input(&change)).unwrap();
+        assert_eq!((input["added"].as_u64(), input["removed"].as_u64()), (Some(2), Some(1)));
+        let bare: Value = serde_json::from_str(&file_change_input(&json!({"path": "/a.rs", "diff": ""}))).unwrap();
+        assert!(bare.get("added").is_none());
+    }
+
+    #[test]
+    fn reasoning_summaries_lose_their_bold_markers() {
+        let thought = json!({"type": "reasoning", "summary": ["**Checking** **things**"]});
+        assert_eq!(reasoning_text(&thought), "Checking things");
+    }
+
+    #[test]
+    fn reads_a_fork_from_its_own_file_when_its_parent_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let lines = [
+            json!({"type": "session_meta", "payload": {"id": "a"}}),
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "UserMessage", "id": "u", "content": [{"type": "Text", "text": "hello"}]}}}),
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "CommandExecution", "id": "c", "command": "ls", "status": "completed", "exit_code": 2, "aggregated_output": "boom"}}}),
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "AgentMessage", "id": "m", "content": [{"type": "Text", "text": "done"}]}}}),
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "Reasoning", "id": "r", "summary_text": ["**why**"], "raw_content": []}}}),
+            json!({"type": "event_msg", "payload": {"type": "item_completed", "item": {"type": "FileChange", "id": "f", "status": "completed", "changes": {"/new.md": {"type": "add", "content": "one\ntwo\n"}}}}}),
+            json!({"type": "event_msg", "payload": {"type": "token_count"}}),
+        ];
+        let text: Vec<String> = lines.iter().map(Value::to_string).collect();
+        std::fs::write(&path, text.join("\n") + "\n{half").unwrap();
+        let messages = read_own_rollout(&path).unwrap().messages;
+        assert_eq!(messages[0].text, "hello");
+        assert_eq!(messages[1].tool_name.as_deref(), Some("Bash"));
+        assert_eq!((messages[2].text.as_str(), messages[2].is_error), ("boom", true));
+        assert_eq!(messages[3].text, "done");
+        assert_eq!(messages[4].text, "why");
+        let edit: Value = serde_json::from_str(&messages[5].text).unwrap();
+        assert_eq!((edit["file_path"].as_str(), edit["added"].as_u64()), (Some("/new.md"), Some(2)));
     }
 }

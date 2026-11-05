@@ -48,7 +48,10 @@ export function resetTimeMs(window: UsageWindow): number | null {
 }
 
 /** "4小时 剩余 97%": how long until the window resets, and how much of it is left. */
-export function describeUsage(window: UsageWindow, now: number): { text: string; low: boolean } | null {
+export function describeUsage(
+  window: UsageWindow,
+  now: number,
+): { text: string; low: boolean; remaining: number; resetIn: string } | null {
   const at = resetTimeMs(window);
   if (at === null) return null;
   const minutes = Math.max(1, Math.floor((at - now) / 60_000));
@@ -61,7 +64,12 @@ export function describeUsage(window: UsageWindow, now: number): { text: string;
         ? t('windowHours', { count: String(hours) })
         : t('windowMinutes', { count: String(minutes) });
   const remaining = Math.round(100 - Math.min(100, Math.max(0, window.usedPercent)));
-  return { text: t('usageRemaining', { window: label, percent: String(remaining) }), low: remaining <= 20 };
+  return {
+    text: t('usageRemaining', { window: label, percent: String(remaining) }),
+    low: remaining <= 20,
+    remaining,
+    resetIn: label,
+  };
 }
 
 export function contextPercent(usedTokens: number, windowTokens: number): number {

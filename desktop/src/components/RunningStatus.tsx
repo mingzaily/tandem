@@ -46,7 +46,7 @@ export function RunningStatus({ status, startedAt, outputTokens, activity }: Run
   }, [status, activity]);
 
   return (
-    <div className="grid select-none grid-cols-[minmax(0,1fr)_auto] items-center px-2 py-[6px]">
+    <div className="grid min-h-8 select-none grid-cols-[minmax(0,1fr)_auto] items-center px-2">
       <div key={cycle} onAnimationEnd={onBreathEnd} className="status-bar-shimmer flex min-w-0 items-center gap-[6px]">
         <Sparkles size={14} aria-hidden className="shrink-0 -translate-y-px" />
         <span role="status" className="truncate text-13 font-medium">

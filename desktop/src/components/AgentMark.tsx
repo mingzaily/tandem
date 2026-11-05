@@ -1,5 +1,5 @@
 import type { Agent } from '../lib/api';
-import { CLAUDE_CODE_MARK_PATH, CODEX_FLOWER_PATH, CODEX_PROMPT_PATH } from '../lib/brandMarks';
+import { CLAUDE_CODE_MARK_PATH, CODEX_FLOWER_PATH, CODEX_PROMPT_PATH, PI_MARK_PATHS } from '../lib/brandMarks';
 
 interface AgentMarkProps {
   agent?: Agent;
@@ -10,7 +10,13 @@ interface AgentMarkProps {
 export function AgentMark({ agent = 'claude', size = 12, className }: AgentMarkProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden>
-      {agent === 'codex' ? (
+      {agent === 'pi' ? (
+        <g fill="none" stroke="currentColor" strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round">
+          {PI_MARK_PATHS.map((path) => (
+            <path key={path} d={path} />
+          ))}
+        </g>
+      ) : agent === 'codex' ? (
         <>
           <path d={CODEX_FLOWER_PATH} fill="none" stroke="currentColor" strokeWidth={1.7} />
           <path d={CODEX_PROMPT_PATH} fill="currentColor" stroke="currentColor" strokeWidth={0.4} />

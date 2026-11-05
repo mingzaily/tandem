@@ -1,8 +1,10 @@
 use crate::sessions::Agent;
-use crate::{agents, attachments, cli_info, codex, git_info, runner, sessions, writers};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use crate::{agents, attachments, cli_info, codex, conversations, git_info, pi, runner, sessions, tray, writers};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::{ipc::Channel, AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
+
+const CODEX_BUSY_WINDOW: Duration = Duration::from_secs(20);
 
 pub struct StartedAt(pub Instant);
 
@@ -15,9 +17,9 @@ async fn blocking<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub async fn list_tasks(window: WebviewWindow) -> Result<Vec<sessions::TaskSummary>, String> {
+pub async fn list_tasks(window: WebviewWindow, roots: Vec<String>) -> Result<Vec<sessions::TaskSummary>, String> {
     let started = Instant::now();
-    let tasks = blocking(|| sessions::list_tasks(&sessions::claude_projects_dir()?)).await?;
+    let tasks = blocking(move || sessions::list_tasks(&sessions::claude_projects_dir()?, &roots)).await?;
     trace(&window, &format!("list_tasks count={} took_ms={}", tasks.len(), started.elapsed().as_millis()));
     Ok(tasks)
 }
@@ -52,6 +54,10 @@ pub async fn send_turn(
         Agent::Codex => {
             let request = codex::TurnRequest { task_id, cwd, prompt, attachments: prepared, options };
             codex::send_turn(runs.inner(), request, on_event).await
+        }
+        Agent::Pi => {
+            let request = codex::TurnRequest { task_id, cwd, prompt, attachments: prepared, options };
+            pi::send_turn(runs.inner(), request, on_event).await
         }
     }
 }
@@ -98,6 +104,7 @@ pub async fn reveal_task_folder(reader: State<'_, codex::Reader>, agent: Agent, 
             .await?
         }
         Agent::Codex => reader.task_cwd(&id).await?,
+        Agent::Pi => blocking(move || pi::task_cwd(&id)).await?,
     };
     std::process::Command::new("open")
         .arg(cwd)
@@ -107,8 +114,64 @@ pub async fn reveal_task_folder(reader: State<'_, codex::Reader>, agent: Agent, 
 }
 
 #[tauri::command]
-pub async fn list_codex_tasks(reader: State<'_, codex::Reader>) -> Result<Vec<sessions::TaskSummary>, String> {
-    reader.list_tasks().await
+pub async fn list_codex_tasks(
+    reader: State<'_, codex::Reader>,
+    roots: Vec<String>,
+    conversation_roots: Vec<String>,
+) -> Result<Vec<sessions::TaskSummary>, String> {
+    let cwds = blocking(move || Ok(conversations::expand_roots(roots, &conversation_roots))).await?;
+    reader.list_tasks(&cwds).await
+}
+
+/// Folders with tasks, offered in settings. Nothing is listed until the user adds a project.
+#[tauri::command]
+pub async fn discover_projects(reader: State<'_, codex::Reader>) -> Result<Vec<sessions::DiscoveredProject>, String> {
+    let mut found = blocking(|| Ok(sessions::discover_projects(&sessions::claude_projects_dir()?))).await?;
+    // Codex being unavailable should not hide what Claude found.
+    found.extend(reader.discover_projects().await.unwrap_or_default());
+    found.extend(blocking(|| Ok(pi::discover_projects(&pi::sessions_dir()?))).await.unwrap_or_default());
+    blocking(move || Ok(conversations::usable_projects(found, &conversations::home_dir()?))).await
+}
+
+#[tauri::command]
+pub fn default_conversation_dir() -> Result<String, String> {
+    Ok(conversations::default_dir()?.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+pub async fn create_conversation_dir(base: Option<String>) -> Result<String, String> {
+    blocking(move || conversations::create_dir(base.as_deref())).await
+}
+
+/// Changes when a task's file changes, so a task open elsewhere reloads only when it needs to.
+#[tauri::command]
+pub async fn task_stamp(reader: State<'_, codex::Reader>, agent: Agent, id: String) -> Result<Option<String>, String> {
+    let path = match agent {
+        Agent::Claude => Some(blocking(move || sessions::find_task_file(&sessions::claude_projects_dir()?, &id)).await?),
+        Agent::Codex => reader.task_file(&id).await,
+        Agent::Pi => Some(blocking(move || pi::find_task_file(&pi::sessions_dir()?, &id)).await?),
+    };
+    Ok(path.and_then(|path| conversations::file_stamp(&path)))
+}
+
+#[tauri::command]
+pub async fn list_pi_tasks(roots: Vec<String>, conversation_roots: Vec<String>) -> Result<Vec<sessions::TaskSummary>, String> {
+    blocking(move || {
+        let mut all = roots;
+        all.extend(conversation_roots);
+        Ok(pi::list_tasks(&pi::sessions_dir()?, &all))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn read_pi_task(id: String) -> Result<sessions::TaskContent, String> {
+    blocking(move || pi::read_task(&pi::find_task_file(&pi::sessions_dir()?, &id)?)).await
+}
+
+#[tauri::command]
+pub async fn pi_info() -> Result<cli_info::CliInfo, String> {
+    pi::info().await
 }
 
 #[tauri::command]
@@ -121,13 +184,66 @@ pub async fn codex_info(reader: State<'_, codex::Reader>) -> Result<cli_info::Cl
     reader.info().await
 }
 
-/// Tasks open in another process. Tandem's own running turns are left out.
 #[tauri::command]
-pub fn external_writers(runs: State<'_, runner::Runs>) -> Result<Vec<writers::ExternalWriter>, String> {
-    Ok(runner::external_writers()?
-        .into_iter()
-        .filter(|writer| !runs.is_running(&writer.task_id))
-        .collect())
+pub fn update_tray(app: AppHandle, update: tray::TrayUpdate) -> Result<(), String> {
+    tray::update(&app, update)
+}
+
+#[tauri::command]
+pub fn tray_summary(state: State<'_, tray::TrayState>) -> serde_json::Value {
+    tray::current_summary(state.inner())
+}
+
+#[tauri::command]
+pub fn resize_tray_panel(app: AppHandle, height: f64) -> Result<(), String> {
+    tray::resize_panel(&app, height)
+}
+
+#[tauri::command]
+pub fn tray_panel_action(app: AppHandle, action: String, task_id: Option<String>) -> Result<(), String> {
+    tray::panel_action(&app, &action, task_id.as_deref())
+}
+
+#[tauri::command]
+pub fn notify_user(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    tray::notify(&app, &title, &body)
+}
+
+#[tauri::command]
+pub fn set_keep_running(state: State<'_, tray::TrayState>, value: bool) {
+    tray::set_keep_running(state.inner(), value);
+}
+
+#[tauri::command]
+pub async fn install_agent(jobs: State<'_, agents::Jobs>, command: String, on_event: Channel<agents::JobEvent>) -> Result<(), String> {
+    agents::install(jobs.inner(), &command, on_event).await
+}
+
+#[tauri::command]
+pub async fn login_agent(jobs: State<'_, agents::Jobs>, command: String, on_event: Channel<agents::JobEvent>) -> Result<(), String> {
+    agents::login(jobs.inner(), &command, on_event).await
+}
+
+#[tauri::command]
+pub fn stop_agent_job(jobs: State<'_, agents::Jobs>) {
+    jobs.stop();
+}
+
+/// Tasks open in another process. Tandem's own running turns are left out. Codex's lock only says
+/// a thread is open, so a recent write to its file is what says it is working.
+#[tauri::command]
+pub async fn external_writers(
+    runs: State<'_, runner::Runs>,
+    reader: State<'_, codex::Reader>,
+) -> Result<Vec<writers::ExternalWriter>, String> {
+    let mut found = blocking(runner::external_writers).await?;
+    found.retain(|writer| !runs.is_running(&writer.task_id));
+    for writer in found.iter_mut().filter(|writer| !writer.can_override) {
+        if let Some(path) = reader.task_file(&writer.task_id).await {
+            writer.is_busy = conversations::written_within(&path, CODEX_BUSY_WINDOW);
+        }
+    }
+    Ok(found)
 }
 
 /// Only runs when the settings page asks, because it starts each CLI once.

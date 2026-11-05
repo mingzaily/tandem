@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from './api';
-import { applyTurnEvent, buildItems, projectRoot, worktreeName, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
+import { applyTurnEvent, buildItems, groupRoot, moveProject, orderProjects, projectRoot, worktreeName, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Message => ({
   text: '',
@@ -157,5 +157,46 @@ describe('turnStatus', () => {
     expect(worktreeName('/code/app/.claude/worktrees/quiet-owl/sub')).toBe('quiet-owl');
     expect(projectRoot('/code/app')).toBe('/code/app');
     expect(worktreeName('/code/app')).toBeNull();
+  });
+
+  it('groups a task under the deepest added project', () => {
+    const roots = ['/code/app', '/code/app/service'];
+    expect(groupRoot('/code/app/service/api', roots)).toBe('/code/app/service');
+    expect(groupRoot('/code/app/docs', roots)).toBe('/code/app');
+    expect(groupRoot('/code/app-two', roots)).toBe('/code/app-two');
+    expect(groupRoot('/other/.claude/worktrees/x', roots)).toBe('/other');
+  });
+});
+
+describe('compaction', () => {
+  const message = (id: string, kind: Message['kind'], text = ''): Message => ({ id, kind, text, isError: false, truncated: false });
+
+  it('stands between turns and is never folded into the work', () => {
+    const items = buildItems([
+      message('u', 'user', 'question'),
+      message('t', 'thinking', 'hm'),
+      message('a', 'assistant', 'answer'),
+      message('c', 'compaction'),
+      message('t2', 'thinking', 'more'),
+      message('a2', 'assistant', 'next'),
+    ]);
+    const rows = buildRows(items, false);
+    expect(rows.map((row) => row.type)).toEqual(['user', 'group', 'assistant', 'compaction', 'group', 'assistant']);
+  });
+});
+
+describe('project order', () => {
+  const groups = (names: string[]): [string, number][] => names.map((name, index) => [name, index]);
+
+  it('keeps the saved order and puts new projects first', () => {
+    const ordered = orderProjects(groups(['a', 'b', 'new', 'c']), ['c', 'a', 'b', 'gone']);
+    expect(ordered.map(([name]) => name)).toEqual(['new', 'c', 'a', 'b']);
+  });
+
+  it('moves a project to land before the row at the target', () => {
+    expect(moveProject(['a', 'b', 'c'], 'a', 2)).toEqual(['b', 'a', 'c']);
+    expect(moveProject(['a', 'b', 'c'], 'a', 3)).toEqual(['b', 'c', 'a']);
+    expect(moveProject(['a', 'b', 'c'], 'c', 0)).toEqual(['c', 'a', 'b']);
+    expect(moveProject(['a', 'b', 'c'], 'b', 1)).toEqual(['a', 'b', 'c']);
   });
 });

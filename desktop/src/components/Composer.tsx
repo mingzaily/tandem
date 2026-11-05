@@ -10,6 +10,7 @@ import {
   type Attachment,
 } from '../lib/api';
 import { t } from '../lib/i18n';
+import { ZoomableImage } from './ImageLightbox';
 
 const MAX_HEIGHT_PX = 240;
 const SEND_BUTTON =
@@ -143,7 +144,11 @@ export function Composer({
           {attachments.map((attachment) => (
             <div key={attachment.id} className="relative" title={attachment.path ?? attachment.name}>
               {attachment.preview ? (
-                <img src={attachment.preview} alt={attachment.name} className="size-14 rounded-lg border border-[var(--chat-input-chip-border)] object-cover" />
+                <ZoomableImage
+                  src={attachment.preview}
+                  alt={attachment.name}
+                  className="size-14 rounded-lg border border-[var(--chat-input-chip-border)] object-cover"
+                />
               ) : (
                 <div className="flex h-14 max-w-[200px] items-center gap-2 rounded-lg border border-[var(--chat-input-chip-border)] bg-[var(--chat-input-chip-bg)] px-3 text-13 text-[var(--chat-input-chip-text)]">
                   <FileText size={16} strokeWidth={1.8} aria-hidden className="shrink-0" />

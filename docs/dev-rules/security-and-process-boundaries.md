@@ -22,7 +22,7 @@
 
 `capabilities/default.json` 只授予需要的权限。新增权限要说明用途。不要引入能让页面直接执行命令或读写任意文件的插件。
 
-`tauri-plugin-dialog` 只供后端调用，能力文件没有授予页面它的权限。
+`tauri-plugin-dialog` 和 `tauri-plugin-notification` 只供后端调用，能力文件没有授予页面它们的权限。页面通过自己的命令发通知和更新菜单栏。
 
 ## 附件
 
@@ -41,10 +41,14 @@
 
 ## 项目和窗口
 
+- 菜单栏面板是单独的窗口（`tray-panel`），第一次点图标时才创建。它的能力文件只有事件和主题，操作只能走 `tray_panel_action` 的固定名单。
+
 - 添加项目的路径由后端打开的系统对话框返回。新建任务的工作目录来自页面，这是用户选择项目的方式。
 - "在访达中显示"按任务 id 查任务文件，用文件里记录的工作目录，不接受页面传路径。
 - 当前分支只读 `.git/HEAD`，不运行 `git`。
-- 设置页的 Agent 分页会对找到的 `claude`、`codex`、`pi` 各运行一次 `--version`，5 秒超时。只在打开这个分页时运行，启动时不运行。
+- 设置页的 Agent 分页会对找到的 `claude`、`codex`、`pi` 各运行一次 `--version`，并读 Claude 和 Codex 的登录状态，5 秒超时。只在打开这个分页时运行，启动时不运行。
+- 安装只运行 `npm install -g <固定名单里的包>`，登录只运行 `claude auth login` 和 `codex login`。都是用户点按钮才运行，凭证由 CLI 自己保存，Tandem 不碰。页面不显示 CLI 路径。
+- Pi 的模型和密钥不由 Tandem 配置。
 - `core:window:allow-set-theme` 用于让窗口材质和红绿灯跟随设置页选择的主题。
 
 ## 外部进程

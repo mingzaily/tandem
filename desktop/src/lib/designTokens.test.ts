@@ -7,7 +7,7 @@ const root = resolve(import.meta.dirname, '../..');
 const lightValues = new Map<string, string>();
 // theme.css comes first because it overrides colors.css.
 for (const file of ['design/tokens/theme.css', 'design/tokens/colors.css', 'design/tokens/tokens.css']) {
-  const light = readFileSync(join(root, file), 'utf8').split('.dark {')[0];
+  const light = readFileSync(join(root, file), 'utf8').split(/\.dark \{|\[data-theme="tandem-dark"\]/)[0];
   for (const [, name, value] of light.matchAll(/^\s+(--[\w-]+): ([^;]+);/gm)) {
     if (!lightValues.has(name)) lightValues.set(name, value);
   }

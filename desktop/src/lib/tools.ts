@@ -44,6 +44,11 @@ function editStats(tool: ToolItem, input: Record<string, unknown>): ToolDisplay[
   // Line counts from clipped text would be wrong, so they are left out.
   if (tool.truncated) return null;
   if (tool.name === 'Edit') {
+    if (typeof input.added === 'number' && typeof input.removed === 'number') {
+      return { added: input.added, removed: input.removed };
+    }
+    // Pi's edits name no text here, and zeros would claim that nothing changed.
+    if (input.new_string === undefined && input.old_string === undefined) return null;
     return { added: lineCount(asString(input.new_string)), removed: lineCount(asString(input.old_string)) };
   }
   if (tool.name === 'Write') return { added: lineCount(asString(input.content)), removed: 0 };

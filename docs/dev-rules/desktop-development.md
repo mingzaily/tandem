@@ -33,7 +33,13 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
   src-tauri/target/debug/bundle/macos/Tandem.app/Contents/MacOS/tandem
 ```
 
+测试窗口要关掉通知（`notifyWhenDone: false`），否则会弹到用户屏幕上。每批结束删掉测试任务（Claude 的项目目录、Pi 的会话目录、Codex 的 `thread/delete`）。
+
 测试脚本改过的 `localStorage` 要在结束时还原，调试版和正式版共用这份数据。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
+
+`TANDEM_DRIVE_PANEL=1` 打开菜单栏面板，测试点不了菜单栏图标。`TANDEM_DRIVE_CLOSE=<秒>` 到时间关主窗口，和点红色按钮走同一条路。
+
+安装、登录和拿不到真实触发条件的卡片，用替身 CLI 测：把 `ZDOTDIR` 指向一个目录，里面的 `.zshrc` 和 `.zlogin` 只放替身的 `PATH`。这样不动用户的真实账号和全局安装。
 
 `TANDEM_DRIVE_ATTACH=路径:路径` 按拖入窗口的方式送入附件，系统文件对话框驱动不了时用它测试。
 

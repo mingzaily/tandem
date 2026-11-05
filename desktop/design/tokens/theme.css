@@ -1,7 +1,27 @@
 /* Warm theme values, taken from the reference theme described in SOURCE.md. Loaded after colors.css. */
 @layer base {
-  :root:not(.dark) {
+  :root {
     --brand-mark-accent: #E9A23B;
+    --tray-panel-tint: rgba(248, 247, 243, 0.5);
+    --tray-glow: rgba(234, 107, 23, 0.09);
+    --tray-glow-soft: rgba(255, 255, 255, 0.55);
+    --tray-edge: rgba(255, 255, 255, 0.8);
+    --tray-ink: rgba(38, 34, 28, 0.92);
+    --tray-ink-2: rgba(38, 34, 28, 0.6);
+    --tray-ink-3: rgba(38, 34, 28, 0.42);
+    --tray-ink-4: rgba(38, 34, 28, 0.14);
+    --tray-ink-5: rgba(38, 34, 28, 0.05);
+    --tray-line: rgba(38, 34, 28, 0.08);
+    --tray-tile: rgba(255, 255, 255, 0.45);
+    --tray-cta: #1F1E1C;
+    --tray-on-cta: #FFFFFF;
+    --tray-warn: #EA6B17;
+    --tray-well-top: rgba(255, 255, 255, 0.7);
+    --tray-well-bottom: rgba(255, 255, 255, 0.5);
+    --tray-well-shade: rgba(0, 0, 0, 0.08);
+    --tray-liquid: rgba(38, 34, 28, 0.46);
+  }
+  [data-theme="tandem-light"] {
     --surface: #F2F2ED;
     --surface-hsl: 60.0 16.1% 93.9%;
     --surface-elevated: #FDFDF8;
@@ -181,8 +201,7 @@
     --segmented-hover-bg: #E4E4DF;
     --surface-translucent-sidebar: rgba(238, 238, 233, 0.85);
   }
-  .dark {
-    --brand-mark-accent: #E9A23B;
+  [data-theme="tandem-dark"] {
     --surface: #181818;
     --surface-hsl: 0 0% 9.4%;
     --surface-elevated: #1F1F1F;
@@ -361,5 +380,24 @@
     --segmented-option-fg: #AAAAAA;
     --segmented-hover-bg: #292929;
     --surface-translucent-sidebar: rgba(5, 5, 5, 0.85);
+  }
+  .dark {
+    --tray-panel-tint: rgba(26, 25, 24, 0.54);
+    --tray-glow: rgba(234, 107, 23, 0.12);
+    --tray-glow-soft: rgba(255, 244, 228, 0.04);
+    --tray-edge: rgba(242, 239, 233, 0.09);
+    --tray-ink: rgba(242, 239, 233, 0.94);
+    --tray-ink-2: rgba(242, 239, 233, 0.62);
+    --tray-ink-3: rgba(242, 239, 233, 0.42);
+    --tray-ink-4: rgba(242, 239, 233, 0.13);
+    --tray-ink-5: rgba(242, 239, 233, 0.05);
+    --tray-line: rgba(242, 239, 233, 0.07);
+    --tray-tile: rgba(242, 239, 233, 0.05);
+    --tray-cta: #F2EFE9;
+    --tray-on-cta: #0E0E0D;
+    --tray-well-top: rgba(242, 239, 233, 0.07);
+    --tray-well-bottom: rgba(242, 239, 233, 0.025);
+    --tray-well-shade: rgba(0, 0, 0, 0.5);
+    --tray-liquid: rgba(242, 239, 233, 0.72);
   }
 }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "tray-panel",
+  "description": "The menu bar panel listens for updates and follows the chosen theme.",
+  "windows": ["tray-panel"],
+  "permissions": ["core:event:default", "core:window:allow-set-theme"]
+}

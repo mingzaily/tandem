@@ -77,4 +77,11 @@ describe('describePermission', () => {
     expect(describePermission('mcp__x__y', input).detail).toBe(input);
     expect(describePermission('mcp__x__y', input).title).toContain('mcp__x__y');
   });
+
+  it('counts changed lines from whichever form the agent reports', () => {
+    const tool = (input: object) => ({ type: 'tool', id: 'a', name: 'Edit', input: JSON.stringify({ file_path: '/a.rs', ...input }), result: 'ok', isError: false, truncated: false }) as const;
+    expect(describeTool(tool({ added: 3, removed: 1 })).stats).toEqual({ added: 3, removed: 1 });
+    expect(describeTool(tool({})).stats).toBeNull();
+    expect(describeTool(tool({ old_string: 'a', new_string: 'b\nc' })).stats).toEqual({ added: 2, removed: 1 });
+  });
 });

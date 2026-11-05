@@ -35,6 +35,7 @@ pub enum Agent {
     #[default]
     Claude,
     Codex,
+    Pi,
 }
 
 #[derive(Debug, Serialize, Clone, Copy, PartialEq)]
@@ -45,6 +46,8 @@ pub enum MessageKind {
     Thinking,
     ToolUse,
     ToolResult,
+    /// The CLI summarised the conversation so far. The text the CLI wrote is for the model.
+    Compaction,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -93,6 +96,8 @@ struct Line {
     is_sidechain: bool,
     #[serde(default)]
     is_meta: bool,
+    #[serde(default)]
+    is_compact_summary: bool,
     timestamp: Option<String>,
     message: Option<Box<RawValue>>,
 }
@@ -101,6 +106,7 @@ struct Entry {
     uuid: String,
     is_user: bool,
     is_meta: bool,
+    is_compact_summary: bool,
     timestamp: Option<String>,
     message: Box<RawValue>,
 }
@@ -134,25 +140,40 @@ pub fn claude_projects_dir() -> Result<PathBuf, String> {
     Ok(config.join("projects"))
 }
 
-pub fn list_tasks(projects_dir: &Path) -> Result<Vec<TaskSummary>, String> {
-    let mut files = Vec::new();
+/// Whether a working directory is a root or anywhere inside it.
+pub fn is_under(cwd: &str, root: &str) -> bool {
+    let root = root.trim_end_matches('/');
+    cwd == root || cwd.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn session_files(project: &Path) -> Vec<(u64, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(project) else {
+        return Vec::new();
+    };
+    let mut files: Vec<(u64, PathBuf)> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| is_session_file(path))
+        .filter_map(|path| Some((modified_ms(&path)?, path)))
+        .collect();
+    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files
+}
+
+/// Only opens files in folders that belong to `roots`, so unrelated projects cost nothing.
+pub fn list_tasks(projects_dir: &Path, roots: &[String]) -> Result<Vec<TaskSummary>, String> {
     let projects = match std::fs::read_dir(projects_dir) {
         Ok(projects) => projects,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.to_string()),
     };
+    let belongs = |cwd: &str| roots.iter().any(|root| is_under(cwd, root));
+    let mut files = Vec::new();
     for project in projects.flatten() {
-        let Ok(entries) = std::fs::read_dir(project.path()) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !is_session_file(&path) {
-                continue;
-            }
-            if let Some(modified) = modified_ms(&path) {
-                files.push((modified, path));
-            }
+        let project_files = session_files(&project.path());
+        let project_cwd = project_files.iter().find_map(|(_, path)| read_task_cwd(path));
+        if project_cwd.is_some_and(|cwd| belongs(&cwd)) {
+            files.extend(project_files);
         }
     }
     files.sort_by(|a, b| b.0.cmp(&a.0));
@@ -162,11 +183,34 @@ pub fn list_tasks(projects_dir: &Path) -> Result<Vec<TaskSummary>, String> {
         if tasks.len() == MAX_TASKS {
             break;
         }
-        if let Some(task) = summarize(&path, updated_at_ms) {
+        if let Some(task) = summarize(&path, updated_at_ms).filter(|task| belongs(&task.cwd)) {
             tasks.push(task);
         }
     }
     Ok(tasks)
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredProject {
+    pub cwd: String,
+    pub last_active_ms: u64,
+}
+
+/// Folders Claude has run in, for the user to choose from. Reads one file from each.
+pub fn discover_projects(projects_dir: &Path) -> Vec<DiscoveredProject> {
+    let Ok(projects) = std::fs::read_dir(projects_dir) else {
+        return Vec::new();
+    };
+    projects
+        .flatten()
+        .filter_map(|project| {
+            let files = session_files(&project.path());
+            let last_active_ms = files.first()?.0;
+            let cwd = files.iter().find_map(|(_, path)| read_task_cwd(path))?;
+            Some(DiscoveredProject { cwd, last_active_ms })
+        })
+        .collect()
 }
 
 /// Looks the id up on disk, so a caller cannot make Tandem read outside the projects directory.
@@ -213,6 +257,7 @@ pub fn read_task(path: &Path) -> Result<TaskContent, String> {
                 uuid,
                 is_user: kind == Some("user"),
                 is_meta: parsed.is_meta,
+                is_compact_summary: parsed.is_compact_summary,
                 timestamp: parsed.timestamp,
                 message,
             });
@@ -321,6 +366,10 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
     };
     // `isMeta` lines are filtered here rather than while reading, so they still link the chain.
     if entry.is_meta {
+        return;
+    }
+    if entry.is_compact_summary {
+        out.push(text_message(entry, 0, MessageKind::Compaction, ""));
         return;
     }
     if let Some(text) = message.content.as_ref().and_then(Value::as_str) {
@@ -554,6 +603,7 @@ fn read_cwd_and_first_prompt(path: &Path) -> (Option<String>, Option<String>) {
         }
         if value.get("type").and_then(Value::as_str) != Some("user")
             || value.get("isMeta").and_then(Value::as_bool) == Some(true)
+            || value.get("isCompactSummary").and_then(Value::as_bool) == Some(true)
         {
             continue;
         }
@@ -755,6 +805,23 @@ mod tests {
     }
 
     #[test]
+    fn a_compaction_summary_is_a_marker_and_never_a_title() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut summary = user("s", Some("c1"), json!("This session is being continued"));
+        summary["isCompactSummary"] = json!(true);
+        summary["isVisibleInTranscriptOnly"] = json!(true);
+        let path = write_session(dir.path(), "p", ID, &[
+            summary.clone(),
+            user("u1", Some("s"), json!("real question")),
+        ]);
+        let messages = read_messages_for_test(&path).unwrap();
+        assert_eq!(messages[0].kind, MessageKind::Compaction);
+        assert_eq!(messages[0].text, "");
+        assert_eq!(messages[1].text, "real question");
+        assert_eq!(read_cwd_and_first_prompt(&path).1.as_deref(), Some("real question"));
+    }
+
+    #[test]
     fn hides_sidechains_meta_lines_and_cli_bookkeeping() {
         let dir = tempfile::tempdir().unwrap();
         let mut side = user("s1", Some("u1"), json!("subagent"));
@@ -827,7 +894,7 @@ mod tests {
         write_session(dir.path(), "p", ids[0], std::slice::from_ref(&prompt));
         write_session(dir.path(), "p", ids[1], &[prompt.clone(), generated.clone()]);
         write_session(dir.path(), "p", ids[2], &[prompt, custom, generated]);
-        let tasks = list_tasks(dir.path()).unwrap();
+        let tasks = list_tasks(dir.path(), &["/".to_owned()]).unwrap();
         let title = |id: &str| {
             tasks.iter().find(|task| task.id == id).unwrap().title.clone()
         };
@@ -842,13 +909,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_session(dir.path(), "p", "not-a-uuid", &[user("u1", None, json!("x"))]);
         write_session(dir.path(), "p", ID, &[json!({"type": "mode", "mode": "normal"})]);
-        assert!(list_tasks(dir.path()).unwrap().is_empty());
+        assert!(list_tasks(dir.path(), &["/".to_owned()]).unwrap().is_empty());
     }
 
     #[test]
     fn missing_projects_directory_is_an_empty_list() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(list_tasks(&dir.path().join("none")).unwrap().is_empty());
+        assert!(list_tasks(&dir.path().join("none"), &["/".to_owned()]).unwrap().is_empty());
     }
 
     #[test]
@@ -879,5 +946,13 @@ mod tests {
     fn hides_background_task_notifications() {
         assert!(visible_user_text("<task-notification>\n<task-id>a</task-id>").is_none());
         assert_eq!(visible_user_text("a real question").unwrap(), "a real question");
+    }
+
+    #[test]
+    fn a_root_covers_itself_and_what_is_inside_it_only() {
+        assert!(is_under("/code/app", "/code/app"));
+        assert!(is_under("/code/app/.claude/worktrees/x", "/code/app/"));
+        assert!(!is_under("/code/app-two", "/code/app"));
+        assert!(is_under("/anything", "/"));
     }
 }

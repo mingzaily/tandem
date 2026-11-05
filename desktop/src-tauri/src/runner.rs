@@ -1,7 +1,7 @@
 //! Runs one Claude Code turn per process, so the CLI holds a task only while a turn is running.
 
 use crate::attachments::Prepared;
-use crate::{codex, login_env, sessions, writers};
+use crate::{codex, login_env, pi, sessions, writers};
 use crate::cli_info::{self, UsageWindows};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -64,6 +64,23 @@ pub struct TurnOptions {
 }
 
 impl TurnOptions {
+    /// Pi's models are named `provider/id`, and it has no permission modes.
+    pub fn validate_pi(&self) -> Result<(), String> {
+        let is_valid_model = |model: &str| {
+            !model.is_empty()
+                && !model.starts_with('-')
+                && model.chars().all(|c| c.is_ascii_alphanumeric() || "-_.:[]/".contains(c))
+        };
+        if self.model.as_deref().is_some_and(|model| !is_valid_model(model)) {
+            return Err("Invalid model".into());
+        }
+        let is_word = |effort: &str| !effort.is_empty() && effort.chars().all(|c| c.is_ascii_lowercase());
+        if self.effort.as_deref().is_some_and(|effort| !is_word(effort)) {
+            return Err("Invalid effort level".into());
+        }
+        Ok(())
+    }
+
     /// Codex has its own effort levels, and they change with its models.
     pub fn validate_codex(&self) -> Result<(), String> {
         let is_word = |effort: &str| !effort.is_empty() && effort.chars().all(|c| c.is_ascii_lowercase());
@@ -115,11 +132,17 @@ pub struct PendingRequest {
     rules: Vec<Value>,
     /// Codex answers by JSON-RPC id, unlike Claude's control responses.
     codex_rpc_id: Option<String>,
+    /// Pi's dialogs answer differently by kind, so the kind stays with the request.
+    pi_method: Option<String>,
 }
 
 impl PendingRequest {
     pub fn for_codex(tool_name: &str, input: Value) -> Self {
-        Self { tool_name: tool_name.to_owned(), input, rules: Vec::new(), codex_rpc_id: None }
+        Self { tool_name: tool_name.to_owned(), input, rules: Vec::new(), codex_rpc_id: None, pi_method: None }
+    }
+
+    pub fn for_pi(tool_name: &str, input: Value, method: &str) -> Self {
+        Self { pi_method: Some(method.to_owned()), ..Self::for_codex(tool_name, input) }
     }
 }
 
@@ -197,6 +220,10 @@ impl Runs {
         }
     }
 
+    pub fn add_pending_request(&self, task_id: &str, id: String, request: PendingRequest) {
+        self.add_pending(task_id, id, request);
+    }
+
     pub fn add_codex_pending(&self, task_id: &str, shown_id: String, rpc_id: String, mut request: PendingRequest) {
         request.codex_rpc_id = Some(rpc_id);
         self.add_pending(task_id, shown_id, request);
@@ -222,9 +249,10 @@ impl Runs {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
         let run = runs.get_mut(task_id).ok_or("This task is not running")?;
         let request = run.pending.get(request_id).ok_or("This request has already ended")?;
-        let line = match &request.codex_rpc_id {
-            Some(rpc_id) => codex::rpc_reply(rpc_id, codex::decision_result(request, &decision)?),
-            None => control_success(request_id, decision_response(request, &decision)?),
+        let line = match (&request.codex_rpc_id, &request.pi_method) {
+            (Some(rpc_id), _) => codex::rpc_reply(rpc_id, codex::decision_result(request, &decision)?),
+            (None, Some(method)) => pi::ui_reply(request_id, request, method, &decision)?,
+            (None, None) => control_success(request_id, decision_response(request, &decision)?),
         };
         if matches!(decision, Decision::AllowForTask) {
             let mut task_rules = self.task_rules.lock().map_err(|error| error.to_string())?;
@@ -353,7 +381,7 @@ fn parse_control(value: &Value) -> Option<ControlAction> {
             let rules = suggested_rules(request);
             Some(ControlAction::Ask {
                 request_id,
-                request: PendingRequest { tool_name, input, rules, codex_rpc_id: None },
+                request: PendingRequest { tool_name, input, rules, codex_rpc_id: None, pi_method: None },
                 event,
             })
         }

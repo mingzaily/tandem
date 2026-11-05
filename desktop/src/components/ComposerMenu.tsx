@@ -3,7 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 're
 const TRIGGER =
   'inline-flex h-[30px] min-w-0 items-center gap-1 rounded-full border border-transparent bg-transparent px-2.5 text-13 transition-colors duration-[var(--motion-fast)] enabled:hover:border-[var(--border-default)] enabled:hover:bg-[var(--composer-pill-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50';
 const PANEL =
-  'absolute z-20 overflow-y-auto rounded-[12px] border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-2 shadow-[var(--shadow-menu)]';
+  'absolute z-20 rounded-[12px] border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] shadow-[var(--shadow-menu)]';
+const PANEL_BODY = 'overflow-y-auto p-2';
 const PANEL_MAX_HEIGHT_PX = 340;
 /** Keeps the panel clear of the title bar, which would otherwise cut off its first rows. */
 const PANEL_TOP_MARGIN_PX = 56;
@@ -18,6 +19,9 @@ interface ComposerMenuProps {
   triggerClassName?: string;
   align?: 'left' | 'right';
   side?: 'above' | 'below';
+  /** Replaces the scrolling, padded body, for a panel that lays out its own columns. */
+  bodyClassName?: string;
+  panelMaxHeight?: number;
   width: number;
   disabled?: boolean;
   children: (close: () => void) => ReactNode;
@@ -30,6 +34,8 @@ export function ComposerMenu({
   triggerClassName = 'text-[var(--text-primary)]',
   align = 'left',
   side = 'above',
+  bodyClassName = PANEL_BODY,
+  panelMaxHeight = PANEL_MAX_HEIGHT_PX,
   width,
   disabled = false,
   children,
@@ -43,8 +49,8 @@ export function ComposerMenu({
     const bounds = root.current.getBoundingClientRect();
     const available =
       side === 'above' ? bounds.top - PANEL_TOP_MARGIN_PX : window.innerHeight - bounds.bottom - PANEL_BOTTOM_MARGIN_PX;
-    setMaxHeight(Math.min(PANEL_MAX_HEIGHT_PX, available));
-  }, [open, side]);
+    setMaxHeight(Math.min(panelMaxHeight, available));
+  }, [open, side, panelMaxHeight]);
 
   useEffect(() => {
     if (!open) return;
@@ -78,7 +84,7 @@ export function ComposerMenu({
       </button>
       {open ? (
         <div
-          className={`${PANEL} ${align === 'right' ? 'right-0' : 'left-0'} ${
+          className={`${PANEL} ${bodyClassName} ${align === 'right' ? 'right-0' : 'left-0'} ${
             side === 'above' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'
           }`}
           style={{ width, maxHeight }}

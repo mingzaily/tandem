@@ -5,6 +5,12 @@ import { toggleArchived, togglePin, type TaskMeta } from '../lib/taskMeta';
 import { MENU_ROW } from './ComposerMenu';
 import { FloatingMenu } from './FloatingMenu';
 
+const RESUME_COMMANDS: Record<Agent, (id: string) => string> = {
+  claude: (id) => `claude --resume ${id}`,
+  codex: (id) => `codex resume ${id}`,
+  pi: (id) => `pi --session ${id}`,
+};
+
 export interface TaskMenuAnchor {
   id: string;
   x: number;
@@ -43,7 +49,7 @@ export function TaskMenu({ anchor, agent, meta, onMetaChange, onRename, onClose 
     {
       label: t('taskCopyResume'),
       icon: Copy,
-      run: () => void navigator.clipboard.writeText(agent === 'codex' ? `codex resume ${id}` : `claude --resume ${id}`).catch(console.error),
+      run: () => void navigator.clipboard.writeText(RESUME_COMMANDS[agent](id)).catch(console.error),
     },
     { label: t('taskReveal'), icon: FolderOpen, run: () => void revealTaskFolder(agent, id).catch(console.error) },
   ];

@@ -222,8 +222,8 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
       turn = [];
       startAt = item.at;
       rows.push(item);
-    } else if (item.type === 'compaction') {
-      // Work on either side stays apart, so the divider is never folded away.
+    } else if (item.type === 'compaction' || item.type === 'notice') {
+      // Work on either side stays apart, so these are never folded away.
       if (turn.length > 0) pushTurn(rows, turn, startAt);
       turn = [];
       startAt = item.at;

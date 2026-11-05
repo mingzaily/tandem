@@ -42,8 +42,7 @@
 | Diff 和文件预览 | 工具行点开看变更 |
 | 终端和 Git 上下文 | 按需加载 |
 | 设置页 | 主题和字号 |
-| 自建中转 | 改造 `relay/packages`，部署到腾讯云 |
-| 手机 PWA | 任务列表、对话、审批 |
+| 自建中转和手机 PWA | 协议见 [relay-protocol.md](relay-protocol.md)。桌面端已接入，relay 和 PWA 在 `relay-pwa` 分支开发，之后部署到腾讯云 |
 
 ## 已知问题
 

@@ -31,8 +31,6 @@ const SUMMARY_EVENT: &str = "tray-summary";
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrayUpdate {
-    /// Shown next to the icon.
-    count: usize,
     /// Handed to the panel as it is.
     summary: Value,
 }
@@ -146,14 +144,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon<Wry>> {
         .build(app)
 }
 
-/// The count sits next to the icon, so a glance says whether anything is running.
-fn count_title(count: usize) -> Option<String> {
-    (count > 0).then(|| count.to_string())
-}
-
 pub fn update(app: &AppHandle, update: TrayUpdate) -> Result<(), String> {
-    let tray = app.tray_by_id(TRAY_ID).ok_or("The menu bar icon is not available")?;
-    tray.set_title(count_title(update.count)).map_err(|error| error.to_string())?;
     if let Ok(mut summary) = app.state::<TrayState>().summary.lock() {
         summary.clone_from(&update.summary);
     }
@@ -201,15 +192,4 @@ pub fn show_panel_for_test(app: &AppHandle) -> tauri::Result<()> {
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {
     app.notification().builder().title(title).body(body).show().map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_count_shows_only_while_something_runs() {
-        assert_eq!(count_title(0), None);
-        assert_eq!(count_title(2).as_deref(), Some("2"));
-    }
 }

@@ -32,6 +32,12 @@
 - 附件文件给一条 `Read(//路径)` 规则，只放行这一个文件，同样存在内存里，只作用于当前任务。路径含通配符或逗号时不给规则，走普通确认。
 - 任务文件里的图片只有 png、jpeg、gif、webp 会传给页面。
 
+## 手机访问
+
+- 默认关闭。协议和安全边界见 [中转协议](../relay-protocol.md)，手机能做的事只有 `remote/ops.rs` 列出的操作。
+- 确认配对用后端弹的系统对话框，不经过页面，页面渲染不可信内容，不能让它批准设备。
+- `ws://` 只允许本机地址，其他必须 `wss://`。
+
 ## Codex
 
 - 启动和续接线程只传 `sandbox: read-only`，权限只放在 `turn/start`。不要在 `thread/start`、`thread/resume` 或它们的 `config` 里传可写沙箱，那会让 `app-server` 改写用户的 `config.toml`。改动这里要先在临时 `CODEX_HOME` 里验证。

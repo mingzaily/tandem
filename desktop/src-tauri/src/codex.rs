@@ -14,7 +14,7 @@
 use crate::attachments::Prepared;
 use crate::cli_info::{CliInfo, ModelOption, UsageWindow, UsageWindows};
 use crate::login_env;
-use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, TurnOptions};
+use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, TurnOptions, TurnSink};
 use crate::sessions::{Agent, DiscoveredProject, Message, MessageKind, TaskContent, TaskContext, TaskSummary};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::ipc::Channel;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -923,9 +922,9 @@ pub struct TurnRequest {
     pub options: TurnOptions,
 }
 
-pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: Channel<TurnEvent>) -> Result<(), String> {
+pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: TurnSink) -> Result<(), String> {
     request.options.validate_codex()?;
-    let emit = |event| on_event.send(event).map_err(|error: tauri::Error| error.to_string());
+    let emit = |event| on_event.send(event);
     let working_dir = match &request.cwd {
         Some(cwd) if Path::new(cwd).is_dir() => cwd.clone().into(),
         Some(cwd) => return Err(format!("Working directory not found: {cwd}")),

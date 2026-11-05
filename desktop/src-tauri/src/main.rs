@@ -11,6 +11,7 @@ mod harness;
 mod git_info;
 mod login_env;
 mod pi;
+mod remote;
 mod runner;
 mod sessions;
 mod tray;
@@ -79,9 +80,16 @@ fn main() {
             commands::remove_attachment,
             commands::open_external,
             commands::app_ready,
+            commands::remote_state,
+            commands::remote_configure,
+            commands::remote_begin_pairing,
+            commands::remote_cancel_pairing,
+            commands::remote_revoke,
+            commands::remote_update_context,
         ])
         .setup(|app| {
             tray::create(app.handle())?;
+            app.manage(remote::Remote::new(app.handle().clone()).map_err(std::io::Error::other)?);
             // The page shows the window once it has painted. This covers a page that fails to load.
             let window = app.get_webview_window("main").expect("main window");
             #[cfg(debug_assertions)]

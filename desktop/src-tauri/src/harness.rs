@@ -4,6 +4,8 @@
 //! `TANDEM_DRIVE_ATTACH=<path>:<path>` delivers files the way a window drop does.
 //! `TANDEM_DRIVE_PANEL=1` opens the menu bar panel, because a test cannot click the icon.
 //! `TANDEM_DRIVE_CLOSE=<seconds>` asks the main window to close, as its red button does.
+//! `TANDEM_DRIVE_PAIR_FILE=<path>` writes the pairing text there, and `TANDEM_DRIVE_PAIR_ALLOW=1`
+//! answers the pairing dialog, which a test cannot click (see `remote`).
 
 use std::time::Duration;
 use tauri::{Manager, WebviewWindow};

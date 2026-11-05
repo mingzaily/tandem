@@ -32,6 +32,8 @@ import {
   readPiInfo,
   readCliInfo,
   readTask,
+  onRemoteTurn,
+  remoteUpdateContext,
   sendTurn,
   setKeepRunning,
   taskStamp,
@@ -51,7 +53,8 @@ import {
   type TurnEvent,
 } from './lib/api';
 import { describeUsage, turnOptions, type TurnPrefs } from './lib/composerStatus';
-import { t } from './lib/i18n';
+import { currentLanguage, t } from './lib/i18n';
+import { emptyRateHistory, recordActivity, type RateHistory } from './lib/tokenRate';
 import { applyTurnEvent, buildItems, CONVERSATION_CWD, groupRoot, isUnder, projectName, turnStatus, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
 import {
@@ -83,6 +86,7 @@ const CODEX_LIST_MIN_INTERVAL_MS = 30_000;
 
 /** Only reads a few small files, so this is cheap enough to do while the window is in use. */
 const WRITER_POLL_MS = 5000;
+const COMPACT_COMMAND = '/compact';
 const HIDDEN_POLL_EVERY = 6;
 /** A task that takes a while to read reloads less often, so following it stays cheap. */
 const RELOAD_COST_FACTOR = 10;
@@ -93,10 +97,11 @@ const MessageStream = lazy(() => import('./components/MessageStream'));
 
 type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings' };
 type Notice = { text: string; isError: boolean };
-type TurnProgress = { startedAt: number; outputTokens: number; activity: number };
+type TurnProgress = { startedAt: number; outputTokens: number; activity: number; rate: RateHistory };
 
 function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice | null {
-  if (event.cancelled) return { text: t('cancelled'), isError: false };
+  // A stopped turn is marked in the conversation, where it happened.
+  if (event.cancelled) return null;
   if (event.isError) return { text: t('turnFailed', { error: event.message ?? '' }), isError: true };
   return null;
 }
@@ -138,6 +143,7 @@ export function App() {
   const [overriddenWriters, setOverriddenWriters] = useState<Set<string>>(new Set());
   const [history, setHistory] = useState<Item[]>([]);
   const [live, setLive] = useState<Record<string, Item[]>>({});
+  const [stoppedTasks, setStoppedTasks] = useState<Set<string>>(new Set());
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [pending, setPending] = useState<Record<string, PendingRequest[]>>({});
   const [progress, setProgress] = useState<Record<string, TurnProgress>>({});
@@ -325,50 +331,37 @@ export function App() {
     notifyUser(heading, title).catch(console.error);
   }, []);
 
-  const startTurn = useCallback(
-    (prompt: string, attachments: Attachment[], newCwd: string | null) => {
-      let taskId = selection.kind === 'task' ? selection.id : null;
-      const images = attachments.flatMap((attachment) => attachment.preview ?? []);
-      const files = attachments
-        .filter((attachment) => attachment.kind === 'file')
-        .map(({ name, path }) => ({ name, path }));
-      const userItem: Item = { type: 'user', id: `live-user-${Date.now()}`, text: prompt, images, files };
-      if (taskId) {
-        const id = taskId;
-        setLive((current) => ({ ...current, [id]: [userItem] }));
-        setNotices(({ [id]: _removed, ...rest }) => rest);
-      }
-      const target = taskId ? { taskId } : { cwd: newCwd as string };
-      const agent = selectedAgent;
-      setNewTaskError(null);
-      const options = {
-        ...turnOptions(prefs, info.models),
-        // Pi has no permission modes, and any saved choice belongs to another agent's menu.
-        ...(agent === 'pi' ? { permissionMode: null } : {}),
-        worktree: agent === 'claude' && taskId === null && useWorktree,
-        ignoreExternalWriter: taskId !== null && overriddenWriters.has(taskId),
-      };
-      const isNew = taskId === null;
+  const createTurnHandler = useCallback(
+    ({ agent, taskId: knownId, newCwd, prompt, userItem, selectOnStart }: TurnSource) => {
+      let taskId = knownId;
+      const isNew = knownId === null;
       let ended = false;
       let isListed = !isNew;
-      void sendTurn(agent, target, prompt, attachments, options, (event) => {
+      const onEvent = (event: TurnEvent) => {
         // The process can still print lines after its result, when the turn is already over.
         if (ended) return;
         if (event.type === 'started') {
           const id = event.taskId;
           taskId = id;
+          setStoppedTasks((current) => {
+            if (!current.has(id)) return current;
+            const next = new Set(current);
+            next.delete(id);
+            return next;
+          });
           setProgress((current) => ({
             ...current,
-            [id]: { startedAt: Date.now(), outputTokens: 0, activity: 0 },
+            [id]: { startedAt: Date.now(), outputTokens: 0, activity: 0, rate: emptyRateHistory(Date.now()) },
           }));
+          // A turn sent from a phone reaches this window at its first event.
+          setLive((current) => (current[id] ? current : { ...current, [id]: [userItem] }));
           if (isNew) {
             unwrittenTasks.current.add(id);
             setNewTaskCwds((current) => ({ ...current, [id]: newCwd as string }));
             setNewTaskAgents((current) => ({ ...current, [id]: agent }));
             const firstLine = prompt.split('\n').find((line) => line.trim())?.trim();
             setDraftTitles((current) => ({ ...current, [id]: firstLine ?? t('attachmentsOnly') }));
-            setLive((current) => ({ ...current, [id]: [userItem] }));
-            setSelection({ kind: 'task', id });
+            if (selectOnStart) setSelection({ kind: 'task', id });
           }
           return;
         }
@@ -418,6 +411,7 @@ export function App() {
                 ...turn,
                 activity: turn.activity + 1,
                 outputTokens: event.type === 'outputTokens' ? event.total : turn.outputTokens,
+                rate: recordActivity(turn.rate, Date.now(), event.type === 'outputTokens' ? event.total : turn.outputTokens),
               },
             };
           });
@@ -427,6 +421,7 @@ export function App() {
           ended = true;
           unwrittenTasks.current.delete(id);
           clearTurn(id);
+          if (event.cancelled) setStoppedTasks((current) => new Set(current).add(id));
           const notice = finishedNotice(event);
           if (notice) setNotices((current) => ({ ...current, [id]: notice }));
           if (!event.cancelled) notifyIfAway(event.isError ? t('notifyFailed') : t('notifyDone'), id);
@@ -441,8 +436,75 @@ export function App() {
           ...current,
           [id]: applyTurnEvent(current[id] ?? [], event),
         }));
-      }).catch((error) => {
+      };
+      return { onEvent, taskId: () => taskId };
+    },
+    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn],
+  );
+
+  // Turns started from a phone show here too, each with its own handler until it finishes.
+  const remoteTurns = useRef(new Map<string, ReturnType<typeof createTurnHandler>>());
+  const latestCreateTurnHandler = useRef(createTurnHandler);
+  latestCreateTurnHandler.current = createTurnHandler;
+  useEffect(() => {
+    const unlisten = onRemoteTurn(({ runId, agent, isNew, cwd, prompt, event }) => {
+      let turn = remoteTurns.current.get(runId);
+      if (!turn) {
+        // A resumed task has no id until its first event, which is what tells this window its id.
+        const taskId = !isNew && event.type === 'started' ? event.taskId : null;
+        const userItem: Item = { type: 'user', id: `live-user-${runId}`, text: prompt };
+        turn = latestCreateTurnHandler.current({ agent, taskId, newCwd: cwd, prompt, userItem, selectOnStart: false });
+        remoteTurns.current.set(runId, turn);
+      }
+      turn.onEvent(event);
+      if (event.type === 'finished') remoteTurns.current.delete(runId);
+    });
+    return () => {
+      void unlisten.then((stop) => stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    remoteUpdateContext({
+      projects: extraProjects,
+      conversationRoots,
+      conversationDir: settings.conversationDir,
+      archived: taskMeta.archived,
+      titles: taskMeta.titles,
+      language: currentLanguage(),
+    }).catch(console.error);
+  }, [extraProjects, conversationRoots, settings.conversationDir, taskMeta]);
+
+  const startTurn = useCallback(
+    (prompt: string, attachments: Attachment[], newCwd: string | null) => {
+      const taskId = selection.kind === 'task' ? selection.id : null;
+      const images = attachments.flatMap((attachment) => attachment.preview ?? []);
+      const files = attachments
+        .filter((attachment) => attachment.kind === 'file')
+        .map(({ name, path }) => ({ name, path }));
+      const liveId = `live-user-${Date.now()}`;
+      const userItem: Item =
+        prompt === COMPACT_COMMAND
+          ? { type: 'compaction', id: liveId }
+          : { type: 'user', id: liveId, text: prompt, images, files };
+      if (taskId) {
         const id = taskId;
+        setLive((current) => ({ ...current, [id]: [userItem] }));
+        setNotices(({ [id]: _removed, ...rest }) => rest);
+      }
+      const target = taskId ? { taskId } : { cwd: newCwd as string };
+      const agent = selectedAgent;
+      setNewTaskError(null);
+      const options = {
+        ...turnOptions(prefs, info.models),
+        // Pi has no permission modes, and any saved choice belongs to another agent's menu.
+        ...(agent === 'pi' ? { permissionMode: null } : {}),
+        worktree: agent === 'claude' && taskId === null && useWorktree,
+        ignoreExternalWriter: taskId !== null && overriddenWriters.has(taskId),
+      };
+      const turn = createTurnHandler({ agent, taskId, newCwd, prompt, userItem, selectOnStart: true });
+      void sendTurn(agent, target, prompt, attachments, options, turn.onEvent).catch((error) => {
+        const id = turn.taskId();
         if (id) {
           setNotices((current) => ({
             ...current,
@@ -457,7 +519,7 @@ export function App() {
         }
       });
     },
-    [selection, setSelection, selectedAgent, prefs, info.models, useWorktree, overriddenWriters, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn],
+    [selection, setSelection, selectedAgent, prefs, info.models, useWorktree, overriddenWriters, createTurnHandler, clearTurn],
   );
 
   const send = useCallback(
@@ -503,10 +565,15 @@ export function App() {
     [pending],
   );
   const selectedTask = tasks?.find((task) => task.id === selectedId);
-  const items = useMemo(
-    () => (selectedId ? [...history, ...(live[selectedId] ?? [])] : []),
-    [history, live, selectedId],
-  );
+  const items = useMemo(() => {
+    if (!selectedId) return [];
+    const all: Item[] = [...history, ...(live[selectedId] ?? [])];
+    // Claude records a stop in its file. The others do not, so this window remembers it.
+    if (stoppedTasks.has(selectedId) && all.at(-1)?.type !== 'notice') {
+      all.push({ type: 'notice', id: `stopped-${selectedId}`, text: t('interrupted') });
+    }
+    return all;
+  }, [history, live, selectedId, stoppedTasks]);
   const notice = selectedId ? notices[selectedId] : undefined;
   const isRunning = selectedId ? running.has(selectedId) : false;
   const selectedPending = selectedId ? pending[selectedId]?.[0] : undefined;
@@ -844,6 +911,7 @@ export function App() {
                   status={turnStatus(liveItems ?? [], selectedPending !== undefined)}
                   startedAt={selectedProgress.startedAt}
                   outputTokens={selectedProgress.outputTokens}
+                  rate={selectedProgress.rate}
                   activity={selectedProgress.activity}
                 />
               ) : null}
@@ -884,6 +952,11 @@ export function App() {
                 label={taskCwd && isConversationCwd(taskCwd) ? t('conversations') : undefined}
                 usage={info.usage}
                 context={context}
+                onCompact={
+                  selectedAgent === 'claude' && !isRunning && !selectedWriter?.isBusy
+                    ? () => startTurn(COMPACT_COMMAND, [], null)
+                    : undefined
+                }
               />
             </div>
           </>
@@ -966,6 +1039,15 @@ export function App() {
   );
 }
 
+interface TurnSource {
+  agent: Agent;
+  taskId: string | null;
+  newCwd: string | null;
+  prompt: string;
+  userItem: Item;
+  selectOnStart: boolean;
+}
+
 function WriterNotice({ writer, onSendAnyway }: { writer: ExternalWriter; onSendAnyway: () => void }) {
   const key = !writer.canOverride
     ? 'writerCodexOpen'
@@ -977,7 +1059,7 @@ function WriterNotice({ writer, onSendAnyway }: { writer: ExternalWriter; onSend
         ? 'writerBusyProgram'
         : 'writerOpenProgram';
   return (
-    <div role="status" className="flex min-h-8 items-center justify-between gap-3 px-2 text-13 text-[var(--warning-fg)]">
+    <div role="status" className="mb-1.5 flex min-h-8 items-center justify-between gap-3 px-2 text-13 text-[var(--warning-fg)]">
       <span className="min-w-0">{t(key)}</span>
       {writer.canOverride ? (
         <button
@@ -996,7 +1078,7 @@ function NoticeLine({ notice }: { notice: Notice }) {
   return (
     <p
       role="status"
-      className={`selectable flex min-h-8 items-center px-2 text-13 ${
+      className={`selectable mb-1.5 flex min-h-8 items-center px-2 text-13 ${
         notice.isError ? 'text-[var(--text-danger)]' : 'text-[var(--text-secondary)]'
       }`}
     >

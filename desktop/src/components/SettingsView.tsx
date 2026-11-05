@@ -1,4 +1,4 @@
-import { ArrowLeft, Bot, FolderOpen, FolderPlus, Info, Palette, Settings, X, type LucideIcon } from 'lucide-react';
+import { ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import {
@@ -9,7 +9,15 @@ import {
   openExternal,
   pickProject,
   stopAgentJob,
+  onRemoteChanged,
+  remoteBeginPairing,
+  remoteCancelPairing,
+  remoteConfigure,
+  remoteRevoke,
+  remoteState,
   type AgentStatus,
+  type RemoteLinkStatus,
+  type RemoteState,
   type DiscoveredProject,
 } from '../lib/api';
 import { t, type StringKey } from '../lib/i18n';
@@ -29,13 +37,14 @@ import {
 
 const JOB_LINES = 8;
 
-type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'about';
+type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'remote' | 'about';
 
 const TABS: { id: TabId; label: StringKey; icon: LucideIcon }[] = [
   { id: 'general', label: 'settingsGeneral', icon: Settings },
   { id: 'appearance', label: 'settingsAppearance', icon: Palette },
   { id: 'agents', label: 'settingsAgents', icon: Bot },
   { id: 'projects', label: 'settingsProjects', icon: FolderOpen },
+  { id: 'remote', label: 'settingsRemote', icon: Smartphone },
   { id: 'about', label: 'settingsAbout', icon: Info },
 ];
 const NAV_ITEM =
@@ -387,6 +396,133 @@ function AgentsTab() {
 const PROJECT_BUTTON =
   'inline-flex h-8 shrink-0 items-center gap-2 rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
 
+const RELAY_DOCS_URL = 'https://github.com/mingzaily/tandem/blob/main/relay/README.md';
+const REMOTE_INPUT =
+  'selectable h-8 w-[280px] rounded-lg border border-[var(--settings-theme-card-border)] bg-transparent px-2.5 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] focus:border-[var(--focus-ring)]';
+const REMOTE_STATUS: Record<RemoteLinkStatus, StringKey> = {
+  off: 'remoteStatusOff',
+  connecting: 'remoteStatusConnecting',
+  online: 'remoteStatusOnline',
+  failed: 'remoteStatusFailed',
+};
+
+function RemoteTab() {
+  const [state, setState] = useState<RemoteState | null>(null);
+  const [relayUrl, setRelayUrl] = useState('');
+  const [hostToken, setHostToken] = useState('');
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(() => {
+    remoteState()
+      .then((next) => {
+        setState(next);
+        setRelayUrl((current) => current || next.relayUrl);
+      })
+      .catch((reason) => setError(String(reason)));
+  }, []);
+  useEffect(() => {
+    refresh();
+    const unlisten = onRemoteChanged(refresh);
+    return () => void unlisten.then((stop) => stop());
+  }, [refresh]);
+
+  const attempt = (action: Promise<void>) => {
+    setError(null);
+    action.then(refresh).catch((reason) => setError(String(reason)));
+  };
+  const save = (enabled: boolean) => {
+    attempt(remoteConfigure(enabled, relayUrl, hostToken || null));
+    setHostToken('');
+  };
+
+  if (!state) return null;
+  const statusText = state.error ? `${t(REMOTE_STATUS[state.status])}：${state.error}` : t(REMOTE_STATUS[state.status]);
+  return (
+    <>
+      <Section title={t('remoteSection')}>
+        <Row label={t('remoteEnable')} hint={t('remoteEnableHint')}>
+          <Switch label={t('remoteEnable')} checked={state.enabled} onChange={save} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('remoteRelayUrl')} hint={statusText}>
+          <input
+            value={relayUrl}
+            aria-label={t('remoteRelayUrl')}
+            placeholder="wss://relay.example.com/ws"
+            spellCheck={false}
+            onChange={(event) => setRelayUrl(event.target.value)}
+            className={REMOTE_INPUT}
+          />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('remoteRelayToken')}>
+          <input
+            type="password"
+            value={hostToken}
+            aria-label={t('remoteRelayToken')}
+            placeholder={state.hasHostToken ? t('remoteTokenSaved') : ''}
+            onChange={(event) => setHostToken(event.target.value)}
+            className={REMOTE_INPUT}
+          />
+        </Row>
+        <div className={DIVIDER} />
+        <div className="flex items-center justify-between gap-3 px-4 py-3">
+          <button
+            type="button"
+            onClick={() => void openExternal(RELAY_DOCS_URL)}
+            className="inline-flex min-w-0 shrink-0 items-center gap-1 rounded-md text-13 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+          >
+            {t('remoteDocs')}
+            <ExternalLink size={13} strokeWidth={1.7} aria-hidden />
+          </button>
+          <span className="flex min-w-0 items-center justify-end gap-3">
+            {error ? <span className="selectable min-w-0 text-13 text-[var(--text-danger)]">{error}</span> : null}
+            <button type="button" onClick={() => save(state.enabled)} className={PROJECT_BUTTON}>
+              {t('remoteSave')}
+            </button>
+          </span>
+        </div>
+      </Section>
+      <Section title={t('remoteDevices')}>
+        {state.clients.length === 0 ? <Row label={t('remoteNoDevices')} /> : null}
+        {state.clients.map((client, index) => (
+          <div key={client.clientId}>
+            {index > 0 ? <div className={DIVIDER} /> : null}
+            <Row label={client.name || client.clientId} hint={client.isOnline ? t('remoteDeviceOnline') : t('remoteDeviceOffline')}>
+              <button type="button" onClick={() => attempt(remoteRevoke(client.clientId))} className={PROJECT_BUTTON}>
+                {t('remoteRevoke')}
+              </button>
+            </Row>
+          </div>
+        ))}
+        <div className={DIVIDER} />
+        {state.pairing ? (
+          <div className="flex items-start gap-4 px-4 py-4">
+            <img src={state.pairing.qr} alt="" width={160} height={160} className="shrink-0 rounded-lg bg-white p-2" />
+            <div className="flex min-w-0 flex-col items-start gap-3">
+              <span className={ROW_HINT}>{t('remotePairHint')}</span>
+              <span className="flex gap-2">
+                <button type="button" onClick={() => void navigator.clipboard.writeText(state.pairing?.text ?? '')} className={PROJECT_BUTTON}>
+                  {t('remotePairCopy')}
+                </button>
+                <button type="button" onClick={() => attempt(remoteCancelPairing())} className={PROJECT_BUTTON}>
+                  {t('remotePairCancel')}
+                </button>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="flex justify-end px-4 py-3">
+            <button type="button" disabled={state.status !== 'online'} onClick={() => attempt(remoteBeginPairing())} className={`${PROJECT_BUTTON} disabled:cursor-not-allowed disabled:opacity-40`}>
+              {t('remotePair')}
+            </button>
+          </div>
+        )}
+      </Section>
+    </>
+  );
+}
+
 function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir }: TabProps & ProjectsProps) {
   const [discovered, setDiscovered] = useState<DiscoveredProject[] | null>(null);
   useEffect(() => {
@@ -580,6 +716,7 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
           {tab === 'general' ? <GeneralTab settings={settings} onChange={onChange} /> : null}
           {tab === 'appearance' ? <AppearanceTab settings={settings} onChange={onChange} /> : null}
           {tab === 'agents' ? <AgentsTab /> : null}
+          {tab === 'remote' ? <RemoteTab /> : null}
           {tab === 'projects' ? (
             <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} />
           ) : null}

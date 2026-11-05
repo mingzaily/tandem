@@ -185,6 +185,21 @@ describe('compaction', () => {
   });
 });
 
+describe('a stopped turn', () => {
+  it('keeps its marker outside the folded work', () => {
+    const rows = buildRows(
+      [
+        { type: 'user', id: 'u', text: 'go' },
+        { type: 'thinking', id: 't', text: 'hm' },
+        { type: 'thinking', id: 't2', text: 'hm' },
+        { type: 'notice', id: 'n', text: 'stopped' },
+      ],
+      false,
+    );
+    expect(rows.map((row) => row.type)).toEqual(['user', 'group', 'notice']);
+  });
+});
+
 describe('project order', () => {
   const groups = (names: string[]): [string, number][] => names.map((name, index) => [name, index]);
 

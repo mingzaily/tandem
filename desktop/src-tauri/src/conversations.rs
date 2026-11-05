@@ -5,7 +5,7 @@ use crate::sessions::{is_under, DiscoveredProject};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 pub fn home_dir() -> Result<PathBuf, String> {
     std::env::var_os("HOME").map(Into::into).ok_or_else(|| "HOME is not set".to_owned())
@@ -74,14 +74,6 @@ pub fn file_stamp(path: &Path) -> Option<String> {
     let metadata = fs::metadata(path).ok()?;
     let modified = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis();
     Some(format!("{modified}:{}", metadata.len()))
-}
-
-pub fn written_within(path: &Path, window: Duration) -> bool {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.elapsed().ok())
-        .is_some_and(|age| age < window)
 }
 
 #[cfg(test)]

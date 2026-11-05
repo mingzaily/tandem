@@ -4,8 +4,10 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::fd::AsRawFd;
 use std::path::Path;
+use std::time::Duration;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -86,6 +88,56 @@ pub fn read_codex_writers(locks_dir: &Path) -> Vec<ExternalWriter> {
         .collect()
 }
 
+/// A long read of the end of a large file would run every few seconds, so this gives up early.
+const ROLLOUT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+/// A turn the CLI never closed, such as after a crash, should not read as running forever.
+const STUCK_TURN: Duration = Duration::from_secs(30 * 60);
+/// With no turn marker in reach, a recent write is the next best sign.
+const RECENT_WRITE: Duration = Duration::from_secs(20);
+
+fn last_turn_marker(tail: &[u8]) -> Option<bool> {
+    for line in tail.rsplit(|byte| *byte == b'\n') {
+        // Most lines hold neither marker, and some hold whole images, so parsing is left until here.
+        let text = String::from_utf8_lossy(line);
+        let is_marker = ["task_started", "task_complete", "turn_aborted"].iter().any(|marker| text.contains(marker));
+        if !is_marker {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if value.get("type").and_then(serde_json::Value::as_str) != Some("event_msg") {
+            continue;
+        }
+        match value.pointer("/payload/type").and_then(serde_json::Value::as_str) {
+            Some("task_started") => return Some(true),
+            Some("task_complete" | "turn_aborted") => return Some(false),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Codex writes nothing while it waits for a long reply, so the time of the last write cannot tell
+/// a quiet turn from an idle thread. The file's turn markers can.
+pub fn codex_turn_running(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let age = metadata.modified().ok().and_then(|modified| modified.elapsed().ok()).unwrap_or(Duration::MAX);
+    if age > STUCK_TURN {
+        return false;
+    }
+    let tail = (|| {
+        let mut file = fs::File::open(path).ok()?;
+        file.seek(SeekFrom::Start(metadata.len().saturating_sub(ROLLOUT_TAIL_BYTES))).ok()?;
+        let mut tail = Vec::new();
+        file.read_to_end(&mut tail).ok()?;
+        Some(tail)
+    })();
+    tail.and_then(|tail| last_turn_marker(&tail)).unwrap_or(age < RECENT_WRITE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,5 +187,29 @@ mod tests {
     #[test]
     fn a_missing_folder_means_no_writers() {
         assert!(read_writers(Path::new("/nonexistent/tandem")).is_empty());
+    }
+
+    fn rollout_line(kind: &str) -> String {
+        json!({"type": "event_msg", "payload": {"type": kind}}).to_string()
+    }
+
+    #[test]
+    fn a_quiet_codex_turn_still_counts_as_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let lines = [rollout_line("task_started"), rollout_line("agent_message")].join("\n");
+        fs::write(&path, &lines).unwrap();
+        assert!(codex_turn_running(&path));
+        fs::write(&path, [lines, rollout_line("task_complete")].join("\n")).unwrap();
+        assert!(!codex_turn_running(&path));
+    }
+
+    #[test]
+    fn only_real_markers_count() {
+        let quoted = json!({"type": "response_item", "payload": {"text": "task_started"}}).to_string();
+        let tail = [rollout_line("task_complete"), quoted].join("\n");
+        assert_eq!(last_turn_marker(tail.as_bytes()), Some(false));
+        assert_eq!(last_turn_marker(rollout_line("turn_aborted").as_bytes()), Some(false));
+        assert_eq!(last_turn_marker(b"{half"), None);
     }
 }

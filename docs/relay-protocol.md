@@ -59,12 +59,47 @@
 
 ```jsonc
 // 桌面端 → 中转
-{"t":"allow","tokenHash":"<hex>","oneTime":true,"expiresAt":1790000000000} // 配对令牌，5 分钟
+{"t":"allow","tokenHash":"<hex>","oneTime":true,"ttlMs":300000}          // 配对令牌，5 分钟
 {"t":"allow","tokenHash":"<hex>","oneTime":false,"expiresAt":null}         // 客户端令牌
 {"t":"revoke","tokenHash":"<hex>"}                                         // 同时断开用它连接的手机
 ```
 
-`oneTime` 的令牌在第一次连接成功时作废。长期令牌写入磁盘，配对令牌只在内存里。桌面端重连后重发自己持有的全部长期令牌，中转以此为准，其余的删掉，所以需要一条 `{"t":"allow-sync","tokenHashes":["<hex>"]}`。
+配对令牌的 `ttlMs` 是 1 到 300000 的整数，由中转接收登记时的自身时钟计算到期时间。桌面端从发起登记起用单调时钟计算五分钟期限，收到确认后才展示，期限包含等待确认的时间。两端系统时钟的差值因此不参与有效期判断。原有 `expiresAt` 形式继续接受，要求 `now < expiresAt ≤ now + 300000`；一条配对登记恰好提供 `ttlMs` 或 `expiresAt` 中的一项。
+
+`oneTime` 的令牌在第一次连接成功时作废。长期令牌写入磁盘，配对令牌只在内存里。桌面端每次重连都先逐个 `allow` 重登记已配对设备的全部长期令牌哈希，等全部 `allow-ack` 后发送 `{"t":"allow-sync","tokenHashes":["<hex>"]}` 并进入在线状态。`allow-sync` 删除当前房间清单之外的长期令牌，保留配对令牌；增加令牌由前面的 `allow` 完成。中转准入文件丢失时，桌面端持有的哈希可恢复长期准入。
+
+### 准入确认（可选扩展）
+
+桌面端可以为 `allow` 增加 `id`（1 到 128 字节的字符串），请求确认：
+
+```jsonc
+{"t":"allow","id":"grant-1","tokenHash":"<hex>","oneTime":false,"expiresAt":null}
+{"t":"allow-ack","id":"grant-1"} // Relay -> desktop
+```
+
+配对令牌登记到内存后确认，长期令牌原子落盘后确认。写入失败时中转记录 `PERSIST_FAILED`，关闭本条桌面连接（`1011`），后续连接的写入仍可执行。桌面端收到确认后再展示配对码或发送 `pair4`，保证手机拿到令牌时准入已就绪。`allow` 省略 `id` 时保持原语义，中转省略确认回复。
+
+桌面端每笔登记等待确认至多 10 秒，超时或连接关闭时结束本次配对并重新连接中转。取消或替换配对后到达的确认只清理对应令牌。长期准入确认后，桌面端先保存设备公钥与令牌哈希，再发送 `pair4`；保存失败会结束本条桌面连接，重连时按已保存的设备清单校准中转。
+
+### 关闭逻辑连接（可选扩展）
+
+```jsonc
+// Desktop -> relay: close a phone connection in its own room.
+{"t":"disconnect","conn":"<连接号>","code":4411}
+```
+
+中转只处理该桌面端房间中的手机连接，按 `code` 关闭，并发送 `peer online:false`。`code` 只接受 `4411`、`4410`，省略时为 `4411`：
+
+- `4411` 表示本次会话被断开，可以重连。签名、密文、消息顺序等校验失败时使用此码。
+- `4410` 表示客户端身份未配对或已撤销，手机停止重连并提示重新配对。桌面端在握手时识别未知身份，或撤销已建立／正在握手的设备连接时使用此码。
+
+连接号已离线或属于其他房间时完成空操作。`disconnect` 只关闭连接，准入令牌的撤销由 `revoke` 完成。
+
+桌面端与开发 fake-host 均使用这两项扩展。桌面端通过 `disconnect.conn` 指定连接、`disconnect.code` 区分断开原因，中转校验关闭码并执行。配对的成功回复或拒绝消息先于关闭帧发送。
+
+已配对的 PWA 会话收到 `4411` 或 `4429` 后保留身份并自动重连。重试从 1.5 秒开始翻倍，最大间隔 30 秒；加密握手成功后重置间隔。每次重连使用新的连接和握手密钥，已发送操作继续按“结果未知”处理。
+
+配对连接按单次尝试处理，关闭后由用户重新发起。已接收的 `pair4` 完成解密后再判定配对结果，`4410` 或 `4411` 收尾关闭都保留已完成的配对结果；配对阶段使用的一次性令牌不自动重试。
 
 ### 转发
 
@@ -79,6 +114,8 @@
 {"t":"error","code":"HOST_OFFLINE"}             // 发给发送方
 ```
 
+桌面端 `data.to` 必须是连接号字符串，省略时以 `4400` 关闭；转发目标限定为当前房间的手机。
+
 ### 限制
 
 | 项 | 值 | 超出时 |
@@ -91,9 +128,13 @@
 | 同一 IP 准入失败 | 每分钟 10 次 | 关闭，`4429` |
 | 空闲 | 每 30 秒 ping，90 秒无响应 | 关闭 |
 
-其他关闭码：`4400` 版本不符，`4401` 准入失败或超时，`4409` 同房间新的桌面端顶替旧连接，`4410` 令牌被撤销（手机不再重连）。
+其他关闭码：`4400` 版本不符或中转帧格式错误，`4401` 准入失败或超时，`4409` 同房间新的桌面端顶替旧连接，`4410` 客户端身份未配对或令牌被撤销，`4411` 本次手机会话被断开。已配对 PWA 对 `4400`、`4401` 停止重试并提示检查协议版本与配对信息，对 `4410` 停止重连、清除本机配对身份并提示重新配对；`4411` 与连接／准入限额 `4429` 使用上述退避策略。
 
-中转日志只记连接事件和错误码，不记令牌和 `d`。
+准入前按帧头限制 4 KiB，超过即记一次准入失败。准入后，4 MiB 硬上限在读取正文前校验；2 MiB 到 4 MiB 之间回复错误并保留连接。分片消息的总长度也受对应的消息上限约束。
+
+`TANDEM_RELAY_TRUST_PROXY=1` 时采用 `X-Forwarded-For` 最后一段作为来源地址；其余情况下采用 socket 对端地址。代理负责写入可信地址，并保护中转内部端口。
+
+中转运行日志记录连接事件和错误码。启动时准入文件损坏会记录文件路径及恢复方法。日志保留令牌和 `d` 的保密边界。
 
 ## 5. 配对
 
@@ -149,7 +190,7 @@ okm     = HKDF(ikm=ECDH(E_c,E_h), salt=th, info="tandem-session-v1", 64字节)
 c2h = okm[0..32]，h2c = okm[32..64]
 ```
 
-`clientId` 未知、已撤销或签名不对时断开这条逻辑连接。握手完成前，桌面端不处理任何操作。
+`clientId` 未知或已撤销时以 `4410` 断开；签名、计数器、密文或握手顺序校验失败时以 `4411` 断开。握手完成前，桌面端不处理任何操作。
 
 握手后的消息：
 
@@ -178,7 +219,7 @@ c2h = okm[0..32]，h2c = okm[32..64]
 
 | 操作 | 参数 | 结果 |
 |---|---|---|
-| `host.info` | 无 | `{name, version, agents: Agent[], projects: {cwd, name}[]}` |
+| `host.info` | 无 | `{name, version, agents: Agent[], projects: {cwd, name}[], conversationRoots: string[]}` |
 | `tasks.list` | 无 | `{tasks: TaskSummary[], external: {taskId, isBusy}[]}`，不含已归档任务 |
 | `task.read` | `{agent, id, before?: number, limit?: number}` | `{messages: Message[], context, total: number}` |
 | `agent.info` | `{agent}` | `{models: ModelOption[], usage: UsageWindows \| null}` |
@@ -187,11 +228,17 @@ c2h = okm[0..32]，h2c = okm[32..64]
 | `request.answer` | `{taskId, requestId, decision: Decision}` | `{}` |
 | `live.snapshot` | 无 | `{seq: number, runs: Run[]}` |
 
+`host.info.projects` 包含已添加的项目及 `cwd: "tandem:conversation"` 的“对话”入口，按电脑侧栏保存的拖动顺序返回；尚未保存位置的项目放在已排序项目之前。页面通过 `remote_update_context` 的 `context.projectOrder` 将 localStorage 中的项目顺序传给后端。
+
+`conversationRoots` 包含当前与历史对话工作区。手机按目录边界匹配：任务目录等于根目录或位于根目录的子目录时，统一归入 `tandem:conversation` 分组。其他任务匹配最具体的项目目录；分组顺序沿用 `projects`，分组内按更新时间倒序。
+
 ```ts
 interface Run {
   runId: string;
   taskId: string | null;   // 新任务在 started 事件之前是 null
   agent: Agent;
+  startedAtMs: number;    // 桌面端记录的 Unix 毫秒开始时间
+  elapsedMs: number;      // 单调时钟计算的已运行时长
   /** 本轮到目前为止的事件，手机重连后据此补齐。 */
   events: TurnEvent[];
 }
@@ -199,14 +246,15 @@ interface Run {
 
 - `task.read` 从末尾倒着分页：`before` 是消息序号的上界（不含），默认总数；`limit` 默认 200，上限 500。`Message.image` 在 v1 里不传，改成 `image: "omitted"`，页面显示“图片”占位。
 - `seq` 由桌面端全局递增。快照里的 `seq` 是取快照那一刻的值，手机丢弃 `seq` 不大于它的事件，等快照期间到达的更大的事件要留到快照之后再应用，这样不重也不漏。
+- 快照和实时事件使用同一个 `startedAtMs`；`elapsedMs` 在各自生成时取值。手机用收到的 `elapsedMs` 与本机单调时钟延续计时，重连后保持已运行时长，手机和桌面端的系统时间可以不同。
 - 桌面端和手机同时看到同一轮：不论轮次从哪边发起，事件都推给所有已握手的手机，桌面界面也同步显示。
 
 事件：
 
 | 事件 | 内容 |
 |---|---|
-| `turn.event` | `{runId, taskId, seq: number, event: TurnEvent}` |
-| `tasks.changed` | 无。手机重新取 `tasks.list` |
+| `turn.event` | `{runId, taskId, startedAtMs, elapsedMs, seq: number, event: TurnEvent}` |
+| `tasks.changed` | 无。任务或页面上下文变化后，手机重新取 `tasks.list` 和 `host.info`，更新目录分组与项目顺序 |
 
 ## 8. PWA 范围
 

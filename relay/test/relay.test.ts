@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { WebSocket } from "ws";
-import { createRelay, tokenHash } from "../src/server.ts";
+import { startRelay } from "../dev/rust-relay.ts";
+import { tokenHash } from "../dev/tokens.ts";
 import { fakeHost } from "../dev/fake-host.ts";
 import { Client } from "../../pwa/src/lib/client.ts";
 import { parsePairCode } from "../../pwa/src/lib/pairing.ts";
@@ -13,14 +14,12 @@ import { parsePairCode } from "../../pwa/src/lib/pairing.ts";
 async function fixture(t: any, helloMs = 10_000) {
   const dir = await mkdtemp(join(tmpdir(), "tandem-relay-"));
   const file = join(dir, "tokens.json");
-  const relay = await createRelay({
+  const relay = await startRelay({
     hostToken: "test-host",
     dataFile: file,
     helloMs,
   });
-  relay.server.listen(0, "127.0.0.1");
-  await once(relay.server, "listening");
-  const url = `ws://127.0.0.1:${(relay.server.address() as any).port}/ws`;
+  const url = relay.url;
   t.after(async () => {
     await relay.close();
     await rm(dir, { recursive: true });
@@ -49,6 +48,42 @@ async function socket(url: string) {
 }
 const room = Buffer.alloc(16, 1).toString("base64url"),
   token = Buffer.alloc(32, 2).toString("base64url");
+test(
+  "相对配对期限支持完整五分钟，并按中转时间过期",
+  { timeout: 5000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    const host = await socket(url);
+    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+    await host.next();
+    for (const [id, ttlMs] of [
+      ["full", 300_000],
+      ["short", 25],
+    ] as const) {
+      const value = Buffer.alloc(32, id === "full" ? 21 : 22).toString(
+        "base64url",
+      );
+      host.send({
+        t: "allow",
+        id,
+        tokenHash: tokenHash(value),
+        oneTime: true,
+        ttlMs,
+      });
+      assert.deepEqual(await host.next(), { t: "allow-ack", id });
+      if (id === "short") await new Promise((r) => setTimeout(r, 50));
+      const client = await socket(url);
+      const closed = once(client.ws, "close");
+      client.send({ t: "client-hello", v: 1, room, token: value });
+      if (id === "full") {
+        assert.equal((await client.next()).t, "hello-ack");
+        client.ws.close();
+        await closed;
+        while ((await host.next()).online !== false) {}
+      } else assert.equal((await closed)[0], 4401);
+    }
+  },
+);
 test(
   "准入令牌一次使用、过期、撤销与 hash 持久化",
   { timeout: 10_000 },
@@ -197,6 +232,69 @@ test(
   },
 );
 test(
+  "首次握手被 disconnect 后，PWA 保留配对身份并自动重连",
+  { timeout: 10000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    const host = await fakeHost(url, "test-host", async () => true, {
+      disconnectFirstHandshake: true,
+    });
+    t.after(() => host.close());
+    const sockets: globalThis.WebSocket[] = [];
+    const closeCodes: number[] = [];
+    const client = new Client((address) => {
+      const ws = new globalThis.WebSocket(address);
+      ws.addEventListener("close", (event) => closeCodes.push(event.code));
+      sockets.push(ws);
+      return ws;
+    });
+    t.after(() => client.close());
+    const identity = await client.pair(parsePairCode(host.pairCode), "重连测试手机");
+    const statuses: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      client.onError = reject;
+      client.onStatus = (status) => {
+        statuses.push(status);
+        if (status === "ready") resolve();
+      };
+      client.connect(identity);
+    });
+    assert.equal(sockets.length, 3, "一次配对、首次握手和自动重连各使用一条连接");
+    assert.ok(closeCodes.includes(4411));
+    assert.deepEqual(statuses, ["closed", "connecting", "offline", "connecting", "ready"]);
+    assert.equal((await client.request("tasks.list")).tasks[0].id, "demo");
+  },
+);
+test("fake-host 对未知身份关闭 4410，其他已配对连接继续可用", { timeout: 5000 }, async (t) => {
+  const { url } = await fixture(t);
+  const host = await fakeHost(url, "test-host", async () => true);
+  t.after(() => host.close());
+  const client = new Client();
+  t.after(() => client.close());
+  const identity = await client.pair(parsePairCode(host.pairCode), "身份测试手机");
+  const codes: number[] = [];
+  const unknown = new Client((address) => {
+    const socket = new globalThis.WebSocket(address);
+    socket.addEventListener("close", (event) => codes.push(event.code));
+    return socket;
+  });
+  t.after(() => unknown.close());
+  await new Promise<void>((resolve, reject) => {
+    unknown.onError = reject;
+    unknown.onStatus = (status) => { if (status === "revoked") resolve(); };
+    unknown.connect({ ...identity, clientId: Buffer.alloc(16, 42).toString("base64url") });
+  });
+  assert.deepEqual(codes, [4410]);
+  await new Promise<void>((resolve, reject) => {
+    client.onError = reject;
+    client.onStatus = (status) => { if (status === "ready") resolve(); };
+    client.connect(identity);
+  });
+  const info = await client.request("host.info");
+  assert.deepEqual(info.projects.map((project: any) => project.cwd), ["/notes", "tandem:conversation", "/demo"]);
+  assert.deepEqual(info.conversationRoots, ["/conversations", "/past-conversations"]);
+});
+test(
   "转发隔离、覆盖 from、超大帧保持连接、host 替换",
   { timeout: 10_000 },
   async (t) => {
@@ -290,14 +388,12 @@ test(
         ]),
       ),
     );
-    const relay = await createRelay({ hostToken: "test-host", dataFile: file });
-    relay.server.listen(0, "127.0.0.1");
-    await once(relay.server, "listening");
+    const relay = await startRelay({ hostToken: "test-host", dataFile: file });
     t.after(async () => {
       await relay.close();
       await rm(dir, { recursive: true });
     });
-    const url = `ws://127.0.0.1:${(relay.server.address() as any).port}/ws`;
+    const url = relay.url;
     const client = await socket(url);
     client.send({ t: "client-hello", v: 1, room, token });
     assert.equal((await client.next()).hostOnline, false);
@@ -310,5 +406,249 @@ test(
     const next = client.next();
     host.ws.close();
     assert.deepEqual(await next, { t: "host", online: false });
+  },
+);
+
+test("准入帧和硬上限在帧头处拒绝，不等待正文", { timeout: 5000 }, async (t) => {
+  const { url } = await fixture(t);
+  const unauthenticated = await socket(url);
+  const failed = once(unauthenticated.ws, "close");
+  (unauthenticated.ws as any)._socket.write(
+    Buffer.from([0x81, 0xfe, 0x10, 0x01, 0, 0, 0, 0]),
+  );
+  assert.equal((await failed)[0], 4401);
+  const host = await socket(url);
+  host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+  await host.next();
+  const header = Buffer.alloc(14);
+  header[0] = 0x81;
+  header[1] = 0xff;
+  header.writeBigUInt64BE(BigInt(4 * 1024 * 1024 + 1), 2);
+  const closed = once(host.ws, "close");
+  (host.ws as any)._socket.write(header);
+  assert.equal((await closed)[0], 1009);
+});
+
+test("全局连接上限包括尚未准入的连接", { timeout: 10000 }, async (t) => {
+  const { url } = await fixture(t);
+  const pending = await Promise.all(
+    Array.from({ length: 256 }, () => socket(url)),
+  );
+  const overflow = await socket(url);
+  assert.equal((await once(overflow.ws, "close"))[0], 4429);
+  assert.equal(
+    pending.filter((p) => p.ws.readyState === WebSocket.OPEN).length,
+    256,
+  );
+});
+
+test(
+  "allow 确认在长期令牌落盘后返回，disconnect 限定本房间",
+  { timeout: 5000 },
+  async (t) => {
+    const { url, file, relay } = await fixture(t);
+    const host = await socket(url);
+    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+    await host.next();
+    host.send({
+      t: "allow",
+      id: "grant-1",
+      tokenHash: tokenHash(token),
+      oneTime: false,
+      expiresAt: null,
+    });
+    assert.deepEqual(await host.next(), { t: "allow-ack", id: "grant-1" });
+    assert.equal(
+      JSON.parse(await readFile(file, "utf8"))[0][0],
+      tokenHash(token),
+    );
+    const client = await socket(url);
+    client.send({ t: "client-hello", v: 1, room, token });
+    const ack = await client.next();
+    await host.next();
+    const alien = await socket(url);
+    alien.send({
+      t: "host-hello",
+      v: 1,
+      room: Buffer.alloc(16, 9).toString("base64url"),
+      token: "test-host",
+    });
+    await alien.next();
+    alien.send({ t: "disconnect", conn: ack.conn, code: 4410 });
+    host.send({ t: "data", to: ack.conn, d: "c2VjcmV0" });
+    assert.deepEqual(await client.next(), { t: "data", d: "c2VjcmV0" });
+    const closed = once(client.ws, "close");
+    host.send({ t: "disconnect", conn: ack.conn });
+    assert.equal((await closed)[0], 4411);
+    const restored = await socket(url);
+    restored.send({ t: "client-hello", v: 1, room, token });
+    const restoredAck = await restored.next();
+    assert.equal(restoredAck.t, "hello-ack");
+    assert.notEqual(restoredAck.conn, ack.conn);
+    assert.equal(relay.logs().includes("test-host"), false);
+    assert.equal(relay.logs().includes(token), false);
+    assert.equal(relay.logs().includes("c2VjcmV0"), false);
+  },
+);
+
+test(
+  "可信代理按 X-Forwarded-For 最后一段限流",
+  { timeout: 5000 },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "tandem-proxy-"));
+    const relay = await startRelay({
+      hostToken: "test-host",
+      dataFile: join(dir, "tokens.json"),
+      trustProxy: true,
+    });
+    t.after(async () => {
+      await relay.close();
+      await rm(dir, { recursive: true });
+    });
+    for (let i = 0; i < 10; i++) {
+      const ws = new WebSocket(relay.url, {
+        headers: { "X-Forwarded-For": `${i}, 198.51.100.10` },
+      });
+      await once(ws, "open");
+      const closed = once(ws, "close");
+      ws.send(JSON.stringify({ t: "host-hello", v: 1, room, token: "bad" }));
+      assert.equal((await closed)[0], i === 9 ? 4429 : 4401);
+    }
+    const ws = new WebSocket(relay.url, {
+      headers: { "X-Forwarded-For": "198.51.100.10, 198.51.100.11" },
+    });
+    const next = inbox(ws);
+    await once(ws, "open");
+    ws.send(
+      JSON.stringify({ t: "host-hello", v: 1, room, token: "test-host" }),
+    );
+    assert.equal((await next()).t, "hello-ack");
+  },
+);
+
+test("disconnect 区分可重连会话与需要重新配对的设备", { timeout: 5000 }, async (t) => {
+  const { url } = await fixture(t);
+  const host = await socket(url);
+  host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+  await host.next();
+  host.send({ t: "allow", id: "grant", tokenHash: tokenHash(token), oneTime: false, expiresAt: null });
+  await host.next();
+  for (const code of [4411, 4410]) {
+    const client = await socket(url);
+    client.send({ t: "client-hello", v: 1, room, token });
+    const ack = await client.next();
+    while ((await host.next()).online !== true) {}
+    const closed = once(client.ws, "close");
+    host.send({ t: "disconnect", conn: ack.conn, code });
+    assert.equal((await closed)[0], code);
+  }
+});
+
+test("损坏的准入文件在启动日志中报告路径与恢复办法", { timeout: 5000 }, async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "tandem-corrupt-grants-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, "tokens.json");
+  for (const content of ['{"secret":"private-fixture"', '[{"secret":"private-fixture"}]']) {
+    await writeFile(file, content);
+    await assert.rejects(startRelay({ hostToken: "test-host", dataFile: file }), (error: Error) => {
+      assert.ok(error.message.includes(file));
+      assert.match(error.message, /备份/);
+      assert.match(error.message, /重新登记/);
+      assert.equal(error.message.includes("private-fixture"), false);
+      return true;
+    });
+  }
+});
+
+test(
+  "host data 必须带 to，配对令牌存活至多五分钟",
+  { timeout: 5000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    for (const frame of [
+      { t: "data", d: "" },
+      {
+        t: "allow",
+        tokenHash: tokenHash(token),
+        oneTime: true,
+        expiresAt: Date.now() + 600_000,
+      },
+      {
+        t: "allow",
+        tokenHash: tokenHash(token),
+        oneTime: false,
+        expiresAt: Date.now() + 100_000,
+      },
+      { t: "allow-sync", tokenHashes: ["BAD"] },
+      { t: "revoke", tokenHash: "BAD" },
+      { t: "disconnect", conn: "unknown", code: 4400 },
+    ]) {
+      const host = await socket(url);
+      host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+      await host.next();
+      const closed = once(host.ws, "close");
+      host.send(frame);
+      assert.equal((await closed)[0], 4400);
+    }
+  },
+);
+
+for (const operation of ["revoke", "disconnect"] as const) {
+  test(
+    `${operation} 先发送已排队的最终回复，再发送关闭帧`,
+    { timeout: 5000 },
+    async (t) => {
+      const { url } = await fixture(t);
+      const host = await socket(url);
+      host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+      await host.next();
+      host.send({
+        t: "allow",
+        id: "grant",
+        tokenHash: tokenHash(token),
+        oneTime: false,
+        expiresAt: null,
+      });
+      await host.next();
+      const client = await socket(url);
+      client.send({ t: "client-hello", v: 1, room, token });
+      const ack = await client.next();
+      await host.next();
+      const frames: any[] = [];
+      client.ws.on("message", (raw) => frames.push(JSON.parse(raw.toString())));
+      const closed = once(client.ws, "close");
+      host.send({ t: "data", to: ack.conn, d: "ZmluYWw" });
+      host.send(
+        operation === "revoke"
+          ? { t: "revoke", tokenHash: tokenHash(token) }
+          : { t: "disconnect", conn: ack.conn },
+      );
+      assert.equal((await closed)[0], operation === "revoke" ? 4410 : 4411);
+      assert.deepEqual(frames, [{ t: "data", d: "ZmluYWw" }]);
+    },
+  );
+}
+
+test(
+  "WebSocket 自动回复 ping，超大二进制帧保留连接",
+  { timeout: 5000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    const host = await socket(url);
+    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+    await host.next();
+    const pong = once(host.ws, "pong");
+    host.ws.ping("heartbeat");
+    assert.equal((await pong)[0].toString(), "heartbeat");
+    host.ws.send(Buffer.alloc(2 * 1024 * 1024 + 1));
+    assert.equal((await host.next()).code, "PAYLOAD_TOO_LARGE");
+    host.send({
+      t: "allow",
+      id: "still-open",
+      tokenHash: tokenHash(token),
+      oneTime: false,
+      expiresAt: null,
+    });
+    assert.equal((await host.next()).id, "still-open");
   },
 );

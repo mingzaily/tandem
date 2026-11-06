@@ -1,0 +1,19 @@
+services:
+  relay:
+    image: ghcr.io/mingzaily/tandem-relay:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      TANDEM_RELAY_HOST_TOKEN: ${TANDEM_RELAY_HOST_TOKEN:?请先设置随机部署令牌}
+      TANDEM_RELAY_TRUST_PROXY: "1"
+    volumes:
+      - relay-data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+
+volumes:
+  relay-data:

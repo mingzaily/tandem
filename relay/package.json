@@ -8,19 +8,18 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts",
-    "dev": "tsx src/index.ts",
-    "start": "node dist/index.js",
-    "build": "tsc -p tsconfig.build.json",
-    "fake-host": "tsx dev/fake-host.ts"
-  },
-  "dependencies": {
-    "ws": "^8.18.3"
+    "test": "cargo build --locked && tsx --test test/*.test.ts",
+    "dev": "cargo run --locked",
+    "start": "./target/release/tandem-relay",
+    "build": "cargo build --locked --release",
+    "fake-host": "tsx dev/fake-host.ts",
+    "interop": "cargo build --locked && tsx dev/real-desktop.mts"
   },
   "devDependencies": {
     "@types/ws": "^8.18.1",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "ws": "^8.18.3"
   }
 }

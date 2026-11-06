@@ -12,9 +12,9 @@
 |---|---|
 | `docs/` | 产品、设计、开发规则和工程管理文档 |
 | `desktop/` | 桌面客户端：`src/` 是界面，`src-tauri/` 是 Rust 后端，`design/tokens/` 是设计 token |
-| `pwa/` | 手机端 PWA |
-| `relay/` | 自建中转 |
-| `site/` | 文档站和产品官网（未开始） |
+| `pwa/` | React 手机端 PWA：加密配对、任务查看与控制、离线应用壳 |
+| `relay/` | Rust 自建中转：设备准入、密文转发、PWA 静态托管和容器部署 |
+| `site/` | VitePress 官网和部署文档，Pages 产物包含手机端 |
 
 `docs/reference/repos/` 下有 Cindy 和 ccgui 的代码，供实现时查阅，不上传，也不要改。
 

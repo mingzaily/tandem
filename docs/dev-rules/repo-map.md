@@ -13,7 +13,7 @@
 | `src/components/Markdown.tsx` | Markdown 和代码高亮。随对话区按需加载 |
 | `src/components/Composer.tsx` | 输入框、附件、发送和停止 |
 | `src/lib/composerFocus.ts` | 输入空白与控件的焦点边界、发送后的焦点归属 |
-| `src/components/PendingQueuePanel.tsx` | 合并到输入卡片的待发送列表、常驻行操作、暂停与继续、指针和键盘排序 |
+| `src/components/PendingQueuePanel.tsx` | 合并到输入卡片的待发送列表、悬停行操作、暂停与继续、指针和键盘排序 |
 | `src/components/FileChangeSummary.tsx`、`src/lib/fileChanges.ts` | 各轮成功文件编辑的去重与累计行数；随结果保留的内嵌卡片、折叠与虚拟文件清单，随消息流按需加载 |
 | `src/components/ConversationLayout.tsx` | 消息流与底部输入区的叠放、32px 渐隐和动态底部留白 |
 | `src/components/ComposerControls.tsx` | 模型入口、权限、项目选择、底部的用量和上下文圆环 |
@@ -36,7 +36,7 @@
 | `src-tauri/src/pi.rs` | Pi：读会话文件，通过 `pi --mode rpc` 运行 |
 | `src-tauri/src/titles.rs` | 独立生成任务标题，通过 CLI 元数据接口写回原生标题 |
 | `src-tauri/src/writers.rs` | 查任务是否开在别的进程里、是否正在运行 |
-| `src-tauri/src/storage/` | `~/.tandem/` 配置与界面状态：TOML 注释保留、原子写入、窗口快照、文件观察、独占迁移 |
+| `src-tauri/src/storage/` | `~/.tandem/` 配置与界面状态：TOML 注释保留、原子写入、窗口快照、文件观察、单实例写锁与状态隔离 |
 | `src-tauri/src/remote/` | 手机访问：加密（`crypto`）、连接中转和会话（`link`）、手机能做的操作（`ops`）、配置（`store`） |
 | `src-tauri/src/agents.rs`、`cli_info.rs` | CLI 的状态、安装和登录；模型和用量 |
 | `src-tauri/src/attachments.rs`、`conversations.rs` | 附件；对话分组和项目发现 |
@@ -47,8 +47,9 @@
 
 ## 其他目录
 
-- `pwa/`、`relay/`：见各自的 README，接口见 [中转协议](../relay-protocol.md)。
-- `site/`：文档站和产品官网，还没开始。
+- `pwa/`：React/Vite 手机端，包含加密配对、任务列表、消息和工作记录、发送及审批、断线恢复与离线应用壳。入口见其 README。
+- `relay/`：Rust 中转，负责设备准入、密文转发、上下线通知及可选 PWA 静态托管，包含容器部署和真实 WebSocket 测试；接口见 [中转协议](../relay-protocol.md)。
+- `site/`：VitePress 官网与部署文档；Pages 构建组合官网 `/tandem/` 和手机端 `/tandem/app/`。
 - `docs/`：见 [文档索引](../README.md)。
 - `docs/brand/`：应用图标和标记的源文件。
 - `docs/reference/`：历史文档和本地参考仓库。

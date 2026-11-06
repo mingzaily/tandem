@@ -70,7 +70,10 @@ fn load(path: &Path) -> io::Result<HashMap<String, Grant>> {
     let data = match fs::read(path) {
         Ok(data) => data,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(e) => return Err(e),
+        Err(e) => return Err(io::Error::new(e.kind(), format!(
+            "读取准入文件 {} 失败：{e}；请检查文件权限，或将该路径改名保留后重启中转；桌面端重连会重新登记已配对设备的令牌，请保留电脑上的配对配置",
+            path.display()
+        ))),
     };
     let entries: Snapshot = serde_json::from_slice(&data).map_err(|_| invalid_data(path))?;
     if entries.iter().any(|(h, g)| {
@@ -133,6 +136,18 @@ fn atomic_write(path: &Path, snapshot: &[(String, Grant)]) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn unreadable_grants_report_path_and_recovery_without_exposing_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tokens.json");
+        fs::create_dir(&path).unwrap();
+        let error = match Store::open(path.clone()).await {
+            Ok(_) => panic!("a directory cannot be read as grants"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(error.contains("改名") && error.contains("重启") && error.contains("重新登记"), "{error}");
+    }
     #[tokio::test]
     async fn failed_write_does_not_poison_the_next_write() {
         let dir = tempfile::tempdir().unwrap();

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -557,6 +557,40 @@ test("损坏的准入文件在启动日志中报告路径与恢复办法", { tim
       assert.equal(error.message.includes("private-fixture"), false);
       return true;
     });
+  }
+});
+
+test("准入文件读取失败有恢复提示，改名后重连可重新登记原令牌", { timeout: 10000 }, async (t) => {
+  for (const unreadable of [false, true]) {
+    const dir = await mkdtemp(join(tmpdir(), "tandem-grants-recovery-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const file = join(dir, "tokens.json");
+    if (unreadable) await mkdir(file);
+    else await writeFile(file, "{broken grants");
+    await assert.rejects(startRelay({ hostToken: "test-host", dataFile: file }), (error: Error) => {
+      assert.ok(error.message.includes(file));
+      assert.match(error.message, /重新登记/);
+      if (unreadable) assert.match(error.message, /改名.*重启/);
+      return true;
+    });
+    await rename(file, `${file}.corrupt`);
+    if (!unreadable) assert.equal(await readFile(`${file}.corrupt`, "utf8"), "{broken grants");
+    const relay = await startRelay({ hostToken: "test-host", dataFile: file });
+    t.after(() => relay.close());
+    const host = await socket(relay.url);
+    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+    assert.equal((await host.next()).t, "hello-ack");
+    // The desktop's restore_clients sends this registration on every reconnect.
+    host.send({ t: "allow", id: "restore", tokenHash: tokenHash(token), oneTime: false, expiresAt: null });
+    assert.deepEqual(await host.next(), { t: "allow-ack", id: "restore" });
+    host.send({ t: "allow-sync", tokenHashes: [tokenHash(token)] });
+    const client = await socket(relay.url);
+    client.send({ t: "client-hello", v: 1, room, token });
+    const ack = await client.next();
+    assert.equal(ack.t, "hello-ack");
+    assert.equal(ack.hostOnline, true);
+    assert.equal(JSON.parse(await readFile(file, "utf8"))[0][0], tokenHash(token));
+    await relay.close();
   }
 });
 

@@ -1,0 +1,203 @@
+{
+  "source": "Isolated Tauri debug app, TANDEM_DRIVE_SCRIPT, fake CLI only",
+  "checks": [
+    {
+      "corruptNotice": true,
+      "phase": "startup",
+      "queues": [
+        {
+          "agent": "claude",
+          "entries": [],
+          "error": "上次错误",
+          "paused": true,
+          "revision": 5,
+          "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+        },
+        {
+          "agent": "claude",
+          "entries": [
+            {
+              "attachments": [],
+              "id": "282a7628-710c-4cef-b09c-1a87fa0098f8",
+              "options": {
+                "effort": null,
+                "ignoreExternalWriter": false,
+                "model": null,
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "恢复后队首"
+            },
+            {
+              "attachments": [],
+              "id": "3fb8dba2-78eb-4f31-afb6-bff3f6599994",
+              "options": {
+                "effort": null,
+                "ignoreExternalWriter": false,
+                "model": null,
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "恢复后尾条"
+            }
+          ],
+          "error": "上次发送中断，无法确定 CLI 是否已接收。消息已回到队首，队列暂停，请确认后继续发送。",
+          "paused": true,
+          "revision": 5,
+          "taskId": "9686d638-a527-4c1d-9313-f6e0f06e206b"
+        }
+      ]
+    },
+    {
+      "phase": "recovery-notice",
+      "visible": true
+    },
+    {
+      "phase": "recovery-notice",
+      "visible": true
+    },
+    {
+      "phase": "holding-direct",
+      "queue": {
+        "agent": "claude",
+        "entries": [
+          {
+            "attachments": [],
+            "id": "43723f1e-442c-4088-87cc-0ade0b673a14",
+            "options": {
+              "effort": null,
+              "ignoreExternalWriter": false,
+              "model": null,
+              "permissionMode": null,
+              "worktree": false
+            },
+            "prompt": "queued after direct"
+          }
+        ],
+        "error": null,
+        "paused": false,
+        "revision": 9,
+        "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+      }
+    },
+    {
+      "phase": "startup-failure-retained",
+      "queue": {
+        "agent": "claude",
+        "entries": [
+          {
+            "attachments": [],
+            "id": "43723f1e-442c-4088-87cc-0ade0b673a14",
+            "options": {
+              "effort": null,
+              "ignoreExternalWriter": false,
+              "model": null,
+              "permissionMode": null,
+              "worktree": false
+            },
+            "prompt": "queued after direct"
+          }
+        ],
+        "error": "claude was not found in the login shell PATH",
+        "paused": true,
+        "revision": 12,
+        "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+      },
+      "visible": true
+    },
+    {
+      "phase": "rejected-retained",
+      "queue": {
+        "agent": "claude",
+        "entries": [
+          {
+            "attachments": [],
+            "id": "43723f1e-442c-4088-87cc-0ade0b673a14",
+            "options": {
+              "effort": null,
+              "ignoreExternalWriter": false,
+              "model": null,
+              "permissionMode": null,
+              "worktree": false
+            },
+            "prompt": "reject queued"
+          }
+        ],
+        "error": "prompt rejected",
+        "paused": true,
+        "revision": 16,
+        "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+      }
+    },
+    {
+      "phase": "accepted-drained",
+      "queue": {
+        "agent": "claude",
+        "entries": [],
+        "error": null,
+        "paused": false,
+        "revision": 19,
+        "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+      }
+    },
+    {
+      "phase": "recovery-explicit-resume-drained"
+    },
+    {
+      "automaticSend": false,
+      "phase": "hard-crash-recovered",
+      "queue": {
+        "agent": "claude",
+        "entries": [
+          {
+            "attachments": [],
+            "id": "c5e0d44a-3353-4061-94d6-fef910e7595d",
+            "options": {
+              "effort": null,
+              "ignoreExternalWriter": false,
+              "model": null,
+              "permissionMode": null,
+              "worktree": false
+            },
+            "prompt": "crash before ack"
+          }
+        ],
+        "error": "上次发送中断，无法确定 CLI 是否已接收。消息已回到队首，队列暂停，请确认后继续发送。",
+        "paused": true,
+        "revision": 24,
+        "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399"
+      },
+      "warningVisible": true
+    },
+    {
+      "keyCount": 0,
+      "matches": true,
+      "phase": "storage-restored"
+    },
+    {
+      "matches": true,
+      "phase": "storage-rechecked"
+    }
+  ],
+  "beforeCrash": {
+    "taskId": "d954bdb4-56ea-43a2-b8ff-d73a5d604399",
+    "agent": "claude",
+    "entries": [],
+    "inFlight": {
+      "id": "c5e0d44a-3353-4061-94d6-fef910e7595d",
+      "prompt": "crash before ack",
+      "attachments": [],
+      "options": {
+        "model": null,
+        "effort": null,
+        "permissionMode": null,
+        "worktree": false,
+        "ignoreExternalWriter": false
+      }
+    },
+    "paused": false,
+    "error": null,
+    "revision": 23
+  },
+  "preAckPromptCountAfterRestart": 1
+}

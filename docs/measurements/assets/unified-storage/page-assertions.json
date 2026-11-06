@@ -1,0 +1,267 @@
+{
+  "method": "TANDEM_DRIVE_SCRIPT; isolated data + WebKit profile; substitute CLIs",
+  "nativeScreenshots": {
+    "status": "blocked",
+    "reason": "Mac locked"
+  },
+  "records": {
+    "migrated": {
+      "config": {
+        "agents": {
+          "claude": {
+            "effort": "",
+            "model": "",
+            "permission_mode": "ask"
+          },
+          "codex": {
+            "effort": "xhigh",
+            "model": "audit-codex",
+            "permission_mode": "ask"
+          },
+          "pi": {
+            "effort": "",
+            "model": "",
+            "permission_mode": "ask"
+          }
+        },
+        "conversation_dir": "",
+        "dark_theme": "tandem-dark",
+        "keep_in_menu_bar": false,
+        "language": "zh",
+        "light_theme": "tandem-light",
+        "new_task_agent": "claude",
+        "notify_when_done": true,
+        "past_conversation_dirs": [],
+        "projects": [
+          "/Users/mingzaily/Library/Caches/tandem-storage-audit-kewkg8n4"
+        ],
+        "send_with_cmd_enter": false,
+        "theme": "dark",
+        "translucent_sidebar": true,
+        "ui_font_size": 15
+      },
+      "font": "15px",
+      "horizontal": false,
+      "images": [],
+      "legacyPreserved": true,
+      "phase": "migrated",
+      "queues": [
+        {
+          "agent": "claude",
+          "entries": [
+            {
+              "attachments": [
+                {
+                  "id": "d3c15b47-c183-4b26-81b4-58ccb994f3fb",
+                  "kind": "image",
+                  "name": "fixture.png",
+                  "preview": "queue-image://localhost/2e26d74b-f390-4a6a-92a8-b96b437f69bd/d3c15b47-c183-4b26-81b4-58ccb994f3fb"
+                }
+              ],
+              "id": "11881060-b631-48f6-9d36-beed20862344",
+              "options": {
+                "effort": "high",
+                "model": "audit-model",
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "核对迁移后的附件与模型"
+            },
+            {
+              "attachments": [],
+              "id": "c42daa5d-8f4d-45a4-8876-c9d91bb3db04",
+              "options": {
+                "effort": "high",
+                "model": "audit-model",
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "保留第二条待发送消息"
+            }
+          ],
+          "error": null,
+          "paused": true,
+          "revision": 2,
+          "taskId": "2e26d74b-f390-4a6a-92a8-b96b437f69bd"
+        }
+      ],
+      "remoteClients": 1,
+      "state": {
+        "migrationVersion": 1,
+        "projectOrder": [
+          "/Users/mingzaily/Library/Caches/tandem-storage-audit-kewkg8n4"
+        ],
+        "projectsSeeded": true,
+        "sidebarCollapsed": false,
+        "sidebarWidth": 260,
+        "taskMeta": {
+          "archived": [],
+          "pins": [
+            "2e26d74b-f390-4a6a-92a8-b96b437f69bd"
+          ],
+          "titles": {
+            "2e26d74b-f390-4a6a-92a8-b96b437f69bd": "配置迁移验收"
+          }
+        }
+      },
+      "theme": "tandem-dark"
+    },
+    "manual-light-settled": {
+      "errors": [],
+      "font": "16px",
+      "phase": "manual-light-settled",
+      "theme": "tandem-light"
+    },
+    "invalid-config": {
+      "configTheme": "light",
+      "errors": [
+        "config.toml 语法错误：TOML parse error at line 1, column 10\n  |\n1 | theme = [\n  |          ^\nunclosed array, expected `]`\n。继续使用上次有效配置，修正文件后自动生效"
+      ],
+      "font": 16,
+      "phase": "invalid-config",
+      "refused": true
+    },
+    "invalid-visible": {
+      "configTheme": "light",
+      "font": "16px",
+      "horizontal": false,
+      "notice": "config.toml 语法错误：TOML parse error at line 1, column 10 | 1 | theme = [ | ^ unclosed array, expected `]` 。继续使用上次有效配置，修正文件后自动生效\n保存本地设置失败：config.toml 语法错误：TOML parse error at line 1, column 10 | 1 | theme = [ | ^ unclosed array, expected `]`",
+      "phase": "invalid-visible",
+      "theme": "tandem-light"
+    },
+    "repaired-and-edited": {
+      "configTheme": "light",
+      "font": 16,
+      "phase": "repaired-and-edited",
+      "queues": [
+        {
+          "agent": "claude",
+          "entries": [
+            {
+              "attachments": [
+                {
+                  "id": "d3c15b47-c183-4b26-81b4-58ccb994f3fb",
+                  "kind": "image",
+                  "name": "fixture.png",
+                  "preview": "queue-image://localhost/2e26d74b-f390-4a6a-92a8-b96b437f69bd/d3c15b47-c183-4b26-81b4-58ccb994f3fb"
+                }
+              ],
+              "id": "11881060-b631-48f6-9d36-beed20862344",
+              "options": {
+                "effort": "high",
+                "model": "audit-model",
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "迁移后编辑已保存"
+            },
+            {
+              "attachments": [],
+              "id": "c42daa5d-8f4d-45a4-8876-c9d91bb3db04",
+              "options": {
+                "effort": "high",
+                "model": "audit-model",
+                "permissionMode": null,
+                "worktree": false
+              },
+              "prompt": "保留第二条待发送消息"
+            }
+          ],
+          "error": null,
+          "paused": true,
+          "revision": 3,
+          "taskId": "2e26d74b-f390-4a6a-92a8-b96b437f69bd"
+        }
+      ],
+      "state": {
+        "migrationVersion": 1,
+        "projectOrder": [
+          "/Users/mingzaily/Library/Caches/tandem-storage-audit-kewkg8n4"
+        ],
+        "projectsSeeded": true,
+        "sidebarCollapsed": false,
+        "sidebarWidth": 260,
+        "taskMeta": {
+          "archived": [],
+          "pins": [],
+          "titles": {
+            "2e26d74b-f390-4a6a-92a8-b96b437f69bd": "配置归属验收"
+          }
+        }
+      }
+    },
+    "once-only-restart": {
+      "font": "16px",
+      "legacyTheme": "dark",
+      "paused": true,
+      "phase": "once-only-restart",
+      "queueCount": 2,
+      "theme": "tandem-light"
+    },
+    "sent-from-new-root": {
+      "phase": "sent-from-new-root",
+      "previewLoaded": true,
+      "queueCount": 0
+    },
+    "large-migration-first": {
+      "composerPresent": true,
+      "errors": [],
+      "font": "15px",
+      "notice": "迁移中…",
+      "pending": true,
+      "phase": "large-migration-first",
+      "theme": "tandem-dark"
+    },
+    "large-panel-first": {
+      "font": "15px",
+      "pending": true,
+      "phase": "large-panel-first",
+      "theme": "tandem-dark"
+    },
+    "large-migration-complete": {
+      "draftKept": true,
+      "horizontal": false,
+      "pending": false,
+      "phase": "large-migration-complete",
+      "queueCount": 20,
+      "theme": "tandem-dark"
+    },
+    "activation-first": {
+      "composerPresent": true,
+      "font": "15px",
+      "pending": true,
+      "phase": "activation-first",
+      "theme": "tandem-dark"
+    },
+    "remote-save-during-migration": {
+      "clients": 1,
+      "draftKept": true,
+      "hasHostToken": true,
+      "pendingAtRequest": true,
+      "phase": "remote-save-during-migration",
+      "queueCount": 20
+    },
+    "storage-restored": {
+      "keys": 0,
+      "matches": true,
+      "phase": "storage-restored"
+    },
+    "narrow-error-geometry": {
+      "errors": 1,
+      "font": "15px",
+      "height": 480,
+      "horizontal": false,
+      "noticeFits": true,
+      "noticePresent": true,
+      "phase": "narrow-error-geometry",
+      "storageKeys": 0,
+      "theme": "tandem-dark",
+      "width": 720
+    }
+  },
+  "pairingIdentityPreserved": true,
+  "permissions": {
+    "root": "0700",
+    "remote": "0600"
+  }
+}

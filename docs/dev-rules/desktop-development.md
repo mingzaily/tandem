@@ -35,7 +35,7 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 测试窗口要关掉通知（`notifyWhenDone: false`），否则会弹到用户屏幕上。每批结束删掉测试任务（Claude 的项目目录、Pi 的会话目录、Codex 的 `thread/delete`）。
 
-测试脚本改过的 `localStorage` 要在结束时还原，调试版和正式版共用这份数据。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
+测试脚本改过的 `localStorage` 要在结束时还原。同一应用标识的页面共用 WebKit 数据；Tandem 文件默认统一到 `~/.tandem/`，替身验收必须设置独立 DATA_DIR 和 LEGACY_DIR。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
 
 `TANDEM_DRIVE_PANEL=1` 打开菜单栏面板，测试点不了菜单栏图标。`TANDEM_DRIVE_CLOSE=<秒>` 到时间关主窗口，和点红色按钮走同一条路。`TANDEM_DRIVE_PAIR_FILE=<路径>` 把配对码写到文件，`TANDEM_DRIVE_PAIR_ALLOW=1` 代答配对弹窗，这几个都只在调试版生效。
 
@@ -43,7 +43,19 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 `TANDEM_DRIVE_ATTACH=路径:路径` 按拖入窗口的方式送入附件，系统文件对话框驱动不了时用它测试。
 
-脚本在窗口加载约 1 秒后执行，可以操作 DOM。设置这个变量时窗口会浮在最上层且不抢焦点，否则页面会被挂起。这段代码只编译进调试版（`#[cfg(debug_assertions)]`），正式版没有这个入口。
+`TANDEM_DRIVE_DATA_DIR=<临时目录>` 隔离整个 `~/.tandem/`，`TANDEM_DRIVE_LEGACY_DIR=<临时目录>` 注入旧 Application Support 来源。迁移验收必须同时设置这两个入口；它们只编译进调试版。`TANDEM_DRIVE_QUEUE_DIR=<临时目录>` 仍可单独隔离队列，完整存储验收优先使用 DATA_DIR。`TANDEM_DRIVE_REPORT=<路径>` 将页面发出的 `drive-report` 事件逐条写成 JSON 行，便于备份 localStorage 和记录断言结果。这些入口均只在调试版启用，报告路径由启动环境指定。替身测试同时把 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 指向临时目录，测试完成后恢复 localStorage 并删除替身任务。
+
+替身测试的调试构建使用独立应用标识以隔离 WebKit 的 localStorage，并用 DATA_DIR、LEGACY_DIR 隔离文件存储：`pnpm tauri build --debug --bundles app --config '{"identifier":"com.mingzaily.tandem.model-audit"}'`。仍需在测试前备份、测试后恢复该测试页面的 localStorage。正式版按上面的常规命令构建，使用仓库配置中的应用标识。
+
+多个调试包使用独立的 `productName` 与 `identifier`。同名包反复采用不同标识时，系统的应用路径缓存会让截图工具仍按旧标识查找；独立名称让工具准确定位测试实例。
+
+`TANDEM_DRIVE_WATCH=1` 每秒检查驱动脚本，内容变化后在当前页面执行一次。更新脚本时用原子替换，便于分阶段检查菜单和截图。该入口只编译进调试版。
+
+同时使用 `TANDEM_DRIVE_PANEL=1` 和 `TANDEM_DRIVE_PANEL_SCRIPT=<路径>` 可在菜单栏面板里执行独立页面脚本；`TANDEM_DRIVE_WATCH=1` 同时监视主窗口与面板脚本。
+
+脚本在窗口加载约 1 秒后执行，可以操作 DOM。设置这个变量时窗口会居中、浮在最上层且不抢焦点，让目标窗口保持完整可见，否则窗口移出屏幕后截图会出现空白区域，被遮挡的页面也会被挂起。这段代码只编译进调试版（`#[cfg(debug_assertions)]`），正式版没有这个入口。
+
+验证原生输入光标时，使用 `open -n --env 名称=值 ... /path/TandemAudit.app` 一次传入完整的隔离环境并启动前台窗口，保持单个测试实例。直接运行可执行文件之后再执行 `open -a`，Launch Services 可能创建第二个实例并采用常规环境，截图会取到另一个窗口。页面交互继续使用驱动脚本。
 
 输入框要用原生 setter 赋值，React 才能收到变化：
 
@@ -54,6 +66,8 @@ box.dispatchEvent(new Event('input', { bubbles: true }));
 ```
 
 截图只截这个窗口，不要截整个屏幕：用 `CGWindowListCopyWindowInfo` 按进程找到窗口编号，再执行 `screencapture -x -l <窗口编号> out.png`。
+
+也可用截图工具的目标应用 getScreenshot，直接保存它返回的图像。验证窄窗口时使用保持原尺寸的截图入口；有些 get-app-state 接口会先调整窗口。脚本 resize 后重新居中，保持窗口完整落在屏幕内；测试专用 set-size/center 权限写进临时构建配置，release 继续使用仓库配置。主题切换后同时核对 computed style 与实际绘制，确认所有表面更新完成再存图。
 
 驱动真实任务时，放在临时目录里用最短的提示词，不要动用户现有的任务。发送前脚本必须确认页面上选中的工作目录就是这个临时目录，对不上就中止：新建页默认选最近的项目，通常是这个仓库本身。选择器要限定在弹出的列表里，侧边栏的项目行也带同样的 `title`。
 

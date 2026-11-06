@@ -1,0 +1,32 @@
+{
+  "production": {
+    "processStarted": true,
+    "migrationCompleted": true,
+    "rootMode": "0o700",
+    "files": {
+      "config.toml": {
+        "exists": true,
+        "mode": "0o600"
+      },
+      "state.json": {
+        "exists": true,
+        "mode": "0o600"
+      },
+      "remote.json": {
+        "exists": false,
+        "mode": null
+      }
+    },
+    "cacheCreated": false
+  },
+  "cliConfigurationHashes": {
+    "~/.claude/settings.json": "bea1295f4283780b550195feac1b3a76d1c977b93fcf26b1eaf206d522556dd9",
+    "~/.codex/config.toml": "10286419654d3be6332d0d02344828f7c65d2dbacd8784c7ea03f23d2d4f674e",
+    "~/.pi/agent/settings.json": "6c63d66ab9d20aae910c23738757066965b85d647b6b0199258a30fbd46e1ce2",
+    "~/.pi/agent/models.json": "8318276f06a6564350d852fd6b2a954126923e10a093fbc0b307649a57883e48"
+  },
+  "cliConfigurationUnchanged": true,
+  "branch": "main",
+  "committed": false,
+  "pushed": false
+}

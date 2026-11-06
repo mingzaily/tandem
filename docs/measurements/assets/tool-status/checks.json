@@ -1,0 +1,95 @@
+{
+  "source": "Native debug app, temporary fake CLI, page script",
+  "checks": [
+    {
+      "detailsVisible": true,
+      "label": "mcp__memory__search_nodes 运行中…",
+      "metaRight": 1152,
+      "phase": "mcp-row-light",
+      "rowHeight": 32,
+      "rowText": "调用memory · search nodes",
+      "scrollWidth": 1200,
+      "title": "mcp__memory__search_nodes 运行中…",
+      "tooltip": "mcp__memory__search_nodes\n队列设计",
+      "truncated": false,
+      "width": 1200
+    },
+    {
+      "label": "mcp__memory__search_nodes 运行中…",
+      "metaRight": 1152,
+      "phase": "mcp-row-dark",
+      "rowHeight": 32,
+      "scrollWidth": 1200,
+      "surface": "#181818",
+      "theme": "tandem-dark",
+      "title": "mcp__memory__search_nodes 运行中…",
+      "truncated": false,
+      "width": 1200
+    },
+    {
+      "label": "正在思考…",
+      "metaRight": 1152,
+      "phase": "completed-tool-thinking",
+      "rowHeight": 32,
+      "scrollWidth": 1200,
+      "title": "正在思考…",
+      "truncated": false,
+      "width": 1200
+    },
+    {
+      "height": 480,
+      "label": "mcp__project_knowledge_base__search_architecture_decisions_and_related_design_documents 运行中…",
+      "metaRight": 702,
+      "phase": "mcp-narrow-dark",
+      "rowHeight": 32,
+      "scrollWidth": 720,
+      "theme": "tandem-dark",
+      "title": "mcp__project_knowledge_base__search_architecture_decisions_and_related_design_documents 运行中…",
+      "truncated": true,
+      "width": 720
+    },
+    {
+      "height": 480,
+      "label": "mcp__project_knowledge_base__search_architecture_decisions_and_related_design_documents 运行中…",
+      "metaRight": 702,
+      "phase": "mcp-narrow-light",
+      "rowHeight": 32,
+      "scrollWidth": 720,
+      "theme": "tandem-light",
+      "title": "mcp__project_knowledge_base__search_architecture_decisions_and_related_design_documents 运行中…",
+      "truncated": true,
+      "width": 720
+    },
+    {
+      "keyCount": 5,
+      "matches": true,
+      "phase": "storage-restored-v2"
+    }
+  ],
+  "closedTestPids": [],
+  "cliConfigSha256": {
+    ".claude/settings.json": "bea1295f4283780b550195feac1b3a76d1c977b93fcf26b1eaf206d522556dd9",
+    ".codex/config.toml": "10286419654d3be6332d0d02344828f7c65d2dbacd8784c7ea03f23d2d4f674e",
+    ".pi/agent/settings.json": "6c63d66ab9d20aae910c23738757066965b85d647b6b0199258a30fbd46e1ce2",
+    ".pi/agent/models.json": "8318276f06a6564350d852fd6b2a954126923e10a093fbc0b307649a57883e48"
+  },
+  "cleanup": {
+    "remainingTestProcesses": [],
+    "removed": [
+      "/Users/mingzaily/Library/Caches/com.mingzaily.tandem.tool-status-audit",
+      "/Users/mingzaily/Library/WebKit/com.mingzaily.tandem.tool-status-audit",
+      "desktop/src-tauri/target/debug/bundle/macos/TandemToolStatusAudit.app",
+      "/Users/mingzaily/Library/Caches/tandem-status-project-4qzgzx1a",
+      "/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-tool-status-9u77_qt8"
+    ]
+  },
+  "validation": {
+    "typecheck": "passed",
+    "frontendTests": 159,
+    "frontendFiles": 28,
+    "rustTests": 179,
+    "rustIgnored": 1,
+    "releaseBuild": "passed",
+    "releaseMiB": 5.31
+  }
+}

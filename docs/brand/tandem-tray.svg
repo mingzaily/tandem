@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="44" height="36" viewBox="171 233 682 558">
+  <!-- 菜单栏模板：22×18pt 横向画布让双环保持约 13pt 高；交叉处留缝，背景透明。 -->
+  <mask id="rings" maskUnits="userSpaceOnUse" x="171" y="233" width="682" height="558">
+    <rect x="171" y="233" width="682" height="558" fill="#000"/>
+    <g fill="none">
+      <circle cx="404" cy="512" r="170" stroke="#fff" stroke-width="64"/>
+      <circle cx="620" cy="512" r="170" stroke="#000" stroke-width="112"/>
+      <circle cx="620" cy="512" r="170" stroke="#fff" stroke-width="64"/>
+      <path d="M546.6 604.6A170 170 0 0 1 467.7 669.6" stroke="#000" stroke-width="112"/>
+      <path d="M560.5 578.4A170 170 0 0 1 439.3 678.3" stroke="#fff" stroke-width="64"/>
+    </g>
+  </mask>
+  <rect x="171" y="233" width="682" height="558" fill="#000" mask="url(#rings)"/>
+</svg>

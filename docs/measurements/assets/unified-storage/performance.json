@@ -1,0 +1,11 @@
+{
+  "platform": "macOS 26.6.2 arm64",
+  "optimizedBackendMigrationMs": 2496,
+  "migrationBytes": 104857600,
+  "migrationSamples": 1,
+  "migrationSourcesPreserved": true,
+  "cacheCreated": false,
+  "visibleReleaseStartup": null,
+  "visibleReleaseFootprint": null,
+  "blockedReason": "Mac locked; visible-window measurements deferred"
+}

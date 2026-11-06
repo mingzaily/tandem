@@ -3,7 +3,7 @@
 > **状态**：权威
 > **读取时机**：首次搭建开发环境
 
-需要 Rust 1.91 或更新、Node.js 24、pnpm 10、Xcode 命令行工具，以及用户自己安装并登录好的 `claude`。目前只支持 macOS。
+需要 Rust 1.91 或更新、Node.js 24、pnpm 10、Xcode 命令行工具，以及至少一个用户自己安装并登录好的 CLI（`claude`、`codex` 或 `pi`）。目前只支持 macOS。
 
 ```bash
 cd desktop

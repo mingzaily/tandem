@@ -25,7 +25,7 @@
 
 ```bash
 claude -p --input-format stream-json --output-format stream-json \
-  --verbose --include-partial-messages \
+  --verbose --include-partial-messages --replay-user-messages \
   --permission-prompt-tool stdio \
   --session-id <新 uuid>   # 新任务
   --resume <uuid>          # 续接
@@ -69,7 +69,7 @@ claude -p --input-format stream-json --output-format stream-json \
 
 **驱动**：`pi --mode rpc`（`--session <路径>` 续接，`--session-id <uuid>` 新建），每轮一个进程。发 `prompt`，处理事件，到 `agent_settled` 为止，然后关闭 stdin 让它写完退出。停止发 `abort`。
 
-**模型列表**：`pi --mode rpc --no-session --no-extensions`，0.3 秒，不连用户的 MCP。带扩展启动要 2.8 秒。
+**模型列表**：`pi --mode rpc --no-session --no-extensions`。先用 `get_available_models` 和 `get_state` 读取模型清单与当前默认模型，再在同一临时进程里逐个 `set_model`，用 `get_state`、`get_available_thinking_levels` 读取每个模型的实际默认值与可选档位，包括 `off`。RPC 的模型与强度切换默认 `persist: false`，只改变进程内状态；`--no-session` 保持原生任务文件原样。读取时关闭扩展，避免连接用户的 MCP。
 
 **对话框**：扩展的 `confirm`、`select`、`input`、`editor` 显示成卡片，其他 `extension_ui_request` 只影响它自己的显示，忽略。
 
@@ -77,9 +77,53 @@ claude -p --input-format stream-json --output-format stream-json \
 
 见 [路线图](../roadmap.md)。见文件。
 
+## 终端续接
+
+任务菜单的“复制终端续接命令”先用 `cd -- <任务目录>` 切换目录，成功后用 `&&` 执行对应 CLI 的续接命令。目录取自原生任务的 `cwd`，worktree 任务使用其实际目录。目录和任务 ID 按 shell 单引号规则转义，保留空格、引号和特殊字符。
+
+## 生成标题
+
+任务菜单提供单个任务的“生成标题”。参考本机 pi-web 0.15.0 的实现：提取用户和助手文字，保留开头目标和最近结果，最多 6000 个字符；图片只保留标记，附件路径、工具输出和思考内容留在原记录中。沿用该 Agent 输入框当前选择的模型，选择模型支持的低推理强度，单独请求一个简短标题，90 秒超时。
+
+标题生成运行在临时工作目录，工具和项目扩展关闭，生成过程保持独立：Claude 用 `--no-session-persistence`，Pi 用 `--no-session`，Codex 用 `ephemeral: true`，线程仍以 `sandbox: read-only` 启动。原任务的消息、运行状态和待发送队列保持各自生命周期。
+
+模型返回的标题由 CLI 写入原生标题元数据：Claude 的 `rename_session` 控制请求、Codex 的 `thread/name/set`、Pi 的 `set_session_name`。Claude 和 Pi 在 Tandem 运行中时复用该任务的 stdin；空闲时短暂续接原任务，只发送改名请求，等待确认后退出。空闲元数据写入期间暂停队列领取，完成后恢复原来的队列状态；已暂停的队列保持暂停。Claude 开在其他程序中时要求先关闭该程序里的任务。
+
+保存成功后清除原来的本地别名，界面采用原生标题。生成期间手动改过的别名继续生效。手动“重命名”仍属于 Tandem 的本地别名。标题生成和保存都通过后端命令提供，手机端操作名单保持原样。
+
+Codex App 会把附件说明和用户输入封装成 `Files mentioned by the user` 与 `My request` 文本。读取时按完整封装结构提取正文，图片由独立图片块显示，普通文件转换为附件标签。普通 Markdown 和不完整封装保留原文。
+
 ## 运行中插入的消息
 
+Tandem 的待发送队列由 `queue.rs` 管理。运行中发送先保存为本地草稿；当前轮正常结束、进程退出并释放原生任务后，才以新一轮交给 CLI。队列修改通过后端命令完成，附件和发送选项随条目保存。停止、出错和应用重启后，已有待发送消息保持暂停。队列为空且任务已空闲时，发送新消息直接开始新一轮。发送前不写原生会话文件，也不使用 CLI 自带的排队接口。
+
+领取时把整条消息移到同一文件的 `inFlight` 字段并落盘；收到 CLI 接收回执后再删除。图片使用独立文件引用，发送前只读取当前条目的图片字节，同时生成 CLI 内容和发送气泡的独立预览；编辑和排序只改元数据。列表和 `inFlight` 都为空时删除 JSON，删除或确认接收后回收对应图片。旧内联格式在加载时迁移。接收前发生启动失败、拒收或退出时，条目回到队首并暂停。接收后的任务失败只暂停其余条目，已接收消息沿用 CLI 的会话记录。
+
+| CLI | 接收回执 |
+|---|---|
+| Claude Code | `--replay-user-messages` 返回的主会话 `user` 消息，`isReplay: true`，`parent_tool_use_id` 为空。回显只用于确认，页面继续使用原用户消息 |
+| Codex | `turn/start` 成功响应中的轮次 ID，或当前连接的 `turn/started` / `turn/completed` 通知 |
+| Pi | ID 为 `prompt` 的成功 `response`；失败响应保留队首 |
+
+`Started` 只用于界面与运行状态，可能早于子进程启动成功。是否放回队列按接收回执判断。接收确认属于后端内部信号，手机端事件协议保持原样。
+
+应用重启后，残留 `inFlight` 回到队首，保留附件与发送选项，落盘为暂停状态，并提示“无法确定 CLI 是否已接收”。用户核对会话后决定删除或继续发送。普通待发送条目也保持重启暂停。队列清空后直接发送新消息时，`reserve` 清除旧的 `paused` 和 `error` 并落盘，使运行中再次入队的消息可在本轮成功后续发。
+
+“仍要发送”只适用于当次立即发送尝试，`ignoreExternalWriter` 只作输入参数，队列文件保持省略。运行中入队、在已有消息后入队、显式恢复、重启和发送前失败后的重试都重新检查写入者；任务开在别处时暂停并显示原因。模型、强度与权限模式继续使用入队快照。
+
+单个队列文件读取、解析或任务 ID 校验失败时，改名为带唯一后缀的 `.corrupt` 文件并保留内容；隔离失败时保留原路径。`queue-error` 带所属任务 ID，无法识别时为 `null` 并显示全局提示。其余队列继续加载，发送流程继续可用。页面先注册队列变化与错误监听，再请求初始列表。
+
 用户在 CLI 运行时输入的内容，Claude 写成 `attachment` 行：`attachment.type` 是 `queued_command`，`humanTurn` 为真才是用户写的，内容在 `prompt`（字符串或内容块）。程序排队的命令同样走这里，不显示。文字里的 `[Image #3]` 是终端的占位，读取时去掉。
+
+队列和输入框共用一张卡片，列表直接起排，折叠入口作为列表末行。任务状态行放在整张卡片上方：运行时显示活动与耗时/Token；队列暂停时显示 Pause、“任务已停止，队列暂停”和右侧的“继续发送”。行操作默认隐藏，进入队列区时全体浅显，聚焦行继续可见，显示切换保留固定占位。拖动把手支持方向键、Home、End 排序。折叠只控制可见范围；“移到队首”只改变待发送顺序，当前轮沿用自己的执行周期。
+
+## 每轮文件编辑摘要
+
+每轮结束后，在该轮消息末尾显示“文件已更改”内嵌卡片。下一轮开始后，历史卡片保留在所属轮次。摘要只汇总该轮真实用户消息之后成功完成的 `Edit`、`MultiEdit`、`Write`、`NotebookEdit`；工具结果消息、中断提示和压缩分隔保持在同一轮。当前运行轮的工具继续显示进度，结束后生成卡片。路径按任务工作目录归一后去重，读取、运行中工具和失败的修改保持原样出现在工作记录中。
+
+卡片对照 Cindy 的 `TurnChangesCard.tsx`，默认展示 3 个文件，支持展开与收起。文件名置前，目录使用次要文字，完整路径通过悬停查看；展开后的长清单虚拟化，展开状态由消息流保存。
+
+行数只使用原生适配层明确提供的 `added`、`removed`，按各次补丁累计，表示编辑量。替换片段、整文件写入内容和被截断的记录无法提供完整差异；任一文件缺少行数时，聚合胶囊只显示文件数。此摘要属于原生工具记录的派生视图，命令工具产生的文件修改仍从工作记录查看。
 
 ## 压缩
 
@@ -89,11 +133,17 @@ CLI 压缩对话时写的摘要是给模型看的，不显示内容，页面只�
 
 用户没选强度时不传参数，由 CLI 自己决定，但页面要显示实际的级别，不写“默认”两个字了事。每个模型的来源：
 
-- Claude：`initialize` 不报。对每个模型依次发 `set_model`、`get_settings`，读 `applied.effort`。要等上一条的回复再发下一条，否则读到的是上一个模型的。这个切换只在这个临时进程里，不落盘。
+- Claude：`initialize` 不报。对每个模型依次发 `set_model`、`get_settings`，读 `applied.effort`。要等上一条的回复再发下一条；切换失败的模型保持默认值未知，避免把前一个模型的强度赋给它。这个切换只在这个临时进程里，不落盘。
 - Codex：`config/read` 的 `model_reasoning_effort`，模型支持时优先；否则用 `model/list` 的 `defaultReasoningEffort`。
-- Pi：`get_state` 的 `thinkingLevel`，模型支持时才算。
+- Pi：逐个在临时进程切换模型后读 `get_state.thinkingLevel`，由 CLI 应用每个模型的配置与能力映射。可选档位来自 `get_available_thinking_levels`。
 
 读不到时滑块多一档“默认”。滑到模型自己的默认档等于不选，CLI 的配置继续生效。
+
+模型、权限、项目、上下文菜单和生成速度卡片挂载到页面顶层，共用触发器窗口坐标定位，跟随滚动与窗口大小变化。模型菜单固定向上展开，空间不足时压缩列表高度并在列表内滚动；其他弹层按可用空间切换方向。输入区的滚动容器保持独立。
+
+三种 CLI 的默认模型来自各自的原生模型元数据。菜单在对应模型旁显示“默认”标签，当前选中项用行高亮表示。选择默认模型保存 `model: null`，后续继续跟随 CLI 的配置；选择其他模型只保存 Tandem 的发送选项。已解析的默认别名与真实模型合成一行；默认 ID 尚未解析时保留“跟随 CLI 配置”一行。CLI 没有报告默认模型时保持未知。
+
+模型菜单显示读取状态和失败原因，失败时明确标识缓存，提供“刷新模型”。三种 Agent 在新任务的模型菜单中各有入口，空列表显示指引。中文强度名称区分 `xhigh`（超高）、`max`（最高）、`ultra`（极限）。只有一个可用档位时显示文字。
 
 ## 接入新 CLI 时
 

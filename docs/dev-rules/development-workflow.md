@@ -20,6 +20,7 @@ shasum -a 256 ~/.claude/settings.json ~/.codex/config.toml ~/.pi/agent/settings.
 - 只在用户要求时提交和推送，不改写已推送的历史。
 - 提交信息用英文：第一行概括，正文写改了什么和遗留问题。
 - 提交前 `pnpm typecheck`、`pnpm test`、`cargo test` 都要通过。
+- relay、PWA、官网与自动化改动使用共享验证入口，命令和发布门禁见 [CI 与本地验证](ci-validation.md)。
 
 ## 决策和文档
 

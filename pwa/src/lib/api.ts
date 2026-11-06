@@ -17,6 +17,7 @@ export const api = {
       version: string;
       agents: Agent[];
       projects: { cwd: string; name: string }[];
+      conversationRoots: string[];
     }>('host.info'),
   tasks: () =>
     client.request<{ tasks: TaskSummary[]; external: { taskId: string; isBusy: boolean }[] }>('tasks.list'),

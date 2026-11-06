@@ -8,7 +8,8 @@ export interface TaskSummary {
   agent: Agent;
 }
 
-export type MessageKind = 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'compaction';
+export type MessageKind =
+  'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'compaction' | 'notice';
 
 export interface Message {
   id: string;
@@ -114,5 +115,7 @@ export interface Run {
   runId: string;
   taskId: string | null;
   agent: Agent;
+  startedAtMs: number;
+  elapsedMs: number;
   events: TurnEvent[];
 }

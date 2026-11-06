@@ -10,15 +10,22 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "dev": "vite --host 0.0.0.0",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit -p tsconfig.build.json && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test:browser": "pnpm build && tsx test/browser.e2e.ts"
+    "test:browser": "cargo build --locked --manifest-path ../relay/Cargo.toml && pnpm build && tsx test/browser.e2e.ts",
+    "test:container": "tsx test/container.e2e.ts",
+    "test:hosting": "tsx test/hosting.e2e.ts"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.0",
+    "highlight.js": "^11.12.0",
     "jsqr": "^1.4.0",
+    "lucide-react": "^1.69.0",
     "react": "^19.2.0",
-    "react-dom": "^19.2.0"
+    "react-dom": "^19.2.0",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

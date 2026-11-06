@@ -97,13 +97,16 @@ export class Client {
             ws.close();
           });
       };
-      ws.onerror = () => {
+      const end = (message: string) => {
         clearTimeout(timeout);
-        reject(new Error('连接中转失败'));
+        // WebCrypto may still be decrypting the final frame when the transport closes.
+        void queue.then(() => {
+          if (!done) reject(new Error(message));
+        });
       };
+      ws.onerror = () => end('连接中转失败');
       ws.onclose = (event) => {
-        clearTimeout(timeout);
-        if (!done) reject(new Error(`配对连接已关闭（${event.code}），配对码可能已过期或使用`));
+        end(`配对连接已关闭（${event.code}），配对码可能已过期或使用`);
       };
     });
   }
@@ -187,11 +190,14 @@ export class Client {
             } else if (value.ev) this.onEvent(value);
           })
           .catch((e) => {
+            if (ws !== this.ws || this.stopped) return;
             this.onError(e);
             ws.close();
           });
       };
-      ws.onerror = () => this.onError(new Error('连接中转失败'));
+      ws.onerror = () => {
+        if (ws === this.ws && !this.stopped) this.onError(new Error('连接中转失败'));
+      };
       ws.onclose = (e) => {
         if (ws !== this.ws || this.stopped) return;
         this.clear();
@@ -200,9 +206,9 @@ export class Client {
           this.onStatus('revoked');
           return;
         }
-        if ([4400, 4401, 4429].includes(e.code)) {
+        if ([4400, 4401].includes(e.code)) {
           this.stopped = true;
-          this.onError(new Error('中转拒绝连接，请检查配对信息或稍后重新连接'));
+          this.onError(new Error('中转拒绝连接，请检查协议版本与配对信息'));
           this.onStatus('closed');
           return;
         }

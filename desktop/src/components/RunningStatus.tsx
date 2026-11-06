@@ -1,12 +1,15 @@
 import { Activity, ArrowDown, Sparkles, X } from 'lucide-react';
+import { ComposerStatusRow, type ComposerStatusSlots } from './ComposerStatusRow';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { formatElapsed, formatTokens } from '../lib/composerStatus';
-import { t, type StringKey } from '../lib/i18n';
-import type { TurnStatusKey } from '../lib/items';
+import { t } from '../lib/i18n';
+import type { TurnStatus } from '../lib/items';
 import { averageRate, currentRate, formatRate, type RateHistory } from '../lib/tokenRate';
+import { useAnchoredPosition } from '../lib/useAnchoredPosition';
 
-interface RunningStatusProps {
-  status: TurnStatusKey;
+interface RunningStatusProps extends ComposerStatusSlots {
+  status: TurnStatus;
   startedAt: number;
   outputTokens: number;
   /** Changes whenever the agent produces something. */
@@ -84,7 +87,10 @@ function RateCard({ rate, outputTokens, now }: { rate: RateHistory; outputTokens
  * The line above the input box. It breathes once per burst of activity instead of looping, so
  * movement means the agent is producing something and a long wait stays still.
  */
-export function RunningStatus({ status, startedAt, outputTokens, activity, rate }: RunningStatusProps) {
+export function RunningStatus({ status, startedAt, outputTokens, activity, rate, center, indicator }: RunningStatusProps) {
+  const label = status.key === 'statusCallingTool' && status.toolName
+    ? t('statusToolRunning', { tool: status.toolName })
+    : t(status.key);
   const [now, setNow] = useState(() => Date.now());
   const [cycle, setCycle] = useState(0);
   const playing = useRef(false);
@@ -92,6 +98,10 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate 
   // Hovering shows the card. Clicking keeps it open until it is closed.
   const [isHovered, setIsHovered] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const open = isHovered || isPinned;
+  // The card's bottom padding bridges hover from the trigger to its portaled content.
+  const position = useAnchoredPosition(open, root, 320, 340, 'right', 'above', 0);
 
   useEffect(() => {
     if (!isPinned) return;
@@ -126,20 +136,16 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate 
     }
     playing.current = true;
     setCycle((current) => current + 1);
-  }, [status, activity]);
+  }, [label, activity]);
 
   return (
-    <div className="mb-1.5 grid min-h-8 select-none grid-cols-[minmax(0,1fr)_auto] items-center px-2">
-      <div key={cycle} onAnimationEnd={onBreathEnd} className="status-bar-shimmer flex min-w-0 items-center gap-[6px]">
-        <Sparkles size={14} aria-hidden className="shrink-0 -translate-y-px" />
-        <span role="status" className="truncate text-13 font-medium">
-          {t(status as StringKey)}
-        </span>
-      </div>
-      <div className="relative" onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
+    <ComposerStatusRow center={center} indicator={indicator} actions={
+      <div ref={root} className="relative" onMouseEnter={() => setIsHovered(true)} onMouseLeave={() => setIsHovered(false)}>
         <button
           type="button"
-          aria-expanded={isPinned}
+          aria-label={t('rateCurrent')}
+          aria-haspopup="dialog"
+          aria-expanded={open}
           onClick={() => setIsPinned((current) => !current)}
           className="flex h-6 items-center gap-[6px] rounded-full px-1.5 text-13 font-medium tabular-nums text-[var(--status-bar-meta)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
         >
@@ -152,27 +158,27 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate 
             </>
           ) : null}
         </button>
-        {isHovered || isPinned ? (
-          <div className="absolute bottom-full right-0 z-20 w-[320px] pb-2">
-            <div className="relative rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3 shadow-[var(--shadow-menu)]">
+        {open && position ? createPortal(
+          <div role="dialog" aria-label={t('rateCurrent')} style={position} className="fixed z-50 overflow-y-auto pb-2">
+            <div className="relative rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3 shadow-[shadow:var(--shadow-menu)]">
               {isPinned ? (
-                <button
-                  type="button"
-                  aria-label={t('rateClose')}
-                  onClick={() => {
-                    setIsPinned(false);
-                    setIsHovered(false);
-                  }}
-                  className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-                >
+                <button type="button" aria-label={t('rateClose')} onClick={() => { setIsPinned(false); setIsHovered(false); }}
+                  className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
                   <X size={12} aria-hidden />
                 </button>
               ) : null}
               <RateCard rate={rate} outputTokens={outputTokens} now={now} />
             </div>
-          </div>
+          </div>, document.body,
         ) : null}
       </div>
-    </div>
+    }>
+      <div key={cycle} onAnimationEnd={onBreathEnd} className="status-bar-shimmer flex min-w-0 items-center gap-[6px]">
+        <Sparkles size={14} aria-hidden className="shrink-0" />
+        <span role="status" title={label} className="truncate text-13 font-medium">
+          {label}
+        </span>
+      </div>
+    </ComposerStatusRow>
   );
 }

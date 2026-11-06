@@ -12,6 +12,10 @@
     --surface-hover-soft: #f8f8f6;
     --surface-hover-hsl: 0 0% 90%;
     --surface-on-card: #ffffff;
+    --button-primary-hover: color-mix(in srgb, var(--surface-chip) 92%, var(--text-primary));
+    --button-primary-pressed: color-mix(in srgb, var(--button-primary-hover) 90%, var(--text-primary));
+    --button-secondary-hover: color-mix(in srgb, var(--surface-elevated) 92%, var(--text-primary));
+    --button-secondary-pressed: color-mix(in srgb, var(--button-secondary-hover) 90%, var(--text-primary));
     --panel-bg: var(--surface);
     --md-table-bg: rgba(236, 236, 234, 0.55);
     --border-default: #d7d7d4;
@@ -480,6 +484,7 @@
     --text-danger: var(--error-fg);
     --danger-bg-soft: var(--error-bg);
     --status-info: var(--info-700);
+    --status-paused: color-mix(in srgb, var(--warning-accent) 75%, var(--text-primary));
     --status-success: #177C3C;
     --upgrade-banner-bg: rgba(255, 102, 0, 0.10);
     --upgrade-banner-border: rgba(245, 158, 11, 0.45);
@@ -565,6 +570,10 @@
     --surface-hover-soft: #3c3c3a;
     --surface-hover-hsl: 60 2% 17%;
     --surface-on-card: #1f1f1e;
+    --button-primary-hover: color-mix(in srgb, var(--surface-chip) 92%, var(--text-primary));
+    --button-primary-pressed: color-mix(in srgb, var(--button-primary-hover) 90%, var(--text-primary));
+    --button-secondary-hover: color-mix(in srgb, var(--surface-elevated) 92%, var(--text-primary));
+    --button-secondary-pressed: color-mix(in srgb, var(--button-secondary-hover) 90%, var(--text-primary));
     --panel-bg: var(--surface);
     --md-table-bg: rgba(44, 44, 42, 0.55);
     --border-default: #3c3c3a;
@@ -1030,6 +1039,7 @@
     --text-danger: var(--error-fg);
     --danger-bg-soft: var(--error-bg);
     --status-info: var(--info-700);
+    --status-paused: color-mix(in srgb, var(--warning-accent) 75%, var(--text-primary));
     --status-success: #2AAE5B;
     --upgrade-banner-bg: rgba(255, 102, 0, 0.16);
     --upgrade-banner-border: rgba(245, 158, 11, 0.55);

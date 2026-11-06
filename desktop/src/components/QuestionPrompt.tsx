@@ -9,11 +9,12 @@ const MULTI_SEPARATOR = ', ';
 const SHORTCUT_DELAY_MS = 500;
 
 const FOOTER_BUTTON =
-  'h-8 rounded-full px-3 text-13 font-medium text-[var(--text-secondary)] hover:bg-[var(--ask-option-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+  'h-8 rounded-full px-3 text-13 font-medium text-[var(--text-secondary)] hover:bg-[var(--ask-option-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50';
 
 interface QuestionPromptProps {
   request: Extract<PendingRequest, { type: 'question' }>;
   onAnswer: (decision: Decision) => void;
+  submitting?: boolean;
 }
 
 function Checkbox({ checked }: { checked: boolean }) {
@@ -29,7 +30,7 @@ function Checkbox({ checked }: { checked: boolean }) {
 }
 
 /** Replaces the input box while the agent waits for an answer. */
-export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
+export function QuestionPrompt({ request, onAnswer, submitting = false }: QuestionPromptProps) {
   const questions: Question[] = request.questions;
   const [index, setIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -64,6 +65,7 @@ export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
   const shortcuts = useRef({ chooseOption, options, onAnswer });
   shortcuts.current = { chooseOption, options, onAnswer };
   useEffect(() => {
+    if (submitting) return;
     const shownAt = Date.now();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat || Date.now() - shownAt < SHORTCUT_DELAY_MS) return;
@@ -82,13 +84,13 @@ export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [request.requestId]);
+  }, [request.requestId, submitting]);
 
   const multiAnswer = [...selected, ...(custom.trim() ? [custom.trim()] : [])].join(MULTI_SEPARATOR);
   const typedAnswer = isMulti ? multiAnswer : custom.trim();
 
   return (
-    <div className="w-full rounded-xl border border-[var(--ask-card-border)] bg-[var(--ask-card-bg)] p-4">
+    <div aria-busy={submitting} className="w-full rounded-xl border border-[var(--ask-card-border)] bg-[var(--ask-card-bg)] p-4">
       {current?.header ? (
         <span className="mb-3 inline-block max-w-full truncate rounded-[6px] bg-[var(--ask-header-chip-bg)] px-2 py-0.5 text-12 font-medium text-[var(--ask-badge-text)]">
           {current.header}
@@ -110,6 +112,7 @@ export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
             {optionIndex > 0 ? <div className="h-px bg-[var(--ask-option-divider)]" /> : null}
             <button
               type="button"
+              disabled={submitting}
               aria-pressed={isMulti ? selected.includes(option.label) : undefined}
               onClick={() => chooseOption(option.label)}
               className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-[var(--ask-option-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)]"
@@ -133,6 +136,7 @@ export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
         {options.length > 0 ? <div className="h-px bg-[var(--ask-option-divider)]" /> : null}
         <div className="flex items-center gap-2 px-4 py-2.5">
           <input
+            disabled={submitting}
             value={custom}
             placeholder={t('questionOther')}
             aria-label={t('questionOther')}
@@ -148,12 +152,12 @@ export function QuestionPrompt({ request, onAnswer }: QuestionPromptProps) {
         </div>
       </div>
       <div className="mt-3 flex items-center justify-end gap-2">
-        <button type="button" onClick={() => onAnswer({ kind: 'deny' })} className={FOOTER_BUTTON}>
+        <button type="button" disabled={submitting} onClick={() => onAnswer({ kind: 'deny' })} className={FOOTER_BUTTON}>
           {t('questionSkip')}
         </button>
         <button
           type="button"
-          disabled={!typedAnswer}
+          disabled={submitting || !typedAnswer}
           onClick={() => advance(typedAnswer)}
           className="h-8 rounded-full bg-[var(--ask-send-bg)] px-3 text-13 font-medium text-[var(--ask-send-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:bg-[var(--ask-send-disabled-bg)] disabled:text-[var(--ask-send-disabled-text)]"
         >

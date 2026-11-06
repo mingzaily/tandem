@@ -1,11 +1,13 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Ban, Check, ChevronDown, ChevronRight, FileText, Layers, Loader2, Sparkles, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Check, ChevronDown, ChevronRight, CirclePause, FileText, Layers, Loader2, Sparkles, X } from 'lucide-react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
-import { buildRows, type Item, type TextItem, type ToolItem, type WorkGroup } from '../lib/items';
+import type { Item, TextItem, ToolItem, WorkGroup } from '../lib/items';
+import { buildMessageRows } from '../lib/fileChanges';
 import { describeTool, explorationSummary, formatDuration } from '../lib/tools';
 import { ZoomableImage } from './ImageLightbox';
 import { Markdown } from './Markdown';
+import { FileChangeSummary } from './FileChangeSummary';
 
 const BOTTOM_THRESHOLD_PX = 48;
 const ESTIMATED_ROW_PX = 40;
@@ -21,12 +23,15 @@ interface MessageStreamProps {
   isRunning: boolean;
   /** A long task takes a moment to read, and is not empty in the meantime. */
   isLoading: boolean;
+  cwd: string | null;
+  /** Includes the composer's gradient, status, queue, input and footer. */
+  bottomPadding: number;
 }
 
-export default function MessageStream({ items, isRunning, isLoading }: MessageStreamProps) {
+export default function MessageStream({ items, isRunning, isLoading, cwd, bottomPadding }: MessageStreamProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
-  const rows = useMemo(() => buildRows(items, isRunning), [items, isRunning]);
+  const rows = useMemo(() => buildMessageRows(items, isRunning, cwd), [items, isRunning, cwd]);
   // Expansion lives here because rows unmount when they scroll out of view.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const virtualizer = useVirtualizer({
@@ -35,10 +40,12 @@ export default function MessageStream({ items, isRunning, isLoading }: MessageSt
     estimateSize: () => ESTIMATED_ROW_PX,
     getItemKey: (index) => rows[index].id,
     overscan: 8,
+    paddingEnd: bottomPadding,
+    scrollPaddingEnd: bottomPadding,
   });
   const totalSize = virtualizer.getTotalSize();
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (followBottom.current && rows.length > 0) {
       virtualizer.scrollToIndex(rows.length - 1, { align: 'end' });
     }
@@ -87,7 +94,9 @@ export default function MessageStream({ items, isRunning, isLoading }: MessageSt
                   row.type === 'user' ? 'pb-2 pt-5' : 'py-1'
                 }`}
               >
-                {row.type === 'group' ? (
+                {row.type === 'changes' ? (
+                  <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.has(row.id)} onToggle={() => toggle(row.id)} />
+                ) : row.type === 'group' ? (
                   <Group group={row} expanded={expanded} onToggle={toggle} />
                 ) : (
                   <ItemRow item={row} expanded={expanded} onToggle={toggle} />
@@ -139,9 +148,9 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
       return <Markdown text={item.text} />;
     case 'notice':
       return (
-        <div className="flex items-center gap-1.5 px-2 py-[3px] text-14 text-[var(--msg-tool-card-chevron)]">
+        <div className="flex items-center gap-1.5 px-2 py-[3px] text-14 text-[var(--status-paused)]">
           <span aria-hidden className="inline-flex h-[18px] w-4 shrink-0 items-center justify-center">
-            <Ban size={13} />
+            <CirclePause size={13} />
           </span>
           {t('interrupted')}
         </div>
@@ -262,7 +271,7 @@ function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; 
             <span className="min-w-0 truncate">{display.fileName}</span>
           </span>
         ) : (
-          <span title={display.text} className="min-w-0 truncate text-14 text-[var(--msg-tool-card-chevron)]">
+          <span title={display.title ?? display.text} className="min-w-0 truncate text-14 font-medium text-[var(--msg-tool-card-chevron)]">
             {display.text}
           </span>
         )}

@@ -9,11 +9,11 @@ import {
   MessagesSquare,
   Hand,
   Monitor,
-  Sparkles,
+  ShieldCheck,
   TriangleAlert,
   type LucideIcon,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { Agent, ModelOption, UsageWindows } from '../lib/api';
 import {
   contextPercent,
@@ -22,9 +22,12 @@ import {
   type PermissionMode,
   type TurnPrefs,
 } from '../lib/composerStatus';
-import { hasString, t, type StringKey } from '../lib/i18n';
+import { t, type StringKey } from '../lib/i18n';
 import { CONVERSATION_CWD, projectName } from '../lib/items';
 import { AgentMark } from './AgentMark';
+import type { ModelAgentChoice } from './ModelPickerPanel';
+import { effectiveEffort, effortLabel, type ModelReadState } from '../lib/modelEffort';
+import { AGENT_NAMES } from '../lib/modelRows';
 import { ComposerMenu, MENU_ROW } from './ComposerMenu';
 
 const MODES: { id: PermissionMode; label: StringKey; hint: StringKey; icon: LucideIcon; tone?: string }[] = [
@@ -34,7 +37,7 @@ const MODES: { id: PermissionMode; label: StringKey; hint: StringKey; icon: Luci
     id: 'auto',
     label: 'modeAuto',
     hint: 'modeAutoHint',
-    icon: Sparkles,
+    icon: ShieldCheck,
     tone: 'text-[var(--perm-auto-selected-text)]',
   },
   {
@@ -161,242 +164,49 @@ function PermissionMenu({ agent, prefs, models, disabled, onChange }: SelectProp
   );
 }
 
-const AGENT_NAMES: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' };
+const ModelPickerPanel = lazy(() => import('./ModelPickerPanel'));
 
 /** "default" has no name of its own, so it shows the model it stands for. */
 function triggerName(model: ModelOption | undefined, models: ModelOption[], agent: Agent): string {
   if (!model) return AGENT_NAMES[agent];
   if (model.value !== 'default') return model.displayName;
-  const same = models.find((option) => option.value !== 'default' && option.resolvedModel === model.resolvedModel);
-  return same?.displayName ?? t('modelDefault');
-}
-
-interface OtherAgent {
-  agent: Agent;
-  prefs: TurnPrefs;
-  models: ModelOption[];
-  usage: UsageWindows | null;
-  /** Choosing a model here also makes this the agent for the new task. */
-  onChoose: (prefs: TurnPrefs) => void;
-  onPrefsChange: (prefs: TurnPrefs) => void;
+  const same = model.resolvedModel ? models.find((option) => option.value !== 'default' && option.resolvedModel === model.resolvedModel) : undefined;
+  return same?.displayName ?? t('modelFollowCli');
 }
 
 interface ModelSelectProps extends SelectProps {
   usage: UsageWindows | null;
+  status: ModelReadState;
+  onRefresh: () => void;
   /** A new task can still use another agent. An existing task stays with its own. */
-  others?: OtherAgent[];
+  others?: ModelAgentChoice[];
 }
 
-const effortLabel = (level: string) => {
-  const key = `effort_${level}`;
-  return hasString(key) ? t(key) : level;
-};
-
-const MODEL_PANEL_HEIGHT_PX = 440;
+const MODEL_PANEL_HEIGHT_PX = 560;
 const MODEL_PANEL_WIDTH_PX = 372;
 const MODEL_PANEL_WIDTH_WITH_RAIL_PX = 420;
-const MODEL_PANEL_BODY = 'flex overflow-hidden';
+const MODEL_PANEL_BODY = 'flex min-h-0 overflow-hidden';
 
-/** A notched track, with the first stop for "let the CLI decide". */
-/** The level to show for a model: what was chosen if it has that, or what it runs at by itself. */
-function effectiveEffort(model: ModelOption | undefined, chosen: string | null | undefined): string | null {
-  const levels = model?.supportedEffortLevels ?? [];
-  if (chosen && levels.includes(chosen)) return chosen;
-  return model?.defaultEffort && levels.includes(model.defaultEffort) ? model.defaultEffort : null;
-}
-
-/**
- * Every stop is a real level. Landing on the model's own one chooses nothing, so the CLI's config
- * keeps deciding. A separate "default" stop exists only while that level could not be read.
- */
-function EffortSlider({
-  levels,
-  value,
-  defaultLevel,
-  onChange,
-}: {
-  levels: string[];
-  value: string | null;
-  defaultLevel: string | null;
-  onChange: (level: string | null) => void;
-}) {
-  const stops: (string | null)[] = defaultLevel ? levels : [null, ...levels];
-  const shown = value ?? defaultLevel;
-  const index = Math.max(0, stops.indexOf(shown));
-  const last = stops.length - 1;
-  const label = shown ? effortLabel(shown) : t('effortDefault');
-  const change = (level: string | null) => onChange(level === defaultLevel ? null : level);
-  const percent = (index / last) * 100;
-  const track = useRef<HTMLDivElement>(null);
-
-  const pick = (clientX: number) => {
-    if (!track.current) return;
-    const { left, width } = track.current.getBoundingClientRect();
-    const ratio = Math.min(1, Math.max(0, (clientX - left) / width));
-    change(stops[Math.round(ratio * last)]);
-  };
-
-  return (
-    <div className="shrink-0 border-t border-[var(--model-dropdown-border)] px-3 pb-2.5 pt-2">
-      <div className="flex items-center justify-between text-12 leading-[1.33]">
-        <span className="font-medium text-[var(--cmd-palette-item-meta)]">{t('effortMenu')}</span>
-        <span className="text-[var(--text-secondary)]">
-          {label}
-          {shown && !value ? ` · ${t('effortDefault')}` : ''}
-        </span>
-      </div>
-      <div
-        ref={track}
-        role="slider"
-        tabIndex={0}
-        aria-label={t('effortMenu')}
-        aria-valuemin={0}
-        aria-valuemax={last}
-        aria-valuenow={index}
-        aria-valuetext={label}
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          pick(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) pick(event.clientX);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'ArrowLeft' && index > 0) change(stops[index - 1]);
-          if (event.key === 'ArrowRight' && index < last) change(stops[index + 1]);
-        }}
-        className="relative mx-2 mt-1 flex h-[26px] cursor-pointer touch-none items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-      >
-        <div className="absolute -inset-x-2 h-3 rounded-full bg-[var(--slider-track)]" />
-        <div className="absolute -left-2 h-3 rounded-full bg-[var(--slider-fill)]" style={{ width: `calc(${percent}% + 8px)` }} />
-        {stops.map((stop, stopIndex) => (
-          <span
-            key={stop ?? 'default'}
-            aria-hidden
-            className="absolute size-[5px] -translate-x-1/2 rounded-full"
-            style={{
-              left: `${(stopIndex / last) * 100}%`,
-              backgroundColor: 'color-mix(in srgb, var(--model-dropdown-bg) 65%, transparent)',
-            }}
-          />
-        ))}
-        <span
-          aria-hidden
-          className="absolute size-4 -translate-x-1/2 rounded-full bg-[var(--slider-thumb)]"
-          style={{ left: `${percent}%`, boxShadow: 'var(--slider-thumb-shadow)' }}
-        />
-      </div>
-    </div>
-  );
-}
-
-function RailButton({ agent, usage, isActive, onClick }: { agent: Agent; usage: UsageWindows | null; isActive: boolean; onClick: () => void }) {
-  const used = (usage?.sevenDay ?? usage?.fiveHour)?.usedPercent;
-  return (
-    <button
-      type="button"
-      aria-label={AGENT_NAMES[agent]}
-      title={AGENT_NAMES[agent]}
-      aria-pressed={isActive}
-      onClick={onClick}
-      className={`relative flex h-[38px] w-[34px] shrink-0 flex-col items-center justify-center rounded-[9px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
-        isActive
-          ? 'bg-[var(--accent-cta-bg)] text-[var(--accent-pure-cta-fg)] shadow-[var(--shadow-menu)]'
-          : 'text-[var(--text-tertiary)] hover:bg-[var(--model-item-hover)] hover:text-[var(--text-secondary)]'
-      }`}
-    >
-      <span className="flex h-6 items-center justify-center">
-        <AgentMark agent={agent} size={16} />
-      </span>
-      {used === undefined ? null : (
-        <span
-          aria-hidden
-          className="absolute bottom-[3px] h-[3px] w-[22px] overflow-hidden rounded-full"
-          style={{ backgroundColor: 'color-mix(in srgb, currentColor 18%, transparent)' }}
-        >
-          <span className="block h-full rounded-full bg-current" style={{ width: `${100 - Math.min(100, used)}%` }} />
-        </span>
-      )}
-    </button>
-  );
-}
-
-/**
- * The CLI reports "default" as a model of its own, which is the same as one of the others. It gets
- * no row unless nothing else matches, and choosing the matching row keeps following the CLI's config.
- */
-function modelRowsOf(models: ModelOption[]) {
-  const fallback = models.find((option) => option.value === 'default');
-  const hasTwin = models.some((option) => option.value !== 'default' && option.resolvedModel === fallback?.resolvedModel);
-  return {
-    rows: hasTwin ? models.filter((option) => option !== fallback) : models,
-    followsConfig: (option: ModelOption) => option === fallback || (hasTwin && option.resolvedModel === fallback?.resolvedModel),
-  };
-}
-
-/** One highlight slides between rows instead of each row fading its own background. */
-function useRowGlide() {
-  const layer = useRef<HTMLSpanElement>(null);
-  const activeRow = useRef<HTMLElement | null>(null);
-
-  const setActive = (row: HTMLElement | null) => {
-    activeRow.current?.removeAttribute('data-menu-active');
-    row?.setAttribute('data-menu-active', '');
-    activeRow.current = row;
-  };
-  const onPointerMove = (event: ReactPointerEvent<HTMLElement>) => {
-    const row = (event.target as HTMLElement).closest<HTMLElement>('[data-menu-row]');
-    const element = layer.current;
-    if (!element || !row || row === activeRow.current) return;
-    const isFirst = element.style.opacity !== '1';
-    element.style.transition = isFirst ? 'none' : '';
-    element.style.width = `${row.offsetWidth}px`;
-    element.style.height = `${row.offsetHeight}px`;
-    element.style.transform = `translate(${row.offsetLeft}px, ${row.offsetTop}px)`;
-    element.style.opacity = '1';
-    setActive(row);
-  };
-  const onPointerLeave = () => {
-    if (layer.current) layer.current.style.opacity = '0';
-    setActive(null);
-  };
-  return { layer, handlers: { onPointerMove, onPointerLeave } };
-}
-
-export function ModelSelect({ agent, prefs, models, usage, disabled, onChange, others = [] }: ModelSelectProps) {
+export function ModelSelect({ agent, prefs, models, usage, status, onRefresh, disabled, onChange, others = [] }: ModelSelectProps) {
   const model = selectedModel(prefs, models);
   const levels = model?.supportsEffort ? model.supportedEffortLevels : [];
   const effort = effectiveEffort(model, prefs.effort);
-  const available = others.filter((other) => other.models.length > 0);
-  const hasOther = available.length > 0;
-  const [viewedAgent, setViewedAgent] = useState<Agent>(agent);
-  useEffect(() => setViewedAgent(agent), [agent]);
-
-  const other = available.find((candidate) => candidate.agent === viewedAgent);
-  const isViewingOther = other !== undefined;
-  const viewedModels = other ? other.models : models;
-  const viewedPrefs = other ? other.prefs : prefs;
-  const viewedModel = selectedModel(viewedPrefs, viewedModels);
-  const viewedLevels = viewedModel?.supportsEffort ? viewedModel.supportedEffortLevels : [];
-  const viewedEffort = viewedPrefs.effort && viewedLevels.includes(viewedPrefs.effort) ? viewedPrefs.effort : null;
-  const viewedDefault = effectiveEffort(viewedModel, null);
-  const { rows: modelRows, followsConfig } = modelRowsOf(viewedModels);
-  const glide = useRowGlide();
-  const choose = (next: TurnPrefs) => (other ? other.onChoose(next) : onChange(next));
-  const changeViewedPrefs = (next: TurnPrefs) => (other ? other.onPrefsChange(next) : onChange(next));
+  const hasOther = others.length > 0;
 
   return (
     <ComposerMenu
       label={t('modelMenu')}
       align="right"
+      side="above"
+      allowFlip={false}
       width={hasOther ? MODEL_PANEL_WIDTH_WITH_RAIL_PX : MODEL_PANEL_WIDTH_PX}
       panelMaxHeight={MODEL_PANEL_HEIGHT_PX}
       bodyClassName={MODEL_PANEL_BODY}
-      disabled={disabled || (models.length === 0 && !hasOther)}
+      disabled={disabled}
       trigger={
         <>
           <AgentMark agent={agent} size={13} className="mr-0.5 shrink-0 text-[var(--model-trigger-text)]" />
-          <span className="truncate text-[var(--model-trigger-text)]">{triggerName(model, models, agent)}</span>
+          <span className="truncate text-[var(--model-trigger-text)]">{model ? triggerName(model, models, agent) : prefs.model ?? AGENT_NAMES[agent]}</span>
           {levels.length > 0 ? (
             <span className="ml-1 inline-flex shrink-0 items-center gap-1 text-[var(--model-trigger-meta)]">
               <Gauge size={13} strokeWidth={1.8} aria-hidden />
@@ -407,78 +217,10 @@ export function ModelSelect({ agent, prefs, models, usage, disabled, onChange, o
         </>
       }
     >
-      {(close) => (
-        <>
-          {hasOther ? (
-            <div className="flex min-h-0 w-12 shrink-0 flex-col items-center gap-0.5 overflow-y-auto border-r border-[var(--model-dropdown-border)] px-1.5 py-2">
-              <RailButton agent={agent} usage={usage} isActive={!isViewingOther} onClick={() => setViewedAgent(agent)} />
-              {available.map((candidate) => (
-                <RailButton
-                  key={candidate.agent}
-                  agent={candidate.agent}
-                  usage={candidate.usage}
-                  isActive={viewedAgent === candidate.agent}
-                  onClick={() => setViewedAgent(candidate.agent)}
-                />
-              ))}
-            </div>
-          ) : null}
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            <ul
-              role="listbox"
-              aria-label={AGENT_NAMES[viewedAgent]}
-              {...glide.handlers}
-              className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overscroll-contain p-2 pb-3"
-            >
-              <span
-                ref={glide.layer}
-                aria-hidden
-                className="pointer-events-none absolute left-0 top-0 rounded-lg bg-[hsl(var(--sidebar-item-hover))] opacity-0 transition-[transform,opacity] duration-[var(--motion-instant)] ease-[var(--motion-ease-out)]"
-              />
-              {modelRows.map((option) => {
-                const isSelected = viewedPrefs.model ? option.value === viewedPrefs.model : followsConfig(option);
-                const name = option.value === 'default' ? t('modelDefault') : option.displayName;
-                const description = option.description;
-                const rowEffort = option.supportsEffort ? effectiveEffort(option, viewedPrefs.effort) : null;
-                return (
-                  <li key={option.value} role="option" aria-selected={isSelected}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        choose({ ...viewedPrefs, model: followsConfig(option) ? null : option.value });
-                        close();
-                      }}
-                      data-menu-row
-                      className={`relative flex w-full flex-col rounded-lg px-3 py-2 text-left text-[var(--model-item-text)] transition-colors duration-[var(--motion-instant)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
-                        isSelected ? 'bg-[hsl(var(--sidebar-item-hover))] data-[menu-active]:bg-transparent' : ''
-                      }`}
-                    >
-                      <span className="flex w-full items-center gap-2">
-                        <span className="flex size-[18px] shrink-0 items-center justify-center text-[var(--text-secondary)]">
-                          <AgentMark agent={viewedAgent} size={14} />
-                        </span>
-                        <span title={name} className="min-w-0 truncate text-14 font-medium leading-5">
-                          {name}
-                        </span>
-                        {rowEffort ? (
-                          <span className="ml-auto shrink-0 text-12 text-[var(--text-tertiary)]">{effortLabel(rowEffort)}</span>
-                        ) : null}
-                      </span>
-                      {description ? (
-                        <span title={description} className="block max-w-[30ch] truncate pl-[26px] pt-px text-12 leading-[1.4] text-[var(--model-item-desc)]">
-                          {description}
-                        </span>
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            {viewedLevels.length > 0 ? (
-              <EffortSlider levels={viewedLevels} value={viewedEffort} defaultLevel={viewedDefault} onChange={(level) => changeViewedPrefs({ ...viewedPrefs, effort: level })} />
-            ) : null}
-          </div>
-        </>
+      {(close, owner) => (
+        <Suspense fallback={<div className="h-[470px] max-h-full w-full p-3 text-12 text-[var(--text-secondary)]">{t('modelLoading')}</div>}>
+          <ModelPickerPanel current={{ agent, prefs, models, usage, status, onRefresh, onChoose: onChange }} others={others} owner={owner} onClose={close} />
+        </Suspense>
       )}
     </ComposerMenu>
   );
@@ -739,7 +481,7 @@ interface ComposerFooterProps {
 /** The line under the input box: where the task runs, plan usage and context. */
 export function ComposerFooter({ cwd, label, usage, context, onCompact }: ComposerFooterProps) {
   return (
-    <div className="mt-2 flex min-h-6 items-center justify-between gap-3 px-1">
+    <div className="mt-2 flex min-h-6 items-center justify-between gap-3 px-3">
       <span title={cwd ?? undefined} className="flex min-w-0 items-center gap-1.5">
         {cwd ? (
           <>

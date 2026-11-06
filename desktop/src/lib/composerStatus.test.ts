@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ModelOption } from './api';
-import { contextPercent, DEFAULT_PREFS, describeUsage, formatElapsed, formatTokens, turnOptions } from './composerStatus';
+import { contextPercent, DEFAULT_PREFS, describeUsage, formatElapsed, formatTokens, titleOptions, turnOptions } from './composerStatus';
 
 const model = (overrides: Partial<ModelOption>): ModelOption => ({
   value: 'default',
@@ -36,6 +36,18 @@ describe('turnOptions', () => {
   it('keeps the choice while the model list has not loaded', () => {
     const prefs = { model: 'opus', effort: 'max', permissionMode: 'acceptEdits' as const };
     expect(turnOptions(prefs, [])).toEqual({ model: 'opus', effort: 'max', permissionMode: 'acceptEdits' });
+  });
+});
+
+describe('titleOptions', () => {
+  it('uses the selected model with a low supported effort', () => {
+    const prefs = { ...DEFAULT_PREFS, model: 'opus', effort: 'max' };
+    expect(titleOptions(prefs, [model({ value: 'opus', supportedEffortLevels: ['minimal', 'low', 'high'] })])).toEqual({ model: 'opus', effort: 'low' });
+  });
+
+  it('keeps unsupported effort out of a title request', () => {
+    expect(titleOptions(DEFAULT_PREFS, [model({ supportsEffort: false })])).toEqual({ model: null, effort: null });
+    expect(titleOptions(DEFAULT_PREFS, [])).toEqual({ model: null, effort: null });
   });
 });
 

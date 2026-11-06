@@ -26,6 +26,7 @@ const PANEL_GAP: f64 = 4.0;
 const REOPEN_GUARD: Duration = Duration::from_millis(250);
 pub const OPEN_TASK_EVENT: &str = "tray-open-task";
 const OPEN_SETTINGS_EVENT: &str = "tray-open-settings";
+const REFRESH_EVENT: &str = "tray-refresh";
 const SUMMARY_EVENT: &str = "tray-summary";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,7 +67,10 @@ fn panel_window(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
         return Ok(panel);
     }
+    let preferences = app.state::<crate::storage::Store>().snapshot();
     WebviewWindowBuilder::new(app, PANEL_LABEL, WebviewUrl::App("index.html?panel=tray".into()))
+        .initialization_script(preferences.initialization_script())
+        .theme(preferences.native_theme())
         .title("Tandem")
         .inner_size(PANEL_WIDTH, PANEL_MIN_HEIGHT)
         .decorations(false)
@@ -163,6 +167,9 @@ pub fn resize_panel(app: &AppHandle, height: f64) -> Result<(), String> {
 
 /// What the panel's buttons can do. A fixed list, because the page should not reach further.
 pub fn panel_action(app: &AppHandle, action: &str, task_id: Option<&str>) -> Result<(), String> {
+    if action == "refresh" {
+        return app.emit_to("main", REFRESH_EVENT, ()).map_err(|error| error.to_string());
+    }
     if let Some(panel) = app.get_webview_window(PANEL_LABEL) {
         let _ = panel.hide();
     }
@@ -184,10 +191,12 @@ pub fn panel_action(app: &AppHandle, action: &str, task_id: Option<&str>) -> Res
 
 /// For testing the panel without a click on the icon, which is out of a test's reach.
 #[cfg(debug_assertions)]
-pub fn show_panel_for_test(app: &AppHandle) -> tauri::Result<()> {
+pub fn show_panel_for_test(app: &AppHandle) -> tauri::Result<tauri::WebviewWindow> {
     let panel = panel_window(app)?;
     panel.set_position(PhysicalPosition::new(120.0, 120.0))?;
-    panel.show()
+    panel.show()?;
+    panel.set_focus()?;
+    Ok(panel)
 }
 
 pub fn notify(app: &AppHandle, title: &str, body: &str) -> Result<(), String> {

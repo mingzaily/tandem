@@ -117,15 +117,36 @@ describe('turnStatus', () => {
   const text = (type: 'assistant' | 'thinking' | 'user') => ({ type, id: 'x', text: 'x' });
 
   it('says what the turn is doing', () => {
-    expect(turnStatus([text('user')], false)).toBe('statusThinking');
-    expect(turnStatus([text('thinking')], false)).toBe('statusThinking');
-    expect(turnStatus([text('assistant')], false)).toBe('statusReplying');
-    expect(turnStatus([tool], false)).toBe('statusCallingTool');
-    expect(turnStatus([{ ...tool, result: 'done' }], false)).toBe('statusThinking');
+    expect(turnStatus([text('user')], false)).toEqual({ key: 'statusThinking' });
+    expect(turnStatus([text('thinking')], false)).toEqual({ key: 'statusThinking' });
+    expect(turnStatus([text('assistant')], false)).toEqual({ key: 'statusReplying' });
+    expect(turnStatus([tool], false)).toEqual({ key: 'statusCallingTool', toolName: 'Bash' });
+    expect(turnStatus([{ ...tool, result: 'done' }], false)).toEqual({ key: 'statusThinking' });
   });
 
   it('puts waiting for the user first', () => {
-    expect(turnStatus([tool], true)).toBe('statusAwaitingYou');
+    expect(turnStatus([tool], true)).toEqual({ key: 'statusAwaitingYou' });
+  });
+
+  it('keeps the actual tool name from live CLI events and clears it after the result', () => {
+    const running = applyTurnEvent([], { type: 'toolUse', id: 'mcp', name: 'mcp__memory__search', input: '{"query":"private arguments"}' });
+    expect(turnStatus(running, false)).toEqual({ key: 'statusCallingTool', toolName: 'mcp__memory__search' });
+    const completed = applyTurnEvent(running, { type: 'toolResult', toolUseId: 'mcp', text: 'private result', isError: true });
+    expect(turnStatus(completed, false)).toEqual({ key: 'statusThinking' });
+    expect(turnStatus(applyTurnEvent(completed, { type: 'textDelta', text: '已找到结果' }), false)).toEqual({ key: 'statusReplying' });
+  });
+
+  it('shows the remaining tool when parallel calls finish out of order', () => {
+    const first = { ...tool, id: 'first', name: 'mcp__memory__search' };
+    const second = { ...tool, id: 'second', name: 'mcp__docs__read' };
+    expect(turnStatus([first, second], false)).toEqual({ key: 'statusCallingTool', toolName: second.name });
+    expect(turnStatus([first, { ...second, result: 'done' }], false)).toEqual({ key: 'statusCallingTool', toolName: first.name });
+  });
+
+  it('uses the latest text phase and keeps old tool calls outside a new turn', () => {
+    expect(turnStatus([tool, text('assistant')], false)).toEqual({ key: 'statusReplying' });
+    expect(turnStatus([tool, text('thinking')], false)).toEqual({ key: 'statusThinking' });
+    expect(turnStatus([tool, text('user'), { ...tool, id: 'new', result: 'done' }], false)).toEqual({ key: 'statusThinking' });
   });
 
   it('joins images to the text after them and turns attached file lines into files', () => {

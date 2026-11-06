@@ -1,6 +1,6 @@
 use crate::remote::{self, Remote};
 use crate::sessions::Agent;
-use crate::{agents, attachments, cli_info, codex, conversations, git_info, pi, runner, sessions, tray, writers};
+use crate::{agents, attachments, cli_info, codex, conversations, git_info, pi, queue, runner, sessions, storage, titles, tray, writers};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::{ipc::Channel, AppHandle, Manager, State, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
@@ -32,9 +32,35 @@ pub async fn read_task(id: String) -> Result<sessions::TaskContent, String> {
     .await
 }
 
+#[tauri::command]
+pub async fn generate_task_title(
+    app: AppHandle, reader: State<'_, codex::Reader>, jobs: State<'_, titles::Jobs>, agent: Agent, id: String,
+    model: Option<String>, effort: Option<String>,
+) -> Result<String, String> {
+    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
+    let _job = jobs.begin(&id)?;
+    let content = read_any(reader.inner(), agent, id).await?;
+    titles::generate(agent, content.messages, runner::TurnOptions { model, effort, ..Default::default() }).await
+}
+
+#[tauri::command]
+pub async fn rename_native_task(
+    app: AppHandle, reader: State<'_, codex::Reader>, jobs: State<'_, titles::Jobs>, agent: Agent, id: String, title: String,
+) -> Result<(), String> {
+    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
+    queue::validate_task_id(&id)?;
+    titles::validate_name(&title)?;
+    let _job = jobs.begin(&id)?;
+    match agent {
+        Agent::Codex => reader.rename_task(&id, &title).await,
+        Agent::Claude => titles::save_name(&app, titles::NameProtocol::Claude, id, title).await,
+        Agent::Pi => titles::save_name(&app, titles::NameProtocol::Pi, id, title).await,
+    }
+}
+
 /// The one way a turn starts, from the page or from a phone.
 pub(crate) async fn dispatch_turn(
-    runs: &runner::Runs,
+    app: &AppHandle,
     agent: Agent,
     task_id: Option<String>,
     cwd: Option<String>,
@@ -43,22 +69,12 @@ pub(crate) async fn dispatch_turn(
     options: runner::TurnOptions,
     sink: runner::TurnSink,
 ) -> Result<(), String> {
-    match agent {
-        Agent::Claude => runner::send_turn(runs, task_id, cwd, prompt, attachments, options, sink).await,
-        Agent::Codex => {
-            let request = codex::TurnRequest { task_id, cwd, prompt, attachments, options };
-            codex::send_turn(runs, request, sink).await
-        }
-        Agent::Pi => {
-            let request = codex::TurnRequest { task_id, cwd, prompt, attachments, options };
-            pi::send_turn(runs, request, sink).await
-        }
-    }
+    queue::dispatch(app, agent, task_id, cwd, prompt, attachments, options, sink).await
 }
 
 #[tauri::command]
 pub async fn send_turn(
-    runs: State<'_, runner::Runs>,
+    app: AppHandle,
     remote: State<'_, Remote>,
     agent: Agent,
     task_id: Option<String>,
@@ -72,12 +88,93 @@ pub async fn send_turn(
     if prompt.trim().is_empty() && attachment_ids.is_empty() {
         return Err("There is nothing to send".into());
     }
+    // A deferred migration keeps draft attachment IDs available for the user's retry.
+    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
     let prepared = attachments.take(&attachment_ids)?;
     let page_sink = runner::TurnSink::new(move |event| on_event.send(event).map_err(|error| error.to_string()));
     let (run_id, sink) = remote.track(agent, page_sink);
-    let result = dispatch_turn(runs.inner(), agent, task_id, cwd, prompt, prepared, options, sink).await;
+    let result = dispatch_turn(&app, agent, task_id, cwd, prompt, prepared, options, sink).await;
     remote.end_run(&run_id, &result);
     result
+}
+
+#[tauri::command]
+pub async fn list_queues(app: AppHandle) -> Result<Vec<queue::Snapshot>, String> {
+    queue::access(&app, queue::Store::list).await
+}
+
+#[tauri::command]
+pub async fn enqueue_turn(
+    app: AppHandle, reader: State<'_, codex::Reader>, agent: Agent, task_id: String,
+    prompt: String, attachment_ids: Vec<String>, options: runner::TurnOptions,
+) -> Result<queue::Snapshot, String> {
+    queue::validate_task_id(&task_id)?;
+    options.validate_for(agent)?;
+    // A new task can receive queued messages before its CLI creates the native file.
+    match app.state::<queue::Store>().active_agent(&task_id)? {
+        Some(active) if active != agent => return Err("排队消息的 Agent 必须与任务一致".into()),
+        Some(_) => {}
+        None => {
+            let id = task_id.clone();
+            match agent {
+                Agent::Claude => { blocking(move || sessions::find_task_file(&sessions::claude_projects_dir()?, &id)).await?; }
+                Agent::Codex => { reader.task_cwd(&id).await?; }
+                Agent::Pi => { blocking(move || pi::find_task_file(&pi::sessions_dir()?, &id)).await?; }
+            }
+        }
+    }
+    let attachments = app.state::<attachments::Attachments>();
+    let entry = queue::Entry::new(prompt, attachments.capture(&attachment_ids)?, options)?;
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.enqueue(&id, agent, entry)).await?;
+    attachments.release(&attachment_ids);
+    queue::announce(&app, &snapshot);
+    queue::kick(app, task_id);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn edit_queued_turn(app: AppHandle, task_id: String, entry_id: String, prompt: String) -> Result<queue::Snapshot, String> {
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.edit(&id, &entry_id, prompt)).await?;
+    queue::announce(&app, &snapshot);
+    queue::kick(app, task_id);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn remove_queued_turn(app: AppHandle, task_id: String, entry_id: String) -> Result<queue::Snapshot, String> {
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.remove(&id, &entry_id)).await?;
+    queue::announce(&app, &snapshot);
+    queue::kick(app, task_id);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn reorder_queued_turn(app: AppHandle, task_id: String, entry_id: String, target_index: usize) -> Result<queue::Snapshot, String> {
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.reorder(&id, &entry_id, target_index)).await?;
+    queue::announce(&app, &snapshot);
+    queue::kick(app, task_id);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn resume_queue(app: AppHandle, task_id: String) -> Result<queue::Snapshot, String> {
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.resume(&id)).await?;
+    queue::announce(&app, &snapshot);
+    queue::kick(app, task_id);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn set_queue_lock(app: AppHandle, task_id: String, owner: String, entry_id: Option<String>, locked: bool) -> Result<(), String> {
+    let id = task_id.clone();
+    queue::access(&app, move |store| store.set_lock(&id, owner, entry_id, locked)).await?;
+    if !locked { queue::kick(app, task_id); }
+    Ok(())
 }
 
 /// Runs the native dialog here, so the page never supplies a path.
@@ -152,13 +249,15 @@ pub async fn discover_projects(reader: State<'_, codex::Reader>) -> Result<Vec<s
 }
 
 #[tauri::command]
-pub fn default_conversation_dir() -> Result<String, String> {
-    Ok(conversations::default_dir()?.to_string_lossy().into_owned())
+pub fn default_conversation_dir(store: State<'_, storage::Store>) -> String {
+    store.root().join("conversations").to_string_lossy().into_owned()
 }
 
 #[tauri::command]
-pub async fn create_conversation_dir(base: Option<String>) -> Result<String, String> {
-    blocking(move || conversations::create_dir(base.as_deref())).await
+pub async fn create_conversation_dir(store: State<'_, storage::Store>, base: Option<String>) -> Result<String, String> {
+    { let _permit = store.permit()?; }
+    let base = base.unwrap_or_else(|| store.root().join("conversations").to_string_lossy().into_owned());
+    blocking(move || conversations::create_dir(Some(&base))).await
 }
 
 /// Changes when a task's file changes, so a task open elsewhere reloads only when it needs to.
@@ -256,11 +355,6 @@ pub fn notify_user(app: AppHandle, title: String, body: String) -> Result<(), St
 }
 
 #[tauri::command]
-pub fn set_keep_running(state: State<'_, tray::TrayState>, value: bool) {
-    tray::set_keep_running(state.inner(), value);
-}
-
-#[tauri::command]
 pub async fn install_agent(jobs: State<'_, agents::Jobs>, command: String, on_event: Channel<agents::JobEvent>) -> Result<(), String> {
     agents::install(jobs.inner(), &command, on_event).await
 }
@@ -322,8 +416,8 @@ pub fn answer_request(
     task_id: String,
     request_id: String,
     decision: runner::Decision,
-) -> Result<(), String> {
-    runs.answer(&task_id, &request_id, decision)?;
+) -> Result<(), runner::AnswerError> {
+    runs.answer_checked(&task_id, &request_id, decision)?;
     remote.settle(&task_id, &request_id);
     Ok(())
 }
@@ -334,8 +428,12 @@ pub async fn cli_info() -> Result<cli_info::CliInfo, String> {
 }
 
 #[tauri::command]
-pub fn cancel_turn(runs: State<'_, runner::Runs>, task_id: String) {
-    runs.cancel(&task_id);
+pub async fn cancel_turn(app: AppHandle, task_id: String) -> Result<(), String> {
+    let id = task_id.clone();
+    let paused = queue::access(&app, move |store| store.pause(&id)).await;
+    app.state::<runner::Runs>().cancel(&task_id);
+    if let Some(snapshot) = paused? { queue::announce(&app, &snapshot); }
+    Ok(())
 }
 
 #[tauri::command]
@@ -376,13 +474,19 @@ pub fn remote_state(remote: State<'_, Remote>) -> remote::RemoteState {
 }
 
 #[tauri::command]
-pub fn remote_configure(remote: State<'_, Remote>, enabled: bool, relay_url: String, host_token: Option<String>) -> Result<(), String> {
-    remote.configure(enabled, relay_url, host_token)
+pub async fn remote_configure(app: AppHandle, remote: State<'_, Remote>, enabled: bool, relay_url: String, host_token: Option<String>) -> Result<(), String> {
+    let remote = remote.inner().clone();
+    blocking(move || {
+        let store = app.state::<storage::Store>();
+        let _permit = store.permit()?;
+        remote.configure(enabled, relay_url, host_token)
+    }).await
 }
 
 #[tauri::command]
-pub fn remote_begin_pairing(remote: State<'_, Remote>) -> Result<(), String> {
-    remote.begin_pairing()
+pub async fn remote_begin_pairing(store: State<'_, storage::Store>, remote: State<'_, Remote>) -> Result<(), String> {
+    { let _permit = store.permit()?; }
+    remote.begin_pairing().await
 }
 
 #[tauri::command]
@@ -391,11 +495,57 @@ pub fn remote_cancel_pairing(remote: State<'_, Remote>) {
 }
 
 #[tauri::command]
-pub fn remote_revoke(remote: State<'_, Remote>, client_id: String) -> Result<(), String> {
-    remote.revoke(&client_id)
+pub async fn remote_revoke(app: AppHandle, remote: State<'_, Remote>, client_id: String) -> Result<(), String> {
+    let remote = remote.inner().clone();
+    blocking(move || {
+        let store = app.state::<storage::Store>();
+        let _permit = store.permit()?;
+        remote.revoke(&client_id)
+    }).await
 }
 
 #[tauri::command]
-pub fn remote_update_context(remote: State<'_, Remote>, context: remote::Context) {
-    remote.update_context(context);
+pub fn preferences(store: State<'_, storage::Store>) -> storage::Snapshot {
+    store.snapshot()
+}
+
+#[tauri::command]
+pub fn set_system_language(window: WebviewWindow, store: State<'_, storage::Store>, remote: State<'_, Remote>, language: String) -> Result<(), String> {
+    if window.label() != "main" { return Err("系统语言由主窗口提供".into()); }
+    store.set_system_language(language)?;
+    remote.update_context(store.remote_context());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn update_preferences(app: AppHandle, window: WebviewWindow, target: String, patch: serde_json::Map<String, serde_json::Value>) -> Result<storage::Snapshot, String> {
+    if window.label() != "main" { return Err("请在主窗口修改设置".into()); }
+    let writer = app.clone();
+    let result = blocking(move || writer.state::<storage::Store>().update(&target, patch)).await;
+    storage::publish(&app);
+    result
+}
+
+#[tauri::command]
+pub async fn preview_preferences(app: AppHandle, window: WebviewWindow, legacy: std::collections::HashMap<String, String>) -> Result<storage::Snapshot, String> {
+    if window.label() != "main" { return Err("请在主窗口读取旧配置".into()); }
+    let reading = app.clone();
+    let result = blocking(move || reading.state::<storage::Store>().preview(legacy)).await;
+    storage::publish(&app);
+    result
+}
+
+#[tauri::command]
+pub async fn migrate_preferences(app: AppHandle, window: WebviewWindow, legacy: std::collections::HashMap<String, String>) -> Result<storage::Snapshot, String> {
+    if window.label() != "main" { return Err("请在主窗口迁移本地数据".into()); }
+    let migrating = app.clone();
+    let result = blocking(move || migrating.state::<storage::Store>().migrate(legacy, || {
+        migrating.state::<runner::Runs>().ensure_idle()?;
+        migrating.state::<queue::Store>().ensure_idle()
+    }, storage::check_legacy_instance, || {
+        migrating.state::<Remote>().update_context(migrating.state::<storage::Store>().remote_context());
+        migrating.state::<Remote>().storage_ready();
+    })).await;
+    storage::publish(&app);
+    result
 }

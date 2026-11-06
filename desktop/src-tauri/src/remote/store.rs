@@ -3,10 +3,9 @@
 use super::crypto;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+#[cfg(test)]
 const FILE_MODE: u32 = 0o600;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,20 +55,8 @@ pub fn load(path: &Path) -> Config {
 
 /// The file holds a private key, so it is written whole and only its owner can read it.
 pub fn save(path: &Path, config: &Config) -> Result<(), String> {
-    let parent = path.parent().ok_or("The settings file has no folder")?;
-    fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    let temporary = path.with_extension("tmp");
     let bytes = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .mode(FILE_MODE)
-        .open(&temporary)
-        .map_err(|error| error.to_string())?;
-    file.write_all(&bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())?;
-    fs::rename(&temporary, path).map_err(|error| error.to_string())
+    crate::storage::io::atomic_write(path, &bytes)
 }
 
 /// Plain `ws://` would hand the tokens to anyone on the network, so it is for this machine only.

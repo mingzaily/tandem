@@ -47,7 +47,7 @@ export function FloatingMenu({ x, y, width = 200, label, onClose, children }: Fl
       role="menu"
       aria-label={label}
       style={{ ...position, width }}
-      className="fixed z-50 flex flex-col gap-0.5 rounded-[12px] border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1.5 shadow-[var(--shadow-menu)]"
+      className="fixed z-50 flex flex-col gap-0.5 rounded-[12px] border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-1.5 shadow-[shadow:var(--shadow-menu)]"
     >
       {children}
     </div>,

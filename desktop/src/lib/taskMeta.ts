@@ -1,6 +1,6 @@
 /**
- * Pins, archived tasks and renames. These are Tandem's own view of a task and are kept in browser
- * storage: writing them into the CLI's task files could collide with a CLI that is running.
+ * Pins, archived tasks and aliases live in state.json, managed by Rust.
+ * Each CLI continues to own its native task files.
  */
 export interface TaskMeta {
   pins: string[];
@@ -29,3 +29,8 @@ export function renameTask(meta: TaskMeta, id: string, title: string): TaskMeta 
 }
 
 export const taskTitle = (meta: TaskMeta, task: { id: string; title: string }) => meta.titles[task.id] ?? task.title;
+
+/** Adopt the saved native title while preserving a manual rename made during generation. */
+export function acceptNativeTitle(meta: TaskMeta, id: string, previousTitle: string | undefined): TaskMeta {
+  return meta.titles[id] === previousTitle ? renameTask(meta, id, '') : meta;
+}

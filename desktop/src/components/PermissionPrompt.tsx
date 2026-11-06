@@ -7,7 +7,7 @@ import { describePermission } from '../lib/tools';
 const SHORTCUT_DELAY_MS = 500;
 
 const BUTTON =
-  'inline-flex min-h-9 max-w-full items-center gap-2 rounded-full border border-[var(--chat-input-border)] px-3 py-1.5 text-13 font-medium transition-colors duration-[var(--motion-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+  'inline-flex min-h-9 max-w-full items-center gap-2 rounded-full border border-[var(--chat-input-border)] px-3 py-1.5 text-13 font-medium transition-colors duration-[var(--motion-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50';
 const SECONDARY = `${BUTTON} text-[var(--chat-input-text)] hover:bg-[var(--perm-code-bg)]`;
 const KBD =
   'shrink-0 rounded-[4px] border border-[var(--chat-input-border)] bg-[var(--perm-code-bg)] px-1.5 py-[1px] text-11 font-normal';
@@ -15,10 +15,11 @@ const KBD =
 interface PermissionPromptProps {
   request: Extract<PendingRequest, { type: 'permissionRequest' }>;
   onAnswer: (decision: Decision) => void;
+  submitting?: boolean;
 }
 
 /** Replaces the input box while the agent waits for permission to use a tool. */
-export function PermissionPrompt({ request, onAnswer }: PermissionPromptProps) {
+export function PermissionPrompt({ request, onAnswer, submitting = false }: PermissionPromptProps) {
   const { title, detail } = describePermission(request.toolName, request.input);
   const scope = request.rules.join('、');
   const card = useRef<HTMLDivElement>(null);
@@ -27,6 +28,7 @@ export function PermissionPrompt({ request, onAnswer }: PermissionPromptProps) {
   const canAllowForTask = request.rules.length > 0;
 
   useEffect(() => {
+    if (submitting) return;
     const shownAt = Date.now();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.repeat || Date.now() - shownAt < SHORTCUT_DELAY_MS) return;
@@ -47,11 +49,12 @@ export function PermissionPrompt({ request, onAnswer }: PermissionPromptProps) {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [canAllowForTask, request.requestId]);
+  }, [canAllowForTask, request.requestId, submitting]);
 
   return (
     <div
       ref={card}
+      aria-busy={submitting}
       className="w-full rounded-xl border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)] p-4"
     >
       <p className="text-15 font-semibold leading-tight text-[var(--chat-input-text)]">{title}</p>
@@ -64,13 +67,14 @@ export function PermissionPrompt({ request, onAnswer }: PermissionPromptProps) {
         <pre className="selectable whitespace-pre-wrap break-all">{detail}</pre>
       </div>
       <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
-        <button type="button" onClick={() => onAnswer({ kind: 'deny' })} className={SECONDARY}>
+        <button type="button" disabled={submitting} onClick={() => onAnswer({ kind: 'deny' })} className={SECONDARY}>
           <span>{t('permissionDeny')}</span>
           <kbd className={KBD}>Esc</kbd>
         </button>
         {canAllowForTask ? (
           <button
             type="button"
+            disabled={submitting}
             title={`${scope}\n${t('permissionAllowForTaskHint')}`}
             onClick={() => onAnswer({ kind: 'allowForTask' })}
             className={`${SECONDARY} min-w-0 max-w-[min(100%,460px)]`}
@@ -82,6 +86,7 @@ export function PermissionPrompt({ request, onAnswer }: PermissionPromptProps) {
         ) : null}
         <button
           type="button"
+          disabled={submitting}
           onClick={() => onAnswer({ kind: 'allow' })}
           className={`${BUTTON} bg-[var(--perm-allow-btn-bg)] text-[var(--perm-allow-btn-text)] hover:opacity-90`}
         >

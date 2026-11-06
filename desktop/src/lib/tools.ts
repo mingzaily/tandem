@@ -22,12 +22,13 @@ export interface ToolDisplay {
   /** Empty when the description already reads as a full sentence. */
   verb: string;
   text: string;
+  title?: string;
   fileName: string | null;
   command: string | null;
   stats: { added: number; removed: number } | null;
 }
 
-function parseInput(input: string): Record<string, unknown> {
+export function parseToolInput(input: string): Record<string, unknown> {
   try {
     const parsed: unknown = JSON.parse(input);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
@@ -39,6 +40,22 @@ function parseInput(input: string): Record<string, unknown> {
 const asString = (value: unknown) => (typeof value === 'string' ? value : '');
 const lineCount = (text: string) => (text === '' ? 0 : text.split('\n').length);
 const baseName = (path: string) => path.split('/').filter(Boolean).pop() ?? path;
+
+/** Cindy keeps MCP parameters in the tooltip; the row names the server and readable tool. */
+function mcpDisplay(name: string, input: Record<string, unknown>): { text: string; title: string } | null {
+  const separator = name.startsWith('mcp__') ? '__' : name.startsWith('mcp:') ? ':' : null;
+  if (!separator) return null;
+  const [server, ...parts] = name.slice(3 + separator.length).split(separator);
+  const tool = parts.join(separator);
+  if (!server || !tool) return null;
+  const detail = ['description', 'url', 'query', 'path', 'file_path', 'title', 'name', 'prompt']
+    .map((key) => asString(input[key]).trim()).find(Boolean);
+  const summary = detail && (detail.length > 80 ? `${detail.slice(0, 77).trimEnd()}...` : detail);
+  return {
+    text: `${server} · ${tool.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim()}`,
+    title: summary ? `${name}\n${summary}` : name,
+  };
+}
 
 function editStats(tool: ToolItem, input: Record<string, unknown>): ToolDisplay['stats'] {
   // Line counts from clipped text would be wrong, so they are left out.
@@ -56,9 +73,11 @@ function editStats(tool: ToolItem, input: Record<string, unknown>): ToolDisplay[
 }
 
 export function describeTool(tool: ToolItem): ToolDisplay {
-  const input = parseInput(tool.input);
+  const input = parseToolInput(tool.input);
   const verbKey = VERBS[tool.name];
   const verb = verbKey ? t(verbKey) : t('verbUsed');
+  const mcp = mcpDisplay(tool.name, input);
+  if (mcp) return { verb, ...mcp, fileName: null, command: null, stats: null };
   if (FILE_TOOLS.has(tool.name)) {
     const path = asString(input.file_path) || asString(input.notebook_path);
     return {
@@ -80,7 +99,7 @@ export function describeTool(tool: ToolItem): ToolDisplay {
     asString(input.pattern) || asString(input.query) || asString(input.url) || asString(input.path);
   return {
     verb,
-    text: verbKey ? detail : detail ? `${tool.name} ${detail}` : tool.name,
+    text: verbKey ? detail : tool.name,
     fileName: null,
     command: null,
     stats: null,
@@ -90,11 +109,11 @@ export function describeTool(tool: ToolItem): ToolDisplay {
 /** "Read 3 files · Searched twice", counted the way the group header reports exploration. */
 const COMMAND_TOOLS = new Set(['Bash']);
 const READ_TOOLS = new Set(['Read', 'Glob', 'Grep', 'LS']);
-const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+export const WRITE_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
 
 /** Says what will happen, and shows the exact operation the user is approving. */
 export function describePermission(toolName: string, input: string): { title: string; detail: string } {
-  const fields = parseInput(input);
+  const fields = parseToolInput(input);
   if (COMMAND_TOOLS.has(toolName) && asString(fields.command)) {
     return { title: t('permissionTitleCommand'), detail: asString(fields.command) };
   }

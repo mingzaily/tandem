@@ -4,7 +4,6 @@ import iconUrl from '../assets/tandem-icon.svg';
 import type { TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
 import { CONVERSATION_CWD, groupRoot, isUnder, moveProject, orderProjects, projectName, worktreeName } from '../lib/items';
-import { loadProjectOrder, saveProjectOrder } from '../lib/preferences';
 import { renameTask, taskTitle, type TaskMeta } from '../lib/taskMeta';
 import { formatAge } from '../lib/tools';
 import { AgentMark } from './AgentMark';
@@ -32,6 +31,8 @@ interface SidebarProps {
   meta: TaskMeta;
   extraProjects: string[];
   conversationRoots: string[];
+  projectOrder: string[];
+  onProjectOrderChange: (order: string[]) => void;
   width: number;
   renamingId: string | null;
   version: string;
@@ -170,12 +171,11 @@ function TaskRow(props: TaskRowProps) {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
+  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, projectOrder, onProjectOrderChange, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState<string | null>(null);
-  const [projectOrder, setProjectOrder] = useState(loadProjectOrder);
   const [drag, setDrag] = useState<{ cwd: string; y: number; dropAt: number } | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const nav = useRef<HTMLElement>(null);
@@ -213,8 +213,7 @@ export function Sidebar(props: SidebarProps) {
     const next = moveProject(shown, cwd, to);
     // A project with nothing to show right now keeps its saved place for when it comes back.
     const merged = [...next, ...projectOrder.filter((root) => !shown.includes(root))];
-    setProjectOrder(merged);
-    saveProjectOrder(merged);
+    onProjectOrderChange(merged);
   };
 
   const startProjectDrag = (event: ReactPointerEvent<HTMLElement>, cwd: string) => {

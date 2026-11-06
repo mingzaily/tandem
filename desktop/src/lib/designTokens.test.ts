@@ -33,6 +33,13 @@ const sources = sourceFiles(join(root, 'src')).map((path) => ({
 }));
 
 describe('design tokens', () => {
+  it('types shadow length tokens as box shadows rather than shadow colors', () => {
+    const ambiguous = sources.flatMap(({ path, text }) =>
+      [...text.matchAll(/shadow-\[var\((--shadow-[\w-]+)\)\]/g)].map(([, name]) => `${path}: ${name}`),
+    );
+    expect(ambiguous).toEqual([]);
+  });
+
   it('uses only tokens that exist', () => {
     const missing = sources.flatMap(({ path, text }) =>
       [...text.matchAll(/var\((--[\w-]+)/g)]

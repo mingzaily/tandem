@@ -2,9 +2,9 @@
 //! dialog or a window drop, so a compromised page cannot make Tandem read an arbitrary file.
 
 use base64::{engine::general_purpose::STANDARD, Engine};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -45,10 +45,77 @@ pub struct AddResult {
     errors: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 enum Stored {
-    Image { media_type: &'static str, data: String },
-    File { path: PathBuf },
+    Image { name: String, media_type: String, data: String },
+    File { name: String, path: PathBuf },
+}
+
+/// Queue images become immutable files; inline data is accepted while migrating older queues.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum SavedStored {
+    Image { name: String, media_type: String, data: String },
+    ImageFile { name: String, media_type: String },
+    File { name: String, path: PathBuf },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedAttachment {
+    id: String,
+    stored: SavedStored,
+}
+
+impl SavedAttachment {
+    pub fn presentation(&self, task_id: &str) -> Attachment {
+        match &self.stored {
+            SavedStored::Image { name, media_type, data } => Attachment {
+                id: self.id.clone(), name: name.clone(), kind: AttachmentKind::Image,
+                path: None, preview: Some(format!("data:{media_type};base64,{data}")),
+            },
+            SavedStored::ImageFile { name, .. } => Attachment {
+                id: self.id.clone(), name: name.clone(), kind: AttachmentKind::Image,
+                path: None, preview: Some(format!("queue-image://localhost/{task_id}/{}", self.id)),
+            },
+            SavedStored::File { name, path } => Attachment {
+                id: self.id.clone(), name: name.clone(), kind: AttachmentKind::File,
+                path: Some(path.to_string_lossy().into_owned()), preview: None,
+            },
+        }
+    }
+
+    pub fn image_id(&self) -> Option<&str> {
+        match self.stored { SavedStored::Image { .. } | SavedStored::ImageFile { .. } => Some(&self.id), SavedStored::File { .. } => None }
+    }
+
+    pub fn has_inline_image(&self) -> bool { matches!(self.stored, SavedStored::Image { .. }) }
+
+    pub fn validate_image_file(&self, dir: &Path) -> Result<(), String> {
+        if let SavedStored::ImageFile { .. } = self.stored {
+            Uuid::parse_str(&self.id).map_err(|_| "队列图片 ID 必须是 UUID".to_owned())?;
+            let path = dir.join(&self.id);
+            if !fs::metadata(&path).map_err(|error| format!("读取队列图片 {} 失败：{error}", path.display()))?.is_file() {
+                return Err(format!("队列图片 {} 必须是文件", path.display()));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn persist_image(&mut self, dir: &Path) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        if let SavedStored::Image { name, media_type, data } = &self.stored {
+            Uuid::parse_str(&self.id).map_err(|_| "队列图片 ID 必须是 UUID".to_owned())?;
+            let bytes = STANDARD.decode(data).map_err(|error| format!("解码队列图片失败：{error}"))?;
+            fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|error| format!("创建队列图片目录失败：{error}"))?;
+            let path = dir.join(&self.id);
+            let temp = path.with_extension("tmp");
+            let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temp).map_err(|error| format!("保存队列图片失败：{error}"))?;
+            file.write_all(&bytes).and_then(|_| file.sync_all()).map_err(|error| format!("保存队列图片失败：{error}"))?;
+            fs::rename(&temp, &path).map_err(|error| format!("保存队列图片失败：{error}"))?;
+            self.stored = SavedStored::ImageFile { name: name.clone(), media_type: media_type.clone() };
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -57,7 +124,7 @@ pub struct Attachments(Mutex<HashMap<String, Stored>>);
 /// What a turn sends, taken out of the store.
 #[derive(Debug, Default)]
 pub struct Prepared {
-    images: Vec<(&'static str, String)>,
+    images: Vec<(String, String)>,
     files: Vec<PathBuf>,
 }
 
@@ -96,14 +163,14 @@ impl Attachments {
                 return self.add_image(name, media_type, &bytes);
             }
         }
-        let id = self.store(Stored::File { path })?;
+        let id = self.store(Stored::File { name: name.clone(), path })?;
         Ok(Attachment { id, name, kind: AttachmentKind::File, path: Some(display), preview: None })
     }
 
     fn add_image(&self, name: String, media_type: &'static str, bytes: &[u8]) -> Result<Attachment, String> {
         let data = STANDARD.encode(bytes);
         let preview = format!("data:{media_type};base64,{data}");
-        let id = self.store(Stored::Image { media_type, data })?;
+        let id = self.store(Stored::Image { name: name.clone(), media_type: media_type.to_owned(), data })?;
         Ok(Attachment { id, name, kind: AttachmentKind::Image, path: None, preview: Some(preview) })
     }
 
@@ -137,21 +204,76 @@ impl Attachments {
     pub fn take(&self, ids: &[String]) -> Result<Prepared, String> {
         let mut held = self.0.lock().map_err(|error| error.to_string())?;
         if ids.iter().any(|id| !held.contains_key(id)) {
-            return Err("An attachment is no longer available".into());
+            return Err("附件已从草稿中移除".into());
         }
         let mut prepared = Prepared::default();
         for id in ids {
             match held.remove(id) {
-                Some(Stored::Image { media_type, data }) => prepared.images.push((media_type, data)),
-                Some(Stored::File { path }) => prepared.files.push(path),
+                Some(Stored::Image { media_type, data, .. }) => prepared.images.push((media_type, data)),
+                Some(Stored::File { path, .. }) => prepared.files.push(path),
                 None => {}
             }
         }
         Ok(prepared)
     }
+
+    /// Capture first; release the draft's ids only after the queue file has been written.
+    pub fn capture(&self, ids: &[String]) -> Result<Vec<SavedAttachment>, String> {
+        capture(&*self.0.lock().map_err(|error| error.to_string())?, ids)
+    }
+
+    pub fn release(&self, ids: &[String]) {
+        if let Ok(mut held) = self.0.lock() {
+            for id in ids { held.remove(id); }
+        }
+    }
+}
+
+fn capture(held: &HashMap<String, Stored>, ids: &[String]) -> Result<Vec<SavedAttachment>, String> {
+    let mut seen = HashSet::new();
+    ids.iter().filter(|id| seen.insert(id.as_str())).map(|id| {
+        let stored = held.get(id).ok_or("附件已从草稿中移除")?;
+        let stored = match stored {
+            Stored::Image { name, media_type, data } => SavedStored::Image { name: name.clone(), media_type: media_type.clone(), data: data.clone() },
+            Stored::File { name, path } => SavedStored::File { name: name.clone(), path: path.clone() },
+        };
+        Ok(SavedAttachment { id: id.clone(), stored })
+    }).collect()
 }
 
 impl Prepared {
+    pub fn from_saved(saved: &[SavedAttachment], image_dir: &Path) -> Result<Self, String> {
+        let mut prepared = Self::default();
+        for attachment in saved {
+            match &attachment.stored {
+                SavedStored::Image { media_type, data, .. } => prepared.images.push((media_type.clone(), data.clone())),
+                SavedStored::ImageFile { media_type, .. } => {
+                    let bytes = fs::read(image_dir.join(&attachment.id)).map_err(|error| format!("读取队列图片失败：{error}"))?;
+                    prepared.images.push((media_type.clone(), STANDARD.encode(bytes)));
+                }
+                SavedStored::File { path, .. } => prepared.files.push(path.clone()),
+            }
+        }
+        Ok(prepared)
+    }
+    /// The current turn keeps its own previews after the acknowledged queue files are removed.
+    /// `saved` is the source used for `from_saved`, so images have the same order.
+    pub fn live_attachments(&self, saved: &[SavedAttachment]) -> Vec<Attachment> {
+        let mut images = self.images.iter();
+        saved.iter().map(|attachment| match &attachment.stored {
+            SavedStored::Image { name, .. } | SavedStored::ImageFile { name, .. } => {
+                let (media_type, data) = images.next().expect("prepared images follow the saved attachments");
+                Attachment {
+                    id: attachment.id.clone(), name: name.clone(), kind: AttachmentKind::Image,
+                    path: None, preview: Some(format!("data:{media_type};base64,{data}")),
+                }
+            }
+            SavedStored::File { name, path } => Attachment {
+                id: attachment.id.clone(), name: name.clone(), kind: AttachmentKind::File,
+                path: Some(path.to_string_lossy().into_owned()), preview: None,
+            },
+        }).collect()
+    }
     /// Images come first, the order the API recommends, and files are named in the text.
     pub fn content(&self, prompt: &str) -> Vec<Value> {
         let mut content: Vec<Value> = self
@@ -209,7 +331,7 @@ fn read_rule(path: &Path) -> Option<String> {
     is_exact.then(|| format!("Read(/{path})"))
 }
 
-fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
+pub(crate) fn image_media_type(bytes: &[u8]) -> Option<&'static str> {
     match bytes {
         [0x89, b'P', b'N', b'G', ..] => Some("image/png"),
         [0xFF, 0xD8, 0xFF, ..] => Some("image/jpeg"),
@@ -283,7 +405,7 @@ mod tests {
         let store = Attachments::default();
         let id = store.add_pasted_image(&STANDARD.encode(PNG)).unwrap().id;
         assert!(store.take(&[id.clone(), "missing".into()]).is_err());
-        assert!(store.take(&[id.clone()]).is_ok());
+        assert_eq!(store.take(&[id.clone(), id.clone()]).unwrap().content("").len(), 1);
         assert!(store.take(&[id]).is_err());
     }
 

@@ -1,7 +1,7 @@
 //! What a phone may ask for. This list is the whole of it: anything not here is refused, and the
 //! limits from docs/relay-protocol.md section 2 are enforced here rather than trusted to the page.
 
-use super::{Inner, Remote, TURN_EVENT};
+use super::{Context, Inner, Remote, TURN_EVENT};
 use crate::runner::{self, Decision, TurnOptions, TurnSink};
 use crate::sessions::{Agent, Message};
 use crate::{codex, commands, conversations, login_env};
@@ -60,26 +60,31 @@ fn project_name(cwd: &str) -> String {
     cwd.trim_end_matches('/').rsplit('/').next().unwrap_or(cwd).to_owned()
 }
 
+fn host_projects(context: &Context) -> Vec<Value> {
+    let mut projects: Vec<&str> = context.projects.iter().map(String::as_str).collect();
+    projects.push(CONVERSATION_CWD);
+    let order: std::collections::HashMap<&str, usize> = context.project_order.iter()
+        .enumerate().map(|(index, cwd)| (cwd.as_str(), index + 1)).collect();
+    projects.sort_by_key(|cwd| order.get(cwd).copied().unwrap_or(0));
+    projects.into_iter().map(|cwd| json!({
+        "cwd": cwd,
+        "name": if cwd == CONVERSATION_CWD { "对话".to_owned() } else { project_name(cwd) },
+    })).collect()
+}
+
 async fn host_info(inner: &Inner) -> Result<Value, OpError> {
     let env = login_env::login_env().await;
     let agents: Vec<&str> = ["claude", "codex", "pi"]
         .into_iter()
         .filter(|command| login_env::find_in_path(command, env.get("PATH")).is_some())
         .collect();
-    let mut projects: Vec<Value> = inner
-        .context
-        .lock()
-        .map(|context| context.projects.clone())
-        .unwrap_or_default()
-        .into_iter()
-        .map(|cwd| json!({"name": project_name(&cwd), "cwd": cwd}))
-        .collect();
-    projects.push(json!({"cwd": CONVERSATION_CWD, "name": "对话"}));
+    let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
     Ok(json!({
         "name": host_name(),
         "version": inner.app.package_info().version.to_string(),
         "agents": agents,
-        "projects": projects,
+        "projects": host_projects(&context),
+        "conversationRoots": context.conversation_roots,
     }))
 }
 
@@ -228,13 +233,13 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
         permission_mode: request.permission_mode,
         worktree: false,
         ignore_external_writer: false,
+        ..Default::default()
     };
     let task_id = request.task_id;
     let inner_for_turn = inner.clone();
     let id_for_turn = run_id.clone();
     tauri::async_runtime::spawn(async move {
-        let runs = inner_for_turn.app.state::<runner::Runs>();
-        let result = commands::dispatch_turn(runs.inner(), agent, task_id, cwd, prompt, Default::default(), options, sink).await;
+        let result = commands::dispatch_turn(&inner_for_turn.app, agent, task_id, cwd, prompt, Default::default(), options, sink).await;
         Remote(inner_for_turn.clone()).end_run(&id_for_turn, &result);
     });
     Ok(json!({"runId": run_id}))
@@ -263,7 +268,7 @@ async fn dispatch(inner: &Arc<Inner>, op: &str, value: &Value) -> Result<Value, 
         "turn.send" => turn_send(inner, value).await,
         "turn.cancel" => {
             let request: CancelParams = params(value)?;
-            inner.app.state::<runner::Runs>().cancel(&request.task_id);
+            commands::cancel_turn(inner.app.clone(), request.task_id).await?;
             Ok(json!({}))
         }
         "request.answer" => {
@@ -322,6 +327,30 @@ mod tests {
         assert!(check_send(&send(None, Some(CONVERSATION_CWD), None), &projects).is_ok());
         assert!(matches!(check_send(&send(None, Some("/etc"), None), &projects), Err(OpError("NOT_ALLOWED", _))));
         assert!(matches!(check_send(&send(None, Some("/a/sub"), None), &projects), Err(OpError("NOT_ALLOWED", _))));
+    }
+
+    #[test]
+    fn host_projects_follow_the_saved_sidebar_order_including_conversations() {
+        let context = Context {
+            projects: vec!["/first".into(), "/second".into()],
+            project_order: vec!["/second".into(), CONVERSATION_CWD.into(), "/removed".into(), "/first".into()],
+            ..Context::default()
+        };
+        let projects = host_projects(&context);
+        assert_eq!(projects.iter().map(|p| p["cwd"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["/second", CONVERSATION_CWD, "/first"]);
+        assert_eq!(projects[1]["name"], "对话");
+    }
+
+    #[test]
+    fn projects_without_a_saved_position_come_first_as_in_the_sidebar() {
+        let context = Context {
+            projects: vec!["/known".into(), "/new".into()],
+            project_order: vec![CONVERSATION_CWD.into(), "/known".into()],
+            ..Context::default()
+        };
+        assert_eq!(host_projects(&context).iter().map(|p| p["cwd"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["/new", CONVERSATION_CWD, "/known"]);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EMPTY_TASK_META, renameTask, taskTitle, toggleArchived, togglePin } from './taskMeta';
+import { acceptNativeTitle, EMPTY_TASK_META, renameTask, taskTitle, toggleArchived, togglePin } from './taskMeta';
 
 describe('taskMeta', () => {
   it('pins and unpins', () => {
@@ -18,5 +18,18 @@ describe('taskMeta', () => {
     const renamed = renameTask(EMPTY_TASK_META, 'a', '  mine ');
     expect(taskTitle(renamed, task)).toBe('mine');
     expect(taskTitle(renameTask(renamed, 'a', '   '), task)).toBe('from cli');
+  });
+
+  it('keeps a manual rename made while a generated title is in flight', () => {
+    const manual = renameTask(EMPTY_TASK_META, 'a', '手动标题');
+    expect(acceptNativeTitle(manual, 'a', undefined)).toBe(manual);
+  });
+
+  it('adopts the native title and preserves newer pin and archive changes', () => {
+    const current = togglePin(renameTask(EMPTY_TASK_META, 'a', '旧别名'), 'b');
+    const updated = acceptNativeTitle(current, 'a', '旧别名');
+    expect(updated.titles.a).toBeUndefined();
+    expect(taskTitle(updated, { id: 'a', title: '原生标题' })).toBe('原生标题');
+    expect(updated.pins).toEqual(['b']);
   });
 });

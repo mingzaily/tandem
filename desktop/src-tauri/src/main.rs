@@ -11,10 +11,13 @@ mod harness;
 mod git_info;
 mod login_env;
 mod pi;
+mod queue;
 mod remote;
 mod runner;
 mod sessions;
+mod storage;
 mod tray;
+mod titles;
 mod writers;
 
 use std::time::{Duration, Instant};
@@ -23,6 +26,24 @@ use tauri::Manager;
 fn main() {
     let started_at = Instant::now();
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("queue-image", |context, request, responder| {
+            let app = context.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            tauri::async_runtime::spawn_blocking(move || {
+                let result = (|| {
+                    let storage = app.state::<storage::Store>();
+                    let _permit = storage.permit()?;
+                    app.state::<queue::Store>().image(&path)
+                })();
+                let (status, media_type, body) = match result {
+                    Ok((media_type, bytes)) => (200, media_type, bytes),
+                    Err(error) => (404, "text/plain; charset=utf-8", error.into_bytes()),
+                };
+                responder.respond(tauri::http::Response::builder().status(status)
+                    .header("Content-Type", media_type).header("Cache-Control", "no-store")
+                    .body(body).expect("fixed image response headers are valid"));
+            });
+        })
         // No capability grants the page this plugin. Only the backend opens the dialog.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
@@ -31,6 +52,7 @@ fn main() {
         .manage(codex::Reader::default())
         .manage(agents::Jobs::default())
         .manage(tray::TrayState::default())
+        .manage(titles::Jobs::default())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(drag) => attachments::on_drag(window.app_handle(), drag),
             // Running turns and notifications carry on with the window out of the way.
@@ -47,7 +69,16 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::list_tasks,
             commands::read_task,
+            commands::generate_task_title,
+            commands::rename_native_task,
             commands::send_turn,
+            commands::list_queues,
+            commands::enqueue_turn,
+            commands::edit_queued_turn,
+            commands::remove_queued_turn,
+            commands::reorder_queued_turn,
+            commands::resume_queue,
+            commands::set_queue_lock,
             commands::cancel_turn,
             commands::answer_request,
             commands::cli_info,
@@ -65,7 +96,6 @@ fn main() {
             commands::resize_tray_panel,
             commands::tray_panel_action,
             commands::notify_user,
-            commands::set_keep_running,
             commands::list_codex_tasks,
             commands::list_pi_tasks,
             commands::read_pi_task,
@@ -85,13 +115,35 @@ fn main() {
             commands::remote_begin_pairing,
             commands::remote_cancel_pairing,
             commands::remote_revoke,
-            commands::remote_update_context,
+            commands::preferences,
+            commands::update_preferences,
+            commands::migrate_preferences,
+            commands::preview_preferences,
+            commands::set_system_language,
         ])
         .setup(|app| {
+            let root = conversations::home_dir().map_err(std::io::Error::other)?.join(".tandem");
+            let legacy = app.path().app_data_dir()?;
+            #[cfg(debug_assertions)]
+            let root = std::env::var_os("TANDEM_DRIVE_DATA_DIR").map(std::path::PathBuf::from).unwrap_or(root);
+            #[cfg(debug_assertions)]
+            let legacy = std::env::var_os("TANDEM_DRIVE_LEGACY_DIR").map(std::path::PathBuf::from).unwrap_or(legacy);
+            let store = storage::Store::open(root, legacy);
+            let preferences = store.snapshot();
+            let script = preferences.initialization_script();
+            let theme = preferences.native_theme();
+            let queue_dir = store.root().join("queues");
+            #[cfg(debug_assertions)]
+            let queue_dir = std::env::var_os("TANDEM_DRIVE_QUEUE_DIR").map(std::path::PathBuf::from).unwrap_or(queue_dir);
+            app.manage(store);
+            app.manage(queue::Store::new(queue_dir));
             tray::create(app.handle())?;
             app.manage(remote::Remote::new(app.handle().clone()).map_err(std::io::Error::other)?);
             // The page shows the window once it has painted. This covers a page that fails to load.
-            let window = app.get_webview_window("main").expect("main window");
+            let config = app.config().app.windows.iter().find(|window| window.label == "main").expect("main window config");
+            let window = tauri::WebviewWindowBuilder::from_config(app, config)?.initialization_script(script).theme(theme).build()?;
+            storage::publish(app.handle());
+            storage::watch(app.handle().clone());
             #[cfg(debug_assertions)]
             harness::start(window.clone());
             tauri::async_runtime::spawn(async move {

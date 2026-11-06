@@ -48,7 +48,7 @@ pub enum TurnEvent {
     },
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnOptions {
     pub model: Option<String>,
@@ -58,11 +58,21 @@ pub struct TurnOptions {
     #[serde(default)]
     pub worktree: bool,
     /// The user chose to send although another process has this task open.
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub ignore_external_writer: bool,
+    /// Internal one-shot requests use the CLI without creating a native task.
+    #[serde(skip)]
+    pub(crate) ephemeral: bool,
 }
 
 impl TurnOptions {
+    pub fn validate_for(&self, agent: sessions::Agent) -> Result<(), String> {
+        match agent {
+            sessions::Agent::Claude => self.validate(),
+            sessions::Agent::Codex => self.validate_codex(),
+            sessions::Agent::Pi => self.validate_pi(),
+        }
+    }
     /// Pi's models are named `provider/id`, and it has no permission modes.
     pub fn validate_pi(&self) -> Result<(), String> {
         let is_valid_model = |model: &str| {
@@ -122,15 +132,38 @@ pub enum Decision {
 
 /// Where a turn's events go. The page, phones or both, so the turn itself does not care.
 #[derive(Clone)]
-pub struct TurnSink(std::sync::Arc<dyn Fn(TurnEvent) -> Result<(), String> + Send + Sync>);
+pub struct TurnSink {
+    send: Arc<dyn Fn(TurnEvent) -> Result<(), String> + Send + Sync>,
+    acceptance: Option<Arc<Mutex<Option<AcceptanceHandler>>>>,
+}
+
+type AcceptanceHandler = Box<dyn FnOnce(String) -> Result<(), String> + Send>;
 
 impl TurnSink {
     pub fn new(send: impl Fn(TurnEvent) -> Result<(), String> + Send + Sync + 'static) -> Self {
-        Self(std::sync::Arc::new(send))
+        Self { send: Arc::new(send), acceptance: None }
     }
 
     pub fn send(&self, event: TurnEvent) -> Result<(), String> {
-        (self.0)(event)
+        (self.send)(event)
+    }
+
+    pub fn with_acceptance(mut self, accepted: impl FnOnce(String) -> Result<(), String> + Send + 'static) -> Self {
+        self.acceptance = Some(Arc::new(Mutex::new(Some(Box::new(accepted)))));
+        self
+    }
+
+    /// CLI acknowledgments are internal: queue persistence stays off the wire and async runtime.
+    pub async fn accepted(&self, task_id: &str) -> Result<(), String> {
+        let handler = match &self.acceptance {
+            Some(handler) => handler.lock().map_err(|error| error.to_string())?.take(),
+            None => None,
+        };
+        if let Some(handler) = handler {
+            let id = task_id.to_owned();
+            tauri::async_runtime::spawn_blocking(move || handler(id)).await.map_err(|error| error.to_string())??;
+        }
+        Ok(())
     }
 }
 
@@ -163,6 +196,7 @@ struct Run {
     cancel: oneshot::Sender<()>,
     input: mpsc::UnboundedSender<String>,
     pending: HashMap<String, PendingRequest>,
+    operations: HashMap<String, oneshot::Sender<Result<(), String>>>,
 }
 
 pub struct RunChannels {
@@ -178,7 +212,25 @@ pub struct Runs {
     task_rules: Mutex<HashMap<String, Vec<String>>>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct AnswerError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl AnswerError {
+    fn settled(message: &str) -> Self { Self { code: "requestSettled", message: message.into() } }
+}
+impl From<String> for AnswerError {
+    fn from(message: String) -> Self { Self { code: "answerFailed", message } }
+}
+
 impl Runs {
+    pub fn ensure_idle(&self) -> Result<(), String> {
+        if self.runs.lock().map_err(|error| error.to_string())?.is_empty() { Ok(()) }
+        else { Err("任务仍在运行，结束后再迁移本地数据".into()) }
+    }
+
     pub fn begin(&self, task_id: &str) -> Result<RunChannels, String> {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
         if runs.contains_key(task_id) {
@@ -188,13 +240,36 @@ impl Runs {
         let (input_sender, input) = mpsc::unbounded_channel();
         runs.insert(
             task_id.to_owned(),
-            Run { cancel: cancel_sender, input: input_sender, pending: HashMap::new() },
+            Run { cancel: cancel_sender, input: input_sender, pending: HashMap::new(), operations: HashMap::new() },
         );
         Ok(RunChannels { cancel, input })
     }
 
     pub fn is_running(&self, task_id: &str) -> bool {
         self.runs.lock().is_ok_and(|runs| runs.contains_key(task_id))
+    }
+
+    pub fn metadata_request(&self, task_id: &str, request_id: String, line: String) -> Result<Option<oneshot::Receiver<Result<(), String>>>, String> {
+        let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
+        let Some(run) = runs.get_mut(task_id) else { return Ok(None) };
+        let (sender, receiver) = oneshot::channel();
+        run.input.send(line).map_err(|_| "任务进程已经结束".to_owned())?;
+        run.operations.insert(request_id, sender);
+        Ok(Some(receiver))
+    }
+
+    pub fn settle_metadata(&self, task_id: &str, request_id: &str, result: Result<(), String>) {
+        if let Ok(mut runs) = self.runs.lock() {
+            if let Some(sender) = runs.get_mut(task_id).and_then(|run| run.operations.remove(request_id)) {
+                let _ = sender.send(result);
+            }
+        }
+    }
+
+    pub fn forget_metadata(&self, task_id: &str, request_id: &str) {
+        if let Ok(mut runs) = self.runs.lock() {
+            if let Some(run) = runs.get_mut(task_id) { run.operations.remove(request_id); }
+        }
     }
 
     fn grant_rules(&self, task_id: &str, rules: Vec<String>) {
@@ -259,9 +334,13 @@ impl Runs {
     }
 
     pub fn answer(&self, task_id: &str, request_id: &str, decision: Decision) -> Result<(), String> {
+        self.answer_checked(task_id, request_id, decision).map_err(|error| error.message)
+    }
+
+    pub fn answer_checked(&self, task_id: &str, request_id: &str, decision: Decision) -> Result<(), AnswerError> {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
-        let run = runs.get_mut(task_id).ok_or("This task is not running")?;
-        let request = run.pending.get(request_id).ok_or("This request has already ended")?;
+        let run = runs.get_mut(task_id).ok_or_else(|| AnswerError::settled("This task is not running"))?;
+        let request = run.pending.get(request_id).ok_or_else(|| AnswerError::settled("This request has already ended"))?;
         let line = match (&request.codex_rpc_id, &request.pi_method) {
             (Some(rpc_id), _) => codex::rpc_reply(rpc_id, codex::decision_result(request, &decision)?),
             (None, Some(method)) => pi::ui_reply(request_id, request, method, &decision)?,
@@ -490,7 +569,7 @@ pub async fn send_turn(
     let emit = |event| on_event.send(event);
     let result = async {
         emit(TurnEvent::Started { task_id: target.task_id.clone() })?;
-        run_claude(runs, &target, &prompt, &attachments, &options, channels, &emit).await
+        run_claude(runs, &target, &prompt, &attachments, &options, channels, &on_event).await
     }
     .await;
     runs.finish(&target.task_id);
@@ -507,8 +586,9 @@ async fn run_claude(
     attachments: &Prepared,
     options: &TurnOptions,
     channels: RunChannels,
-    emit: &impl Fn(TurnEvent) -> Result<(), String>,
+    sink: &TurnSink,
 ) -> Result<(), String> {
+    let emit = |event| sink.send(event);
     let RunChannels { mut cancel, mut input } = channels;
     if !Path::new(&target.cwd).is_dir() {
         return Err(format!("Working directory not found: {}", target.cwd));
@@ -561,6 +641,17 @@ async fn run_claude(
                 let line = line.map_err(|error| error.to_string())?;
                 let Some(line) = line else { break };
                 let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+                if value.get("type").and_then(Value::as_str) == Some("user")
+                    && value.get("isReplay").and_then(Value::as_bool) == Some(true)
+                    && value.get("parent_tool_use_id").is_none_or(Value::is_null)
+                {
+                    sink.accepted(&target.task_id).await?;
+                    continue;
+                }
+                if let Some((id, result)) = crate::titles::name_response(crate::titles::NameProtocol::Claude, &value) {
+                    runs.settle_metadata(&target.task_id, &id, result);
+                    continue;
+                }
                 match parse_control(&value) {
                     Some(ControlAction::Ask { request_id, request, event }) => {
                         runs.add_pending(&target.task_id, request_id, request);
@@ -626,6 +717,8 @@ fn claude_args(target: &Target, options: &TurnOptions, task_rules: &[String]) ->
         "stream-json",
         "--verbose",
         "--include-partial-messages",
+        // The echoed user message is the CLI's receipt, independent of process startup.
+        "--replay-user-messages",
         // Permission requests and AskUserQuestion arrive as control requests on stdout.
         "--permission-prompt-tool",
         "stdio",
@@ -641,6 +734,14 @@ fn claude_args(target: &Target, options: &TurnOptions, task_rules: &[String]) ->
     flag("--model", &options.model);
     flag("--effort", &options.effort);
     flag("--permission-mode", &options.permission_mode);
+    if options.ephemeral {
+        args.extend([
+            "--no-session-persistence", "--tools", "", "--strict-mcp-config",
+            "--setting-sources", "user", "--settings", "{\"disableAllHooks\":true}",
+            "--system-prompt", crate::titles::SYSTEM_PROMPT,
+        ].map(str::to_owned));
+        return args;
+    }
     if !task_rules.is_empty() {
         args.push("--allowedTools".to_owned());
         args.extend(task_rules.iter().cloned());
@@ -881,6 +982,40 @@ mod tests {
     }
 
     #[test]
+    fn title_requests_are_ephemeral_and_disable_tools_and_hooks() {
+        let target = Target { task_id: "title".into(), cwd: "/tmp".into(), is_new: true };
+        let options = TurnOptions { ephemeral: true, ..Default::default() };
+        let args = claude_args(&target, &options, &[]);
+        assert!(args.contains(&"--no-session-persistence".into()));
+        assert!(args.windows(2).any(|pair| pair == ["--tools", ""]));
+        assert!(args.contains(&"{\"disableAllHooks\":true}".into()));
+        assert!(!args.iter().any(|arg| arg == "--session-id" || arg == "--resume"));
+        let from_page: TurnOptions = serde_json::from_value(json!({"ephemeral": true})).unwrap();
+        assert!(!from_page.ephemeral);
+    }
+
+    #[test]
+    fn metadata_requests_use_the_running_process_without_a_user_message() {
+        let runs = Runs::default();
+        let mut channels = runs.begin("task").unwrap();
+        let request = json!({"type": "set_session_name", "id": "tandem-title-test", "name": "title"}).to_string();
+        let mut reply = runs.metadata_request("task", "tandem-title-test".into(), request.clone()).unwrap().unwrap();
+        assert_eq!(channels.input.try_recv().unwrap(), request);
+        runs.settle_metadata("task", "tandem-title-test", Ok(()));
+        assert!(reply.try_recv().unwrap().is_ok());
+        assert!(runs.metadata_request("other", "operation".into(), "request".into()).unwrap().is_none());
+    }
+
+    #[test]
+    fn ending_a_turn_releases_waiting_metadata_requests() {
+        let runs = Runs::default();
+        let _channels = runs.begin("task").unwrap();
+        let mut reply = runs.metadata_request("task", "operation".into(), "request".into()).unwrap().unwrap();
+        runs.finish("task");
+        assert_eq!(reply.try_recv(), Err(oneshot::error::TryRecvError::Closed));
+    }
+
+    #[test]
     fn options_and_task_rules_become_flags_and_the_default_mode_adds_none() {
         let target = Target { task_id: "id".into(), cwd: "/".into(), is_new: false };
         let plain = claude_args(&target, &TurnOptions::default(), &[]);
@@ -891,6 +1026,7 @@ mod tests {
             permission_mode: Some("acceptEdits".into()),
             worktree: false,
             ignore_external_writer: false,
+            ..Default::default()
         };
         let args = claude_args(&target, &options, &["Bash(ls:*)".into()]).join(" ");
         assert!(args.contains("--model opus --effort high --permission-mode acceptEdits"));
@@ -905,6 +1041,7 @@ mod tests {
             permission_mode: Some(mode.into()),
             worktree: false,
             ignore_external_writer: false,
+            ..Default::default()
         };
         assert!(with("claude-opus-5-5[1m]", "max", "auto").validate().is_ok());
         assert!(with("--dangerously-skip-permissions", "max", "auto").validate().is_err());
@@ -932,6 +1069,17 @@ mod tests {
         assert_eq!(sent["response"]["response"]["behavior"], "allow");
         assert_eq!(sent["response"]["response"]["updatedInput"]["command"], "ls");
         assert!(runs.rules_for("a").is_empty());
+    }
+
+    #[test]
+    fn answer_errors_distinguish_settlement_from_a_failed_answer() {
+        let runs = Runs::default();
+        let _channels = begin_with(&runs, r#"{"subtype":"can_use_tool","tool_name":"Write","input":{}}"#);
+        let error = runs.answer_checked("a", "r1", Decision::AllowForTask).unwrap_err();
+        assert_eq!(error.code, "answerFailed");
+        runs.answer_checked("a", "r1", Decision::Deny).unwrap();
+        assert_eq!(runs.answer_checked("a", "r1", Decision::Allow).unwrap_err().code, "requestSettled");
+        assert_eq!(runs.answer_checked("ended", "r1", Decision::Deny).unwrap_err().code, "requestSettled");
     }
 
     #[test]

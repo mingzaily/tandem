@@ -15,11 +15,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use store::Config;
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 const CHANGED_EVENT: &str = "remote-changed";
 pub const TURN_EVENT: &str = "remote-turn";
@@ -28,11 +28,12 @@ const PAIRING_LIFETIME: Duration = Duration::from_secs(300);
 const MAX_RUN_EVENTS: usize = 20_000;
 const QR_SIZE: u32 = 240;
 
-/// What only the page knows, because it keeps these in its own storage.
-#[derive(Debug, Clone, Default, Deserialize)]
+/// The desktop backend derives the phone's task view from its own configuration and state.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Context {
     pub projects: Vec<String>,
+    pub project_order: Vec<String>,
     pub conversation_roots: Vec<String>,
     pub conversation_dir: Option<String>,
     pub archived: Vec<String>,
@@ -43,6 +44,8 @@ pub struct Context {
 pub(crate) struct RunRecord {
     agent: Agent,
     task_id: Option<String>,
+    started_at_ms: u64,
+    started: Instant,
     events: Vec<TurnEvent>,
     sink: TurnSink,
 }
@@ -58,14 +61,15 @@ fn write_pairing_for_test(text: &str) {
 pub(crate) struct Pairing {
     pub token: [u8; 32],
     pub secret: [u8; 32],
-    expires_at_ms: u64,
+    deadline: Instant,
+    registered: bool,
     text: String,
     qr: String,
 }
 
 impl Pairing {
     pub fn is_live(&self) -> bool {
-        self.expires_at_ms > now_ms()
+        self.registered && self.deadline > Instant::now()
     }
 }
 
@@ -80,6 +84,7 @@ pub enum LinkStatus {
 
 pub(crate) enum Outgoing {
     Frame(Value),
+    BeginPairing { pairing: Pairing, reply: oneshot::Sender<Result<(), String>> },
     ToPeer { conn: String, message: Value },
     Broadcast(Value),
     PairAnswer { conn: String, allow: bool },
@@ -164,14 +169,16 @@ fn push_event(events: &mut Vec<TurnEvent>, event: &TurnEvent) {
 
 impl Remote {
     pub fn new(app: AppHandle) -> Result<Self, String> {
-        let dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-        let path = dir.join("remote.json");
+        let storage = app.state::<crate::storage::Store>();
+        let path = storage.root().join("remote.json");
         let config = store::load(&path);
+        let ready = storage.is_ready();
+        let context = storage.remote_context();
         let remote = Self(Arc::new(Inner {
             app,
             path,
             config: Mutex::new(config),
-            context: Mutex::default(),
+            context: Mutex::new(context),
             pairing: Mutex::default(),
             runs: Mutex::default(),
             online: Mutex::default(),
@@ -182,8 +189,14 @@ impl Remote {
             next_run: AtomicU64::new(1),
             seq: AtomicU64::new(0),
         }));
-        remote.restart_link();
+        if ready { remote.restart_link(); }
         Ok(remote)
+    }
+
+    pub fn storage_ready(&self) {
+        *self.0.lock_config() = store::load(&self.0.path);
+        self.restart_link();
+        self.0.notify_changed();
     }
 
     pub fn state(&self) -> RemoteState {
@@ -191,10 +204,10 @@ impl Remote {
         let (status, error) = self.0.status.lock().map_or((LinkStatus::Off, None), |status| status.clone());
         let online = self.0.online.lock().map(|online| online.clone()).unwrap_or_default();
         let pairing = self.0.pairing.lock().ok().and_then(|pairing| {
-            pairing.as_ref().filter(|pairing| pairing.expires_at_ms > now_ms()).map(|pairing| PairingView {
+            pairing.as_ref().filter(|pairing| pairing.is_live()).map(|pairing| PairingView {
                 text: pairing.text.clone(),
                 qr: pairing.qr.clone(),
-                expires_at_ms: pairing.expires_at_ms,
+                expires_at_ms: now_ms() + pairing.deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
             })
         });
         RemoteState {
@@ -224,7 +237,8 @@ impl Remote {
             store::check_relay_url(&relay_url)?;
         }
         {
-            let mut config = self.0.lock_config();
+            let mut current = self.0.lock_config();
+            let mut config = current.clone();
             if enabled && relay_url.is_empty() {
                 return Err("Enter the relay address first".to_owned());
             }
@@ -234,17 +248,17 @@ impl Remote {
                 config.host_token = token;
             }
             if enabled && config.host_token.is_empty() {
-                config.enabled = false;
                 return Err("Enter the relay token first".to_owned());
             }
             self.0.save(&config)?;
+            *current = config;
         }
         self.restart_link();
         self.0.notify_changed();
         Ok(())
     }
 
-    pub fn begin_pairing(&self) -> Result<(), String> {
+    pub async fn begin_pairing(&self) -> Result<(), String> {
         let config = self.0.lock_config().clone();
         if self.0.status.lock().map(|status| status.0.clone()).ok() != Some(LinkStatus::Online) {
             return Err("Not connected to the relay".to_owned());
@@ -261,21 +275,11 @@ impl Remote {
             "secret": crypto::encode(&secret),
         });
         let text = format!("tandem-pair:{}", crypto::encode(payload.to_string().as_bytes()));
-        let expires_at_ms = now_ms() + PAIRING_LIFETIME.as_millis() as u64;
         let qr = qr_data_url(&text)?;
-        #[cfg(debug_assertions)]
-        write_pairing_for_test(&text);
-        self.0.send(Outgoing::Frame(json!({
-            "t": "allow",
-            "tokenHash": crypto::sha256_hex(&token),
-            "oneTime": true,
-            "expiresAt": expires_at_ms,
-        })));
-        if let Ok(mut pairing) = self.0.pairing.lock() {
-            *pairing = Some(Pairing { token, secret, expires_at_ms, text, qr });
-        }
-        self.0.notify_changed();
-        Ok(())
+        let pairing = Pairing { token, secret, deadline: Instant::now() + PAIRING_LIFETIME, registered: false, text, qr };
+        let (reply, received) = oneshot::channel();
+        self.0.send(Outgoing::BeginPairing { pairing, reply });
+        received.await.map_err(|_| "The relay connection closed before confirming the pairing token".to_owned())?
     }
 
     pub fn cancel_pairing(&self) {
@@ -285,12 +289,14 @@ impl Remote {
 
     pub fn revoke(&self, client_id: &str) -> Result<(), String> {
         {
-            let mut config = self.0.lock_config();
+            let mut current = self.0.lock_config();
+            let mut config = current.clone();
             let Some(index) = config.clients.iter().position(|client| client.client_id == client_id) else {
                 return Err("That device is not paired".to_owned());
             };
             let client = config.clients.remove(index);
             self.0.save(&config)?;
+            *current = config;
             self.0.send(Outgoing::Frame(json!({"t": "revoke", "tokenHash": client.token_hash})));
         }
         self.0.send(Outgoing::Disconnect { client_id: client_id.to_owned() });
@@ -300,8 +306,12 @@ impl Remote {
 
     pub fn update_context(&self, context: Context) {
         if let Ok(mut current) = self.0.context.lock() {
+            if *current == context {
+                return;
+            }
             *current = context;
         }
+        self.0.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
     }
 
     /// Registers a turn so phones see it, whichever side started it. Every event then goes through
@@ -309,7 +319,9 @@ impl Remote {
     pub fn track(&self, agent: Agent, sink: TurnSink) -> (String, TurnSink) {
         let run_id = format!("run-{}", self.0.next_run.fetch_add(1, Ordering::Relaxed));
         if let Ok(mut runs) = self.0.runs.lock() {
-            runs.insert(run_id.clone(), RunRecord { agent, task_id: None, events: Vec::new(), sink });
+            runs.insert(run_id.clone(), RunRecord {
+                agent, task_id: None, started_at_ms: now_ms(), started: Instant::now(), events: Vec::new(), sink,
+            });
         }
         let inner = self.0.clone();
         let id = run_id.clone();
@@ -324,7 +336,7 @@ impl Remote {
         };
         let event = TurnEvent::Finished { is_error: true, cancelled: false, message: Some(message.clone()) };
         let seq = self.0.seq.fetch_add(1, Ordering::SeqCst) + 1;
-        self.0.broadcast_turn(run_id, record.task_id.as_deref(), seq, &event);
+        self.0.broadcast_turn(run_id, record.task_id.as_deref(), record.started_at_ms, record.started.elapsed(), seq, &event);
         self.0.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
     }
 
@@ -404,38 +416,37 @@ impl Inner {
         }
     }
 
-    fn broadcast_turn(&self, run_id: &str, task_id: Option<&str>, seq: u64, event: &TurnEvent) {
+    fn broadcast_turn(&self, run_id: &str, task_id: Option<&str>, started_at_ms: u64, elapsed: Duration, seq: u64, event: &TurnEvent) {
         self.send(Outgoing::Broadcast(json!({
             "ev": "turn.event",
-            "p": {"runId": run_id, "taskId": task_id, "seq": seq, "event": event},
+            "p": {"runId": run_id, "taskId": task_id, "startedAtMs": started_at_ms, "elapsedMs": elapsed.as_millis() as u64, "seq": seq, "event": event},
         })));
     }
 
     fn deliver(&self, run_id: &str, event: TurnEvent) -> Result<(), String> {
-        let mut task_id = None;
-        let mut sink = None;
-        let mut seq = 0;
         // Numbered under the lock, so a snapshot's number splits the events exactly.
-        if let Ok(mut runs) = self.runs.lock() {
-            seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
-            let is_finished = matches!(event, TurnEvent::Finished { .. });
-            if let Some(record) = runs.get_mut(run_id) {
-                if let TurnEvent::Started { task_id: started } = &event {
-                    record.task_id = Some(started.clone());
-                }
-                push_event(&mut record.events, &event);
-                task_id.clone_from(&record.task_id);
-                sink = Some(record.sink.clone());
+        let (task_id, started_at_ms, elapsed, seq, sink) = {
+            let mut runs = self.runs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A request can settle concurrently with the turn's final event.
+            let Some(record) = runs.get_mut(run_id) else {
+                return Ok(());
+            };
+            if let TurnEvent::Started { task_id: started } = &event {
+                record.task_id = Some(started.clone());
             }
-            if is_finished {
+            push_event(&mut record.events, &event);
+            let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
+            let result = (record.task_id.clone(), record.started_at_ms, record.started.elapsed(), seq, record.sink.clone());
+            if matches!(event, TurnEvent::Finished { .. }) {
                 runs.remove(run_id);
             }
-        }
-        self.broadcast_turn(run_id, task_id.as_deref(), seq, &event);
+            result
+        };
+        self.broadcast_turn(run_id, task_id.as_deref(), started_at_ms, elapsed, seq, &event);
         if matches!(event, TurnEvent::Started { .. } | TurnEvent::Finished { .. }) {
             self.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
         }
-        sink.map_or(Ok(()), |sink| sink.send(event))
+        sink.send(event)
     }
 
     pub(crate) fn snapshot(&self) -> Value {
@@ -446,7 +457,8 @@ impl Inner {
         let list: Vec<Value> = runs
             .iter()
             .map(|(run_id, record)| {
-                json!({"runId": run_id, "taskId": record.task_id, "agent": record.agent, "events": record.events})
+                json!({"runId": run_id, "taskId": record.task_id, "agent": record.agent,
+                    "startedAtMs": record.started_at_ms, "elapsedMs": record.started.elapsed().as_millis() as u64, "events": record.events})
             })
             .collect();
         json!({"seq": seq, "runs": list})
@@ -456,6 +468,19 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pairing_is_available_after_registration_and_before_its_monotonic_deadline() {
+        let mut pairing = Pairing {
+            token: [0; 32], secret: [0; 32], deadline: Instant::now() + PAIRING_LIFETIME,
+            registered: false, text: String::new(), qr: String::new(),
+        };
+        assert!(!pairing.is_live());
+        pairing.registered = true;
+        assert!(pairing.is_live());
+        pairing.deadline = Instant::now() - Duration::from_secs(1);
+        assert!(!pairing.is_live());
+    }
 
     #[test]
     fn deltas_merge_so_a_snapshot_stays_small() {

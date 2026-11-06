@@ -1,0 +1,9 @@
+.tandem-effort-slider [data-effort-thumb] { width: 21px; height: 21px; }
+@media (hover: hover) {
+  .tandem-effort-slider [data-effort-thumb]:hover { width: 23px; height: 23px; }
+}
+.tandem-effort-slider[data-dragging] [data-effort-thumb] { width: 27px; height: 21px; }
+@media (prefers-reduced-motion: reduce) {
+  .tandem-effort-slider [data-effort-thumb] { width: 21px !important; height: 21px !important; }
+  .tandem-effort-slider * { transition: none !important; }
+}

@@ -1,5 +1,13 @@
 import { Channel, invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
+import { emitTo, listen } from '@tauri-apps/api/event';
+import type { PreferencesSnapshot } from './storage';
+
+export const readPreferences = () => invoke<PreferencesSnapshot>('preferences');
+export const updatePreferences = (target: 'config' | 'state', patch: Record<string, unknown>) => invoke<PreferencesSnapshot>('update_preferences', { target, patch });
+export const migratePreferences = (legacy: Record<string, string>) => invoke<PreferencesSnapshot>('migrate_preferences', { legacy });
+export const previewPreferences = (legacy: Record<string, string>) => invoke<PreferencesSnapshot>('preview_preferences', { legacy });
+export const onPreferencesChanged = (handler: (snapshot: PreferencesSnapshot) => void) => listen<PreferencesSnapshot>('preferences-changed', ({ payload }) => handler(payload));
+export const setSystemLanguage = (language: 'zh' | 'en') => invoke<void>('set_system_language', { language });
 
 export type Agent = 'claude' | 'codex' | 'pi';
 
@@ -128,6 +136,10 @@ export const listPiTasks = (roots: string[], conversationRoots: string[]) =>
   invoke<TaskSummary[]>('list_pi_tasks', { roots, conversationRoots });
 const READ_COMMANDS: Record<Agent, string> = { claude: 'read_task', codex: 'read_codex_task', pi: 'read_pi_task' };
 export const readTask = (agent: Agent, id: string) => invoke<TaskContent>(READ_COMMANDS[agent], { id });
+export const generateTaskTitle = (agent: Agent, id: string, options: { model: string | null; effort: string | null }) =>
+  invoke<string>('generate_task_title', { agent, id, ...options });
+export const renameNativeTask = (agent: Agent, id: string, title: string) =>
+  invoke<void>('rename_native_task', { agent, id, title });
 export const readPiInfo = () => invoke<CliInfo>('pi_info');
 export const readCodexInfo = () => invoke<CliInfo>('codex_info');
 export const cancelTurn = (taskId: string) => invoke<void>('cancel_turn', { taskId });
@@ -180,6 +192,7 @@ export interface TrayTask {
   agent: Agent;
   status: TrayTaskStatus;
   project: string;
+  queuedCount: number;
 }
 export interface TrayWindow {
   name: 'short' | 'week';
@@ -200,13 +213,26 @@ export const updateTray = (summary: TraySummary) =>
   invoke<void>('update_tray', { update: { summary } });
 export const traySummary = () => invoke<TraySummary | null>('tray_summary');
 export const resizeTrayPanel = (height: number) => invoke<void>('resize_tray_panel', { height });
-export const trayPanelAction = (action: 'open' | 'settings' | 'quit' | 'task', taskId?: string) =>
+export const trayPanelAction = (action: 'open' | 'settings' | 'quit' | 'task' | 'refresh', taskId?: string) =>
   invoke<void>('tray_panel_action', { action, taskId: taskId ?? null });
+export const onTrayRefresh = (handler: () => void) => listen('tray-refresh', handler);
+export const completeTrayRefresh = (error: string | null) => emitTo('tray-panel', 'tray-refreshed', error);
+export async function refreshTray(): Promise<void> {
+  let finish!: (error: string | null) => void;
+  const result = new Promise<string | null>((resolve) => { finish = resolve; });
+  const stop = await listen<string | null>('tray-refreshed', (event) => finish(event.payload));
+  try {
+    await trayPanelAction('refresh');
+    const error = await result;
+    if (error !== null) throw error;
+  } finally {
+    stop();
+  }
+}
 export const onTraySummary = (handler: (summary: TraySummary) => void) =>
   listen<TraySummary>('tray-summary', (event) => handler(event.payload));
 export const onTrayOpenSettings = (handler: () => void) => listen('tray-open-settings', () => handler());
 export const notifyUser = (title: string, body: string) => invoke<void>('notify_user', { title, body });
-export const setKeepRunning = (value: boolean) => invoke<void>('set_keep_running', { value });
 export type RemoteLinkStatus = 'off' | 'connecting' | 'online' | 'failed';
 export interface RemoteClient {
   clientId: string;
@@ -223,14 +249,6 @@ export interface RemoteState {
   pairing: { text: string; qr: string; expiresAtMs: number } | null;
   clients: RemoteClient[];
 }
-export interface RemoteContext {
-  projects: string[];
-  conversationRoots: string[];
-  conversationDir: string | null;
-  archived: string[];
-  titles: Record<string, string>;
-  language: string;
-}
 export interface RemoteTurn {
   runId: string;
   agent: Agent;
@@ -245,7 +263,6 @@ export const remoteConfigure = (enabled: boolean, relayUrl: string, hostToken: s
 export const remoteBeginPairing = () => invoke<void>('remote_begin_pairing');
 export const remoteCancelPairing = () => invoke<void>('remote_cancel_pairing');
 export const remoteRevoke = (clientId: string) => invoke<void>('remote_revoke', { clientId });
-export const remoteUpdateContext = (context: RemoteContext) => invoke<void>('remote_update_context', { context });
 export const onRemoteChanged = (handler: () => void) => listen('remote-changed', () => handler());
 export const onRemoteTurn = (handler: (turn: RemoteTurn) => void) =>
   listen<RemoteTurn>('remote-turn', (event) => handler(event.payload));
@@ -262,6 +279,46 @@ export const onAttachmentsDropped = (handler: (result: AddResult) => void) =>
   listen<AddResult>('attachments-dropped', (event) => handler(event.payload));
 export const onAttachmentDrag = (handler: (isOver: boolean) => void) =>
   listen<boolean>('attachment-drag', (event) => handler(event.payload));
+
+export interface QueuedMessage {
+  id: string;
+  prompt: string;
+  attachments: Attachment[];
+  options: TurnOptions;
+}
+export interface TaskQueue {
+  taskId: string;
+  agent: Agent;
+  entries: QueuedMessage[];
+  paused: boolean;
+  error: string | null;
+  revision: number;
+}
+export interface QueuedTurn {
+  taskId: string;
+  agent: Agent;
+  entryId: string;
+  entry: QueuedMessage | null;
+  event: TurnEvent;
+}
+export const listQueues = () => invoke<TaskQueue[]>('list_queues');
+export const enqueueTurn = (agent: Agent, taskId: string, prompt: string, attachments: Attachment[], options: TurnOptions) =>
+  invoke<TaskQueue>('enqueue_turn', { agent, taskId, prompt, attachmentIds: attachments.map(({ id }) => id), options });
+export const editQueuedTurn = (taskId: string, entryId: string, prompt: string) =>
+  invoke<TaskQueue>('edit_queued_turn', { taskId, entryId, prompt });
+export const removeQueuedTurn = (taskId: string, entryId: string) =>
+  invoke<TaskQueue>('remove_queued_turn', { taskId, entryId });
+export const reorderQueuedTurn = (taskId: string, entryId: string, targetIndex: number) =>
+  invoke<TaskQueue>('reorder_queued_turn', { taskId, entryId, targetIndex });
+export const resumeQueue = (taskId: string) => invoke<TaskQueue>('resume_queue', { taskId });
+export const setQueueLock = (taskId: string, owner: string, entryId: string | null, locked: boolean) =>
+  invoke<void>('set_queue_lock', { taskId, owner, entryId, locked });
+export const onQueueChanged = (handler: (queue: TaskQueue) => void) =>
+  listen<TaskQueue>('queue-changed', ({ payload }) => handler(payload));
+export const onQueuedTurn = (handler: (turn: QueuedTurn) => void) =>
+  listen<QueuedTurn>('queued-turn', ({ payload }) => handler(payload));
+export const onQueueError = (handler: (failure: { taskId: string | null; error: string }) => void) =>
+  listen<{ taskId: string | null; error: string }>('queue-error', ({ payload }) => handler(payload));
 
 export function sendTurn(
   agent: Agent,

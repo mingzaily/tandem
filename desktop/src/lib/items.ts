@@ -154,15 +154,26 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
   }
 }
 
-export type TurnStatusKey = 'statusAwaitingYou' | 'statusCallingTool' | 'statusReplying' | 'statusThinking';
+export type TurnStatus =
+  | { key: 'statusAwaitingYou' | 'statusReplying' | 'statusThinking' }
+  | { key: 'statusCallingTool'; toolName: string };
 
 /** What a running turn is doing now, for the line above the input box. */
-export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatusKey {
-  if (isWaitingForUser) return 'statusAwaitingYou';
+export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatus {
+  if (isWaitingForUser) return { key: 'statusAwaitingYou' };
   const last = items[items.length - 1];
-  if (last?.type === 'tool' && last.result === null) return 'statusCallingTool';
-  if (last?.type === 'assistant') return 'statusReplying';
-  return 'statusThinking';
+  if (last?.type === 'assistant') return { key: 'statusReplying' };
+  if (last?.type === 'tool') {
+    // Parallel calls can finish out of order. Show the latest call still awaiting a result.
+    for (let index = items.length - 1; index >= 0; index -= 1) {
+      const item = items[index];
+      if (item.type === 'user') break;
+      if (item.type === 'tool' && item.result === null) {
+        return { key: 'statusCallingTool', toolName: item.name };
+      }
+    }
+  }
+  return { key: 'statusThinking' };
 }
 
 function workGroup(items: Item[], startAt: number | undefined, endAt: number | undefined): WorkGroup {

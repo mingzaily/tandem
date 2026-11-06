@@ -1,31 +1,41 @@
 import { getVersion } from '@tauri-apps/api/app';
 import { MoreHorizontal } from 'lucide-react';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { BrandLockup } from './components/BrandLockup';
+import { AgentMark } from './components/AgentMark';
+import { AGENT_NAMES } from './lib/modelRows';
 import { Composer } from './components/Composer';
+import { ConversationLayout } from './components/ConversationLayout';
 import { BranchPill, ComposerFooter, ModelSelect, PermissionSelect, ProjectSelect } from './components/ComposerControls';
 import { HomeSuggestions } from './components/HomeSuggestions';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { QuestionPrompt } from './components/QuestionPrompt';
 import { RunningStatus } from './components/RunningStatus';
+import { QueuePauseStatus } from './components/QueuePauseStatus';
+import { ComposerStatusRow } from './components/ComposerStatusRow';
+import { RemoteAccessIndicator, RemoteAccessNotice, RemoteRevokeDialog } from './components/RemoteAccessNotice';
 import { SettingsView } from './components/SettingsView';
-import { Sidebar, SIDEBAR_DEFAULT_WIDTH } from './components/Sidebar';
+import { Sidebar } from './components/Sidebar';
 import { TaskMenu, type TaskMenuAnchor } from './components/TaskMenu';
 import { TitleBarActions } from './components/TitleBarActions';
 import {
   answerRequest,
   appReady,
   cancelTurn,
+  completeTrayRefresh,
   createConversationDir,
   defaultConversationDir,
   discoverProjects,
   externalWriters,
   gitBranch,
+  generateTaskTitle,
+  renameNativeTask,
   listCodexTasks,
   listPiTasks,
   notifyUser,
   onTrayOpenSettings,
   onTrayOpenTask,
+  onTrayRefresh,
   listTasks,
   pickProject,
   readCodexInfo,
@@ -33,9 +43,15 @@ import {
   readCliInfo,
   readTask,
   onRemoteTurn,
-  remoteUpdateContext,
+  remoteRevoke,
   sendTurn,
-  setKeepRunning,
+  enqueueTurn,
+  editQueuedTurn,
+  listQueues,
+  onQueueChanged,
+  onQueueError,
+  onQueuedTurn,
+  setQueueLock,
   taskStamp,
   updateTray,
   type Agent,
@@ -44,6 +60,7 @@ import {
   type Decision,
   type ExternalWriter,
   type PendingRequest,
+  type RemoteClient,
   type TaskContext,
   type TaskSummary,
   type TraySource,
@@ -51,9 +68,12 @@ import {
   type TraySummary,
   type TrayTask,
   type TurnEvent,
+  type TaskQueue,
+  type QueuedMessage,
 } from './lib/api';
-import { describeUsage, turnOptions, type TurnPrefs } from './lib/composerStatus';
-import { currentLanguage, t } from './lib/i18n';
+import { describeUsage, titleOptions, turnOptions, type TurnPrefs } from './lib/composerStatus';
+import type { ModelReadState } from './lib/modelEffort';
+import { t } from './lib/i18n';
 import { emptyRateHistory, recordActivity, type RateHistory } from './lib/tokenRate';
 import { applyTurnEvent, buildItems, CONVERSATION_CWD, groupRoot, isUnder, projectName, turnStatus, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
@@ -61,6 +81,7 @@ import {
   areProjectsSeeded,
   loadContextWindows,
   loadExtraProjects,
+  loadProjectOrder,
   loadSidebarCollapsed,
   loadSidebarWidth,
   loadTaskMeta,
@@ -73,13 +94,18 @@ import {
   markProjectsSeeded,
   saveContextWindows,
   saveExtraProjects,
+  saveProjectOrder,
   saveSidebarCollapsed,
   saveSidebarWidth,
   saveTaskMeta,
 } from './lib/preferences';
 
-import { applySettings, loadSettings, saveSettings, watchSystemTheme, type AppSettings } from './lib/settings';
-import { taskTitle, type TaskMeta } from './lib/taskMeta';
+import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
+import { preferencesSnapshot, subscribePreferences } from './lib/storage';
+import { acceptNativeTitle, taskTitle, type TaskMeta } from './lib/taskMeta';
+import { mergeQueue } from './lib/pendingQueue';
+import { requestAnswerFailure } from './lib/requestAnswer';
+import { useRemotePresence } from './lib/remotePresence';
 
 /** Listing Codex tasks starts a helper process, so a run of window focus changes shares one. */
 const CODEX_LIST_MIN_INTERVAL_MS = 30_000;
@@ -94,10 +120,12 @@ const RELOAD_COST_FACTOR = 10;
 const SEED_RECENT_MS = 30 * 24 * 60 * 60 * 1000;
 
 const MessageStream = lazy(() => import('./components/MessageStream'));
+const PendingQueuePanel = lazy(() => import('./components/PendingQueuePanel').then((module) => ({ default: module.PendingQueuePanel })));
 
-type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings' };
+type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings'; tab?: 'remote' };
 type Notice = { text: string; isError: boolean };
 type TurnProgress = { startedAt: number; outputTokens: number; activity: number; rate: RateHistory };
+type QueueEdit = { taskId: string; entry: QueuedMessage; owner: string };
 
 function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice | null {
   // A stopped turn is marked in the conversation, where it happened.
@@ -107,6 +135,7 @@ function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice
 }
 
 export function App() {
+  const migrationPending = useSyncExternalStore(subscribePreferences, () => preferencesSnapshot().migrationPending);
   const [claudeTasks, setClaudeTasks] = useState<TaskSummary[] | null>(null);
   const [codexTasks, setCodexTasks] = useState<TaskSummary[]>([]);
   const [piTasks, setPiTasks] = useState<TaskSummary[]>([]);
@@ -133,7 +162,10 @@ export function App() {
   const taskMetaRef = useRef(taskMeta);
   taskMetaRef.current = taskMeta;
   const [extraProjects, setExtraProjects] = useState(loadExtraProjects);
-  const [sidebarWidth, setSidebarWidth] = useState(() => loadSidebarWidth(SIDEBAR_DEFAULT_WIDTH));
+  const [projectOrder, setProjectOrder] = useState(loadProjectOrder);
+  const remotePresence = useRemotePresence();
+  const [remoteRevokeTarget, setRemoteRevokeTarget] = useState<RemoteClient | null>(null);
+  const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<TaskMenuAnchor | null>(null);
   const [version, setVersion] = useState('');
@@ -146,6 +178,8 @@ export function App() {
   const [stoppedTasks, setStoppedTasks] = useState<Set<string>>(new Set());
   const [notices, setNotices] = useState<Record<string, Notice>>({});
   const [pending, setPending] = useState<Record<string, PendingRequest[]>>({});
+  const answering = useRef(new Set<string>());
+  const [answeringRequests, setAnsweringRequests] = useState(new Set<string>());
   const [progress, setProgress] = useState<Record<string, TurnProgress>>({});
   const [contexts, setContexts] = useState<Record<string, TaskContext>>({});
   const [contextWindows, setContextWindows] = useState(loadContextWindows);
@@ -154,6 +188,10 @@ export function App() {
     codex: loadInfoFor('codex'),
     pi: loadInfoFor('pi'),
   }));
+  const [infoStates, setInfoStates] = useState<Record<Agent, ModelReadState>>({
+    claude: { loading: false, error: null }, codex: { loading: false, error: null }, pi: { loading: false, error: null },
+  });
+  const infoJobs = useRef(new Map<Agent, Promise<string | null>>());
   const [allPrefs, setAllPrefs] = useState<Record<Agent, TurnPrefs>>(() => ({
     claude: loadPrefsFor('claude'),
     codex: loadPrefsFor('codex'),
@@ -162,6 +200,17 @@ export function App() {
   const [newTaskAgent, setNewTaskAgent] = useState<Agent>(loadNewTaskAgent);
   const [newTaskAgents, setNewTaskAgents] = useState<Record<string, Agent>>({});
   const [newTaskError, setNewTaskError] = useState<string | null>(null);
+  const [generatingTitles, setGeneratingTitles] = useState<Set<string>>(new Set());
+  const titleJobs = useRef(new Set<string>());
+  const [titleErrors, setTitleErrors] = useState<Record<string, string>>({});
+  const [queueLoadError, setQueueLoadError] = useState<string | null>(null);
+  const [queuesLoaded, setQueuesLoaded] = useState(false);
+  const queueListening = useRef<Promise<unknown>>(Promise.resolve());
+  const [queues, setQueues] = useState<Record<string, TaskQueue>>({});
+  const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
+  const queueEditRef = useRef<QueueEdit | null>(null);
+  const turnGenerations = useRef(new Map<string, string>());
+  const updateQueue = useCallback((queue: TaskQueue) => setQueues((current) => mergeQueue(current, queue)), []);
   // A new task joins the list only after its first response. Until then its prompt names it.
   const [draftTitles, setDraftTitles] = useState<Record<string, string>>({});
   const draftTitlesRef = useRef(draftTitles);
@@ -174,48 +223,66 @@ export function App() {
   selectedIdRef.current = selectedId;
 
   const scanRoots = useRef<{ projects: string[]; conversations: string[] } | null>(null);
-  const refreshCodexTasks = useCallback(async (force: boolean) => {
-    if (!scanRoots.current) return;
-    if (!force && Date.now() - lastCodexList.current < CODEX_LIST_MIN_INTERVAL_MS) return;
+  const codexListJob = useRef<Promise<string | null> | null>(null);
+  const refreshCodexTasks = useCallback((force: boolean): Promise<string | null> => {
+    if (codexListJob.current) return codexListJob.current;
+    if (!scanRoots.current || (!force && Date.now() - lastCodexList.current < CODEX_LIST_MIN_INTERVAL_MS)) return Promise.resolve(null);
     lastCodexList.current = Date.now();
     const { projects, conversations } = scanRoots.current;
-    try {
-      setCodexTasks(await listCodexTasks(projects, conversations));
-    } catch (error) {
+    const job = listCodexTasks(projects, conversations).then((next) => {
+      setCodexTasks(next);
+      return null;
+    }).catch((error) => {
       console.error(error);
-    }
+      return `Codex: ${error}`;
+    }).finally(() => { codexListJob.current = null; });
+    codexListJob.current = job;
+    return job;
   }, []);
 
   const refreshTasks = useCallback(
     async (forceCodex = false) => {
       // Waits for the first-launch project list, or it would show nothing and then everything.
-      if (!scanRoots.current) return;
+      if (!scanRoots.current) return [];
       const { projects, conversations } = scanRoots.current;
-      try {
-        setClaudeTasks(await listTasks([...projects, ...conversations]));
-      } catch (error) {
-        setClaudeTasks([]);
-        console.error(error);
-      }
-      listPiTasks(projects, conversations).then(setPiTasks).catch(console.error);
-      // Separately, so a slow helper process never holds back the Claude list.
-      void refreshCodexTasks(forceCodex);
+      // Each list paints as it arrives; callers can await the complete refresh.
+      const errors = await Promise.all([
+        listTasks([...projects, ...conversations]).then((next) => {
+          setClaudeTasks(next);
+          return null;
+        }).catch((error) => {
+          setClaudeTasks((current) => current ?? []);
+          console.error(error);
+          return `Claude Code: ${error}`;
+        }),
+        listPiTasks(projects, conversations).then((next) => {
+          setPiTasks(next);
+          return null;
+        }).catch((error) => {
+          console.error(error);
+          return `Pi: ${error}`;
+        }),
+        refreshCodexTasks(forceCodex),
+      ]);
+      return errors.filter((error): error is string => error !== null);
     },
     [refreshCodexTasks],
   );
 
-  const loadHistory = useCallback(async (agent: Agent, id: string) => {
+  const loadHistory = useCallback(async (agent: Agent, id: string, currentTurn: () => boolean = () => true) => {
     try {
       const { messages, context } = await readTask(agent, id);
+      if (!currentTurn()) return;
       if (selectedIdRef.current === id) setHistory(buildItems(messages));
       if (context) setContexts((current) => ({ ...current, [id]: context }));
     } catch (error) {
+      if (!currentTurn()) return;
       setNotices((current) => ({
         ...current,
         [id]: { text: t('loadFailed', { error: String(error) }), isError: true },
       }));
     } finally {
-      if (selectedIdRef.current === id) setLoadedId(id);
+      if (selectedIdRef.current === id && currentTurn()) setLoadedId(id);
     }
   }, []);
 
@@ -271,39 +338,103 @@ export function App() {
     void appReady();
   }, []);
 
-  // Runs a short-lived CLI process, so it waits until tasks have loaded. This happens once per
-  // launch: a running turn keeps the usage fresh after that.
+  const refreshInfo = useCallback((agent: Agent) => {
+    const current = infoJobs.current.get(agent);
+    if (current) return current;
+    setInfoStates((current) => ({ ...current, [agent]: { loading: true, error: null } }));
+    const read = { claude: readCliInfo, codex: readCodexInfo, pi: readPiInfo }[agent];
+    const job = read().then((info) => {
+      setInfos((current) => ({ ...current, [agent]: info }));
+      saveInfoFor(agent, info);
+      setInfoStates((current) => ({ ...current, [agent]: { loading: false, error: null } }));
+      return null;
+    }).catch((error) => {
+      setInfoStates((current) => ({ ...current, [agent]: { loading: false, error: String(error) } }));
+      return `${AGENT_NAMES[agent]}: ${error}`;
+    }).finally(() => { infoJobs.current.delete(agent); });
+    infoJobs.current.set(agent, job);
+    return job;
+  }, []);
+
+  // Model discovery starts after the first task list; the menu also offers an explicit refresh.
   const tasksLoaded = tasks !== null;
   useEffect(() => {
-    if (!tasksLoaded) return;
-    let isCurrent = true;
-    readCliInfo()
-      .then((info) => {
-        if (!isCurrent) return;
-        setInfos((current) => ({ ...current, claude: info }));
-        saveInfoFor('claude', info);
-      })
-      .catch(console.error);
-    for (const [agent, read] of [['codex', readCodexInfo], ['pi', readPiInfo]] as const) {
-      read()
-        .then((info) => {
-          if (!isCurrent) return;
-          setInfos((current) => ({ ...current, [agent]: info }));
-          saveInfoFor(agent, info);
-        })
-        .catch(console.error);
-    }
-    return () => {
-      isCurrent = false;
-    };
-  }, [tasksLoaded]);
+    if (tasksLoaded) for (const agent of ['claude', 'codex', 'pi'] as const) refreshInfo(agent);
+  }, [tasksLoaded, refreshInfo]);
 
   const selectedTaskAgent = tasks?.find((task) => task.id === selectedId)?.agent;
   const selectedAgent: Agent = selectedId
-    ? (selectedTaskAgent ?? newTaskAgents[selectedId] ?? 'claude')
+    ? (selectedTaskAgent ?? newTaskAgents[selectedId] ?? queues[selectedId]?.agent ?? 'claude')
     : newTaskAgent;
   const prefs = allPrefs[selectedAgent];
   const info = infos[selectedAgent];
+
+  useEffect(() => {
+    const unlisten = onQueueChanged(updateQueue);
+    const errors = onQueueError(({ taskId, error }) => {
+      if (taskId === null) setQueueLoadError(t('queueFailed', { error }));
+      else setNotices((current) => ({ ...current, [taskId]: { text: t('queueFailed', { error }), isError: true } }));
+    });
+    queueListening.current = Promise.all([unlisten, errors]);
+    return () => { void unlisten.then((stop) => stop()); void errors.then((stop) => stop()); };
+  }, [updateQueue]);
+
+  useEffect(() => {
+    setQueuesLoaded(false);
+    if (migrationPending) return;
+    let current = true;
+    setQueueLoadError(null);
+    void queueListening.current.then(() => listQueues()).then((loaded) => {
+      if (!current) return;
+      loaded.forEach(updateQueue);
+      setQueuesLoaded(true);
+    }).catch((error) => { if (current) setQueueLoadError(t('queueFailed', { error: String(error) })); });
+    return () => { current = false; };
+  }, [migrationPending, updateQueue]);
+
+  const cancelQueueEdit = useCallback(() => {
+    const edit = queueEditRef.current;
+    if (!edit) return;
+    void setQueueLock(edit.taskId, edit.owner, edit.entry.id, false).then(() => {
+      if (queueEditRef.current !== edit) return;
+      queueEditRef.current = null;
+      setQueueEdit(null);
+    }).catch((error) => setNotices((current) => ({
+      ...current, [edit.taskId]: { text: t('queueFailed', { error: String(error) }), isError: true },
+    })));
+  }, []);
+  useEffect(() => {
+    if (queueEdit && (queueEdit.taskId !== selectedId || !queues[queueEdit.taskId]?.entries.some(({ id }) => id === queueEdit.entry.id))) {
+      cancelQueueEdit();
+    }
+  }, [selectedId, queues, queueEdit, cancelQueueEdit]);
+  useEffect(() => () => {
+    const edit = queueEditRef.current;
+    if (edit) void setQueueLock(edit.taskId, edit.owner, edit.entry.id, false).catch(console.error);
+  }, []);
+
+  const beginQueueEdit = async (entry: QueuedMessage) => {
+    if (!selectedId || queueEditRef.current) return;
+    const edit = { taskId: selectedId, entry, owner: `edit-${crypto.randomUUID()}` };
+    queueEditRef.current = edit;
+    try {
+      await setQueueLock(edit.taskId, edit.owner, entry.id, true);
+      if (selectedIdRef.current === edit.taskId && queueEditRef.current === edit) setQueueEdit(edit);
+      else {
+        await setQueueLock(edit.taskId, edit.owner, entry.id, false);
+        if (queueEditRef.current === edit) queueEditRef.current = null;
+      }
+    } catch (error) {
+      queueEditRef.current = null;
+      setNotices((current) => ({ ...current, [edit.taskId]: { text: t('queueFailed', { error: String(error) }), isError: true } }));
+    }
+  };
+
+  const saveQueueEdit = async (prompt: string) => {
+    if (!queueEdit) return;
+    updateQueue(await editQueuedTurn(queueEdit.taskId, queueEdit.entry.id, prompt));
+    cancelQueueEdit();
+  };
 
   useEffect(() => {
     setHistory([]);
@@ -337,12 +468,15 @@ export function App() {
       const isNew = knownId === null;
       let ended = false;
       let isListed = !isNew;
+      const generation = crypto.randomUUID();
+      let streamed: Item[] = [userItem];
       const onEvent = (event: TurnEvent) => {
         // The process can still print lines after its result, when the turn is already over.
         if (ended) return;
         if (event.type === 'started') {
           const id = event.taskId;
           taskId = id;
+          turnGenerations.current.set(id, generation);
           setStoppedTasks((current) => {
             if (!current.has(id)) return current;
             const next = new Set(current);
@@ -354,7 +488,8 @@ export function App() {
             [id]: { startedAt: Date.now(), outputTokens: 0, activity: 0, rate: emptyRateHistory(Date.now()) },
           }));
           // A turn sent from a phone reaches this window at its first event.
-          setLive((current) => (current[id] ? current : { ...current, [id]: [userItem] }));
+          setLive((current) => ({ ...current, [id]: [userItem] }));
+          setNotices(({ [id]: _removed, ...rest }) => rest);
           if (isNew) {
             unwrittenTasks.current.add(id);
             setNewTaskCwds((current) => ({ ...current, [id]: newCwd as string }));
@@ -425,17 +560,18 @@ export function App() {
           const notice = finishedNotice(event);
           if (notice) setNotices((current) => ({ ...current, [id]: notice }));
           if (!event.cancelled) notifyIfAway(event.isError ? t('notifyFailed') : t('notifyDone'), id);
+          // Preserve the completed stream until the native file replaces it. A following queued
+          // turn can start while that read is in flight, and owns its own live content.
+          if (selectedIdRef.current === id) setHistory((current) => [...current, ...streamed]);
+          setLive(({ [id]: _removed, ...rest }) => rest);
           void (async () => {
-            if (selectedIdRef.current === id) await loadHistory(agent, id);
-            setLive(({ [id]: _removed, ...rest }) => rest);
+            if (selectedIdRef.current === id) await loadHistory(agent, id, () => turnGenerations.current.get(id) === generation);
             await refreshTasks(agent === 'codex');
           })();
           return;
         }
-        setLive((current) => ({
-          ...current,
-          [id]: applyTurnEvent(current[id] ?? [], event),
-        }));
+        streamed = applyTurnEvent(streamed, event);
+        setLive((current) => ({ ...current, [id]: streamed }));
       };
       return { onEvent, taskId: () => taskId };
     },
@@ -446,6 +582,23 @@ export function App() {
   const remoteTurns = useRef(new Map<string, ReturnType<typeof createTurnHandler>>());
   const latestCreateTurnHandler = useRef(createTurnHandler);
   latestCreateTurnHandler.current = createTurnHandler;
+  useEffect(() => {
+    const turns = new Map<string, ReturnType<typeof createTurnHandler>>();
+    const unlisten = onQueuedTurn(({ taskId, agent, entryId, entry, event }) => {
+      let turn = turns.get(entryId);
+      if (!turn && entry) {
+        turn = latestCreateTurnHandler.current({ agent, taskId, newCwd: null, prompt: entry.prompt,
+          userItem: userItemFor(entry.prompt, entry.attachments, `live-user-${entryId}`), selectOnStart: false });
+        turns.set(entryId, turn);
+      }
+      if (turn) turn.onEvent(event);
+      else if (event.type === 'finished' && event.isError) {
+        setNotices((current) => ({ ...current, [taskId]: { text: t('turnFailed', { error: event.message ?? '' }), isError: true } }));
+      }
+      if (event.type === 'finished') turns.delete(entryId);
+    });
+    return () => { void unlisten.then((stop) => stop()); };
+  }, []);
   useEffect(() => {
     const unlisten = onRemoteTurn(({ runId, agent, isNew, cwd, prompt, event }) => {
       let turn = remoteTurns.current.get(runId);
@@ -465,45 +618,34 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    remoteUpdateContext({
-      projects: extraProjects,
-      conversationRoots,
-      conversationDir: settings.conversationDir,
-      archived: taskMeta.archived,
-      titles: taskMeta.titles,
-      language: currentLanguage(),
-    }).catch(console.error);
-  }, [extraProjects, conversationRoots, settings.conversationDir, taskMeta]);
+    const sync = () => {
+      setSettings(loadSettings());
+      setTaskMeta(loadTaskMeta());
+      setExtraProjects(loadExtraProjects());
+      setProjectOrder(loadProjectOrder());
+      setSidebarCollapsed(loadSidebarCollapsed());
+      setSidebarWidth(loadSidebarWidth());
+      setAllPrefs({ claude: loadPrefsFor('claude'), codex: loadPrefsFor('codex'), pi: loadPrefsFor('pi') });
+      setNewTaskAgent(loadNewTaskAgent());
+    };
+    const stop = subscribePreferences(sync);
+    sync();
+    return stop;
+  }, []);
 
-  const startTurn = useCallback(
-    (prompt: string, attachments: Attachment[], newCwd: string | null) => {
-      const taskId = selection.kind === 'task' ? selection.id : null;
-      const images = attachments.flatMap((attachment) => attachment.preview ?? []);
-      const files = attachments
-        .filter((attachment) => attachment.kind === 'file')
-        .map(({ name, path }) => ({ name, path }));
-      const liveId = `live-user-${Date.now()}`;
-      const userItem: Item =
-        prompt === COMPACT_COMMAND
-          ? { type: 'compaction', id: liveId }
-          : { type: 'user', id: liveId, text: prompt, images, files };
-      if (taskId) {
-        const id = taskId;
-        setLive((current) => ({ ...current, [id]: [userItem] }));
-        setNotices(({ [id]: _removed, ...rest }) => rest);
-      }
-      const target = taskId ? { taskId } : { cwd: newCwd as string };
+  const startNewTurn = useCallback(
+    (prompt: string, attachments: Attachment[], newCwd: string) => {
+      const userItem = userItemFor(prompt, attachments, `live-user-${crypto.randomUUID()}`);
       const agent = selectedAgent;
       setNewTaskError(null);
       const options = {
         ...turnOptions(prefs, info.models),
         // Pi has no permission modes, and any saved choice belongs to another agent's menu.
         ...(agent === 'pi' ? { permissionMode: null } : {}),
-        worktree: agent === 'claude' && taskId === null && useWorktree,
-        ignoreExternalWriter: taskId !== null && overriddenWriters.has(taskId),
+        worktree: agent === 'claude' && useWorktree,
       };
-      const turn = createTurnHandler({ agent, taskId, newCwd, prompt, userItem, selectOnStart: true });
-      void sendTurn(agent, target, prompt, attachments, options, turn.onEvent).catch((error) => {
+      const turn = createTurnHandler({ agent, taskId: null, newCwd, prompt, userItem, selectOnStart: true });
+      void sendTurn(agent, { cwd: newCwd }, prompt, attachments, options, turn.onEvent).catch((error) => {
         const id = turn.taskId();
         if (id) {
           setNotices((current) => ({
@@ -519,33 +661,53 @@ export function App() {
         }
       });
     },
-    [selection, setSelection, selectedAgent, prefs, info.models, useWorktree, overriddenWriters, createTurnHandler, clearTurn],
+    [selectedAgent, prefs, info.models, useWorktree, createTurnHandler, clearTurn],
   );
 
   const send = useCallback(
-    (prompt: string, attachments: Attachment[]) => {
-      if (selection.kind !== 'new') {
-        startTurn(prompt, attachments, null);
+    async (prompt: string, attachments: Attachment[]) => {
+      if (selection.kind === 'settings') return;
+      if (selection.kind === 'task') {
+        const options = {
+          ...turnOptions(prefs, info.models),
+          ...(selectedAgent === 'pi' ? { permissionMode: null } : {}),
+          ignoreExternalWriter: overriddenWriters.has(selection.id),
+        };
+        setOverriddenWriters((current) => {
+          const next = new Set(current);
+          next.delete(selection.id);
+          return next;
+        });
+        updateQueue(await enqueueTurn(selectedAgent, selection.id, prompt, attachments, options));
       } else if (selection.cwd === CONVERSATION_CWD) {
         setNewTaskError(null);
-        createConversationDir(settings.conversationDir)
-          .then((cwd) => startTurn(prompt, attachments, cwd))
-          .catch((error) => setNewTaskError(t('turnFailed', { error: String(error) })));
+        const cwd = await createConversationDir(settings.conversationDir);
+        startNewTurn(prompt, attachments, cwd);
       } else if (selection.cwd) {
-        startTurn(prompt, attachments, selection.cwd);
+        startNewTurn(prompt, attachments, selection.cwd);
       }
     },
-    [selection, settings.conversationDir, startTurn],
+    [selection, settings.conversationDir, startNewTurn, prefs, info.models, selectedAgent, overriddenWriters, updateQueue],
   );
 
   const answer = useCallback(
     (taskId: string, requestId: string, decision: Decision) => {
-      settleRequest(taskId, requestId);
-      answerRequest(taskId, requestId, decision).catch((error) => {
-        setNotices((current) => ({
+      const key = `${taskId}:${requestId}`;
+      if (answering.current.has(key)) return;
+      answering.current.add(key);
+      setAnsweringRequests(new Set(answering.current));
+      setNotices(({ [taskId]: _removed, ...rest }) => rest);
+      // Keep the card and its answers until delivery succeeds. A remote settlement can remove it.
+      void answerRequest(taskId, requestId, decision).then(() => settleRequest(taskId, requestId)).catch((error) => {
+        const failure = requestAnswerFailure(error);
+        if (failure.settled) settleRequest(taskId, requestId);
+        else setNotices((current) => ({
           ...current,
-          [taskId]: { text: t('requestFailed', { error: String(error) }), isError: true },
+          [taskId]: { text: t('requestFailed', { error: failure.message }), isError: true },
         }));
+      }).finally(() => {
+        answering.current.delete(key);
+        setAnsweringRequests(new Set(answering.current));
       });
     },
     [settleRequest],
@@ -565,6 +727,7 @@ export function App() {
     [pending],
   );
   const selectedTask = tasks?.find((task) => task.id === selectedId);
+  const menuTask = menuAnchor ? tasks?.find((task) => task.id === menuAnchor.id) : undefined;
   const items = useMemo(() => {
     if (!selectedId) return [];
     const all: Item[] = [...history, ...(live[selectedId] ?? [])];
@@ -574,7 +737,14 @@ export function App() {
     }
     return all;
   }, [history, live, selectedId, stoppedTasks]);
-  const notice = selectedId ? notices[selectedId] : undefined;
+  const selectedQueue = selectedId ? queues[selectedId] : undefined;
+  const editingEntry = queueEdit?.taskId === selectedId ? queueEdit.entry : undefined;
+  const composerPrefs: TurnPrefs = editingEntry ? {
+    model: editingEntry.options.model,
+    effort: editingEntry.options.effort,
+    permissionMode: (editingEntry.options.permissionMode ?? 'ask') as TurnPrefs['permissionMode'],
+  } : prefs;
+  const notice = selectedId ? notices[selectedId] ?? (selectedQueue?.error ? { text: selectedQueue.error, isError: true } : undefined) : undefined;
   const isRunning = selectedId ? running.has(selectedId) : false;
   const selectedPending = selectedId ? pending[selectedId]?.[0] : undefined;
   const taskCwd = selectedTask?.cwd ?? (selectedId ? newTaskCwds[selectedId] : null) ?? null;
@@ -612,7 +782,6 @@ export function App() {
 
   useEffect(() => {
     getVersion().then(setVersion).catch(console.error);
-    watchSystemTheme(() => settingsRef.current);
   }, []);
 
   useEffect(() => {
@@ -701,10 +870,6 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [selectedId, selectedAgent, isOpenElsewhere, loadHistory]);
 
-  useEffect(() => {
-    setKeepRunning(settings.keepInMenuBar).catch(console.error);
-  }, [settings.keepInMenuBar]);
-
   // The menu bar lists what is running here and elsewhere, and the plan left for each agent.
   const [usageClock, setUsageClock] = useState(() => Date.now());
   useEffect(() => {
@@ -719,7 +884,7 @@ export function App() {
       if (!task && !live[id]) return [];
       const status = !live[id] ? 'elsewhere' : pending[id]?.length ? 'waiting' : 'running';
       const project = task ? projectName(task.cwd) : '';
-      return [{ id, title: title || t('untitled'), agent: task?.agent ?? newTaskAgents[id] ?? 'claude', status, project }];
+      return [{ id, title: title || t('untitled'), agent: task?.agent ?? newTaskAgents[id] ?? 'claude', status, project, queuedCount: queues[id]?.entries.length ?? 0 }];
     });
     const sources = (['claude', 'codex', 'pi'] as const).flatMap((agent): TraySource[] => {
       const usageWindows = infos[agent].usage;
@@ -732,10 +897,32 @@ export function App() {
       return windows.length > 0 ? [{ agent, windows }] : [];
     });
     return { tasks: trayTasks, sources };
-  }, [writers, live, pending, tasks, taskMeta, draftTitles, newTaskAgents, infos, usageClock]);
+  }, [writers, live, pending, tasks, taskMeta, draftTitles, newTaskAgents, infos, usageClock, queues]);
   useEffect(() => {
     updateTray(summaryForTray).catch(console.error);
   }, [summaryForTray]);
+
+  useEffect(() => {
+    let refreshing = false;
+    const unlisten = onTrayRefresh(() => {
+      if (refreshing) return;
+      refreshing = true;
+      void (async () => {
+        const [taskErrors, writerError, infoErrors] = await Promise.all([
+          refreshTasks(true),
+          externalWriters().then((next) => {
+            setWriters(next);
+            return null;
+          }).catch((error) => String(error)),
+          Promise.all((['claude', 'codex', 'pi'] as const).map(refreshInfo)),
+        ]);
+        setUsageClock(Date.now());
+        const errors = [...taskErrors, writerError, ...infoErrors].filter((error): error is string => error !== null);
+        await completeTrayRefresh(errors.length ? errors.join('\n') : null);
+      })().catch(console.error).finally(() => { refreshing = false; });
+    });
+    return () => { void unlisten.then((stop) => stop()); };
+  }, [refreshTasks, refreshInfo]);
 
   useEffect(() => {
     const unlisten = onTrayOpenTask((id) => navigate({ kind: 'task', id }));
@@ -749,13 +936,40 @@ export function App() {
   const changeSettings = useCallback((next: AppSettings) => {
     setSettings(next);
     saveSettings(next);
-    applySettings(next);
   }, []);
 
   const changeTaskMeta = useCallback((next: TaskMeta) => {
     setTaskMeta(next);
     saveTaskMeta(next);
   }, []);
+
+  const generateTitle = useCallback(async (agent: Agent, id: string) => {
+    if (titleJobs.current.has(id)) return;
+    titleJobs.current.add(id);
+    setGeneratingTitles(new Set(titleJobs.current));
+    const previousTitle = taskMetaRef.current.titles[id];
+    setTitleErrors(({ [id]: _removed, ...rest }) => rest);
+    try {
+      const title = await generateTaskTitle(agent, id, titleOptions(allPrefs[agent], infos[agent].models));
+      if (taskMetaRef.current.titles[id] !== previousTitle) return;
+      await renameNativeTask(agent, id, title);
+      const updated = (tasks: TaskSummary[]) => tasks.map((task) => task.id === id ? { ...task, title } : task);
+      if (agent === 'claude') setClaudeTasks((current) => current && updated(current));
+      if (agent === 'codex') setCodexTasks(updated);
+      if (agent === 'pi') setPiTasks(updated);
+      setTaskMeta((current) => {
+        const next = acceptNativeTitle(current, id, previousTitle);
+        saveTaskMeta(next);
+        return next;
+      });
+      void refreshTasks(agent === 'codex');
+    } catch (error) {
+      setTitleErrors((current) => ({ ...current, [id]: t('taskTitleFailed', { error: String(error) }) }));
+    } finally {
+      titleJobs.current.delete(id);
+      setGeneratingTitles(new Set(titleJobs.current));
+    }
+  }, [allPrefs, infos, refreshTasks]);
 
   const changeExtraProjects = useCallback((next: string[]) => {
     setExtraProjects(next);
@@ -807,21 +1021,46 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
+  const remoteScope = selectedId ?? 'new';
+  const hasRemoteNotice = remotePresence.clients.length > 0 || remotePresence.error !== null;
+  const remoteCollapsed = remotePresence.error === null && remotePresence.collapsed.includes(remoteScope);
+  const remoteStatus = {
+    center: hasRemoteNotice && !remoteCollapsed ? (
+      <RemoteAccessNotice clients={remotePresence.clients} error={remotePresence.error}
+        onRetry={remotePresence.retry}
+        onManage={() => navigate({ kind: 'settings', tab: 'remote' })}
+        onCollapse={() => remotePresence.collapse(remoteScope)}
+        onRevoke={setRemoteRevokeTarget} />
+    ) : undefined,
+    indicator: hasRemoteNotice && remoteCollapsed ? (
+      <RemoteAccessIndicator clients={remotePresence.clients} onExpand={() => remotePresence.expand(remoteScope)} />
+    ) : undefined,
+  };
+  // The confirmation stays open when a turn completes and its status row changes.
+  const remoteDialog = remoteRevokeTarget ? (
+    <RemoteRevokeDialog client={remoteRevokeTarget} onClose={() => setRemoteRevokeTarget(null)}
+      onRevoke={async (clientId) => { await remoteRevoke(clientId); await remotePresence.refresh(); }} />
+  ) : null;
+
   if (selection.kind === 'settings') {
     return (
-      <SettingsView
-        settings={settings}
-        onChange={changeSettings}
-        extraProjects={extraProjects}
-        onExtraProjectsChange={changeExtraProjects}
-        defaultConversationDir={defaultConversationRoot}
-        version={version}
-        onBack={() => setNav(goBack)}
-      />
+      <>
+        <SettingsView
+          initialTab={selection.tab}
+          settings={settings}
+          onChange={changeSettings}
+          extraProjects={extraProjects}
+          onExtraProjectsChange={changeExtraProjects}
+          defaultConversationDir={defaultConversationRoot}
+          version={version}
+          onBack={() => setNav(goBack)}
+        />
+        {remoteDialog}
+      </>
     );
   }
 
-  return (
+  return <>
     <div className="relative flex h-full">
       <TitleBarActions
         canGoBack={canGoBack(nav)}
@@ -841,6 +1080,11 @@ export function App() {
           meta={taskMeta}
           extraProjects={extraProjects}
           conversationRoots={conversationRoots}
+          projectOrder={projectOrder}
+          onProjectOrderChange={(order) => {
+            setProjectOrder(order);
+            saveProjectOrder(order);
+          }}
           width={sidebarWidth}
           renamingId={renamingId}
           version={version}
@@ -868,9 +1112,12 @@ export function App() {
             sidebarCollapsed ? 'pl-[176px]' : 'pl-4'
           } ${selectedId ? 'border-b border-[hsl(var(--titlebar-border))]' : ''}`}
         >
-          <span data-tauri-drag-region className="min-w-0 flex-1 truncate text-13 font-medium">
-            {selectedTask ? taskTitle(taskMeta, selectedTask) : selectedId ? (draftTitles[selectedId] ?? '') : ''}
-          </span>
+          <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2">
+            <span data-tauri-drag-region className="min-w-0 truncate text-13 font-medium">
+              {selectedTask ? taskTitle(taskMeta, selectedTask) : selectedId ? (draftTitles[selectedId] ?? '') : ''}
+            </span>
+            {selectedId ? <span data-tauri-drag-region role="img" aria-label={AGENT_NAMES[selectedAgent]} title={AGENT_NAMES[selectedAgent]} className="shrink-0 text-[var(--text-secondary)]"><AgentMark agent={selectedAgent} size={14} /></span> : null}
+          </div>
           {selectedTask ? (
             <button
               type="button"
@@ -887,79 +1134,100 @@ export function App() {
           ) : null}
         </header>
         {selectedId ? (
-          <>
-            <div className="min-h-0 flex-1">
-              <Suspense fallback={null}>
-                <MessageStream
-                  key={selectedId}
-                  items={items}
-                  isRunning={isRunning}
-                  isLoading={loadedId !== selectedId && !unwrittenTasks.current.has(selectedId)}
-                />
-              </Suspense>
-            </div>
-            <div className="composer-column pb-3 pt-2">
-              {notice ? <NoticeLine notice={notice} /> : null}
-              {isHeldByWriter && selectedWriter ? (
-                <WriterNotice
-                  writer={selectedWriter}
-                  onSendAnyway={() => setOverriddenWriters((current) => new Set(current).add(selectedWriter.taskId))}
-                />
-              ) : null}
-              {isRunning && selectedProgress ? (
-                <RunningStatus
-                  status={turnStatus(liveItems ?? [], selectedPending !== undefined)}
-                  startedAt={selectedProgress.startedAt}
-                  outputTokens={selectedProgress.outputTokens}
-                  rate={selectedProgress.rate}
-                  activity={selectedProgress.activity}
-                />
-              ) : null}
-              {selectedPending?.type === 'permissionRequest' ? (
-                <PermissionPrompt
-                  key={selectedPending.requestId}
-                  request={selectedPending}
-                  onAnswer={(decision) => answer(selectedId, selectedPending.requestId, decision)}
-                />
-              ) : null}
-              {selectedPending?.type === 'question' ? (
-                <QuestionPrompt
-                  key={selectedPending.requestId}
-                  request={selectedPending}
-                  onAnswer={(decision) => answer(selectedId, selectedPending.requestId, decision)}
-                />
-              ) : null}
-              {/* Stays mounted under a prompt, so a half-written message survives it. */}
-              <div className={selectedPending ? 'hidden' : undefined}>
-                <Composer
-                  key={selectedId}
-                  running={isRunning}
-                  disabled={isHeldByWriter}
-                  placeholder={t('placeholderContinue')}
-                  sendWithCmdEnter={settings.sendWithCmdEnter}
-                  toolbarLeft={
-                    <PermissionSelect agent={selectedAgent} prefs={prefs} models={info.models} disabled={isRunning} onChange={changePrefs} />
-                  }
-                  toolbarRight={
-                    <ModelSelect agent={selectedAgent} prefs={prefs} models={info.models} usage={info.usage} disabled={isRunning} onChange={changePrefs} />
-                  }
-                  onSend={send}
-                  onStop={() => void cancelTurn(selectedId)}
-                />
-              </div>
-              <ComposerFooter
+          <ConversationLayout key={selectedId} messages={(bottomPadding) => (
+            <Suspense fallback={null}>
+              <MessageStream
+                items={items}
+                isRunning={isRunning}
                 cwd={taskCwd}
-                label={taskCwd && isConversationCwd(taskCwd) ? t('conversations') : undefined}
-                usage={info.usage}
-                context={context}
-                onCompact={
-                  selectedAgent === 'claude' && !isRunning && !selectedWriter?.isBusy
-                    ? () => startTurn(COMPACT_COMMAND, [], null)
-                    : undefined
+                isLoading={loadedId !== selectedId && !unwrittenTasks.current.has(selectedId)}
+                bottomPadding={bottomPadding}
+              />
+            </Suspense>
+          )}>
+            {titleErrors[selectedId] ? <NoticeLine notice={{ text: titleErrors[selectedId], isError: true }} /> : null}
+            {queueLoadError ? <NoticeLine notice={{ text: queueLoadError, isError: true }} /> : null}
+            {notice ? <NoticeLine notice={notice} /> : null}
+            {isHeldByWriter && selectedWriter ? (
+              <WriterNotice
+                writer={selectedWriter}
+                onSendAnyway={() => setOverriddenWriters((current) => new Set(current).add(selectedWriter.taskId))}
+              />
+            ) : null}
+            {isRunning && selectedProgress ? (
+              <RunningStatus
+                {...remoteStatus}
+                status={turnStatus(liveItems ?? [], selectedPending !== undefined)}
+                startedAt={selectedProgress.startedAt}
+                outputTokens={selectedProgress.outputTokens}
+                rate={selectedProgress.rate}
+                activity={selectedProgress.activity}
+              />
+            ) : null}
+            {!isRunning && selectedQueue?.paused && selectedQueue.entries.length > 0 ? (
+              <QueuePauseStatus {...remoteStatus} queue={selectedQueue} onChange={updateQueue}
+                onError={(error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } }))} />
+            ) : null}
+            {hasRemoteNotice && !(isRunning && selectedProgress) && !(selectedQueue?.paused && selectedQueue.entries.length > 0) ? (
+              <ComposerStatusRow {...remoteStatus} />
+            ) : null}
+            {selectedPending?.type === 'permissionRequest' ? (
+              <PermissionPrompt
+                submitting={answeringRequests.has(`${selectedId}:${selectedPending.requestId}`)}
+                key={selectedPending.requestId}
+                request={selectedPending}
+                onAnswer={(decision) => answer(selectedId, selectedPending.requestId, decision)}
+              />
+            ) : null}
+            {selectedPending?.type === 'question' ? (
+              <QuestionPrompt
+                submitting={answeringRequests.has(`${selectedId}:${selectedPending.requestId}`)}
+                key={selectedPending.requestId}
+                request={selectedPending}
+                onAnswer={(decision) => answer(selectedId, selectedPending.requestId, decision)}
+              />
+            ) : null}
+            {/* Stays mounted under a prompt, so a half-written message survives it. */}
+            <div>
+              <Composer
+                key={selectedId}
+                running={isRunning}
+                queueing={isRunning || Boolean(selectedQueue?.entries.length)}
+                disabled={isHeldByWriter || !queuesLoaded}
+                placeholder={t('placeholderContinue')}
+                sendWithCmdEnter={settings.sendWithCmdEnter}
+                editing={editingEntry}
+                onSaveEdit={saveQueueEdit}
+                onCancelEdit={cancelQueueEdit}
+                toolbarLeft={
+                  <PermissionSelect agent={selectedAgent} prefs={composerPrefs} models={info.models} disabled={Boolean(editingEntry)} onChange={changePrefs} />
                 }
+                toolbarRight={
+                  <ModelSelect agent={selectedAgent} prefs={composerPrefs} models={info.models} usage={info.usage} status={infoStates[selectedAgent]} onRefresh={() => refreshInfo(selectedAgent)} disabled={Boolean(editingEntry)} onChange={changePrefs} />
+                }
+                queuePanel={selectedQueue && selectedQueue.entries.length > 0 ? (
+                  <Suspense fallback={null}>
+                    <PendingQueuePanel key={selectedId} queue={selectedQueue} editingId={editingEntry?.id}
+                      onEdit={(entry) => void beginQueueEdit(entry)} onChange={updateQueue}
+                      onError={(error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } }))} />
+                  </Suspense>
+                ) : null}
+                onSend={send}
+                onStop={() => void cancelTurn(selectedId).catch((error) => setNotices((current) => ({ ...current, [selectedId]: { text: String(error), isError: true } })))}
               />
             </div>
-          </>
+            <ComposerFooter
+              cwd={taskCwd}
+              label={taskCwd && isConversationCwd(taskCwd) ? t('conversations') : undefined}
+              usage={info.usage}
+              context={context}
+              onCompact={
+                selectedAgent === 'claude' && !isRunning && !selectedWriter?.isBusy
+                  ? () => void send(COMPACT_COMMAND, [])
+                  : undefined
+              }
+            />
+          </ConversationLayout>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto pt-[max(96px,28vh)]">
             <div className="composer-column">
@@ -982,10 +1250,12 @@ export function App() {
                   ) : null}
                 </div>
               </div>
+              {hasRemoteNotice ? <ComposerStatusRow {...remoteStatus} /> : null}
               <Composer
                 key="new"
+                variant="new"
                 running={false}
-                disabled={!newTaskCwd}
+                disabled={!newTaskCwd || !queuesLoaded}
                 placeholder={t('placeholder')}
                 fill={draftFill}
                 sendWithCmdEnter={settings.sendWithCmdEnter}
@@ -996,13 +1266,16 @@ export function App() {
                     prefs={prefs}
                     models={info.models}
                     usage={info.usage}
+                    status={infoStates[selectedAgent]}
+                    onRefresh={() => refreshInfo(selectedAgent)}
                     onChange={changePrefs}
                     others={otherAgents.map((otherAgent) => ({
                       agent: otherAgent,
                       prefs: allPrefs[otherAgent],
                       models: infos[otherAgent].models,
                       usage: infos[otherAgent].usage,
-                      onPrefsChange: (next) => changePrefsFor(otherAgent, next),
+                      status: infoStates[otherAgent],
+                      onRefresh: () => refreshInfo(otherAgent),
                       onChoose: (next) => {
                         changePrefsFor(otherAgent, next);
                         setNewTaskAgent(otherAgent);
@@ -1017,17 +1290,23 @@ export function App() {
               />
               <ComposerFooter cwd={null} usage={info.usage} context={null} />
               {newTaskError ? <NoticeLine notice={{ text: newTaskError, isError: true }} /> : null}
+              {queueLoadError ? <NoticeLine notice={{ text: queueLoadError, isError: true }} /> : null}
               <HomeSuggestions onSelect={(text) => setDraftFill({ text })} />
             </div>
           </div>
         )}
       </main>
-      {menuAnchor ? (
+      {menuAnchor && menuTask ? (
         <TaskMenu
           anchor={menuAnchor}
-          agent={tasks?.find((task) => task.id === menuAnchor.id)?.agent ?? 'claude'}
+          task={menuTask}
           meta={taskMeta}
           onMetaChange={changeTaskMeta}
+          generatingTitle={generatingTitles.has(menuAnchor.id)}
+          onGenerateTitle={(agent, id) => {
+            navigate({ kind: 'task', id });
+            void generateTitle(agent, id);
+          }}
           onRename={(id) => {
             setSidebarCollapsed(false);
             setRenamingId(id);
@@ -1036,7 +1315,16 @@ export function App() {
         />
       ) : null}
     </div>
-  );
+    {remoteDialog}
+  </>;
+}
+
+function userItemFor(prompt: string, attachments: Attachment[], id: string): Item {
+  return prompt === COMPACT_COMMAND ? { type: 'compaction', id } : {
+    type: 'user', id, text: prompt,
+    images: attachments.flatMap((attachment) => attachment.preview ?? []),
+    files: attachments.filter((attachment) => attachment.kind === 'file').map(({ name, path }) => ({ name, path })),
+  };
 }
 
 interface TurnSource {

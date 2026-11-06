@@ -344,21 +344,13 @@ pub fn task_cwd(id: &str) -> Result<String, String> {
     read_cwd(&path).ok_or_else(|| "The task has no working directory".to_owned())
 }
 
-fn model_option(model: &Value, value: Option<&str>, thinking: Option<&str>) -> Option<ModelOption> {
-    let provider = model.get("provider")?.as_str()?;
-    let id = model.get("id")?.as_str()?;
+fn model_option(model: &Value, value: Option<&str>, levels: Value, thinking: Option<&str>) -> Result<ModelOption, String> {
+    let provider = model.get("provider").and_then(Value::as_str).ok_or("Pi 模型缺少 provider")?;
+    let id = model.get("id").and_then(Value::as_str).ok_or("Pi 模型缺少 id")?;
     let full = format!("{provider}/{id}");
-    let levels: Vec<String> = if model.get("reasoning").and_then(Value::as_bool) == Some(true) {
-        let map = model.get("thinkingLevelMap").and_then(Value::as_object);
-        ["minimal", "low", "medium", "high", "xhigh", "max"]
-            .iter()
-            .filter(|level| map.is_none_or(|map| !map.get(**level).is_some_and(Value::is_null)))
-            .map(|level| (*level).to_owned())
-            .collect()
-    } else {
-        Vec::new()
-    };
-    Some(ModelOption {
+    let levels: Vec<String> = serde_json::from_value(levels).map_err(|error| format!("Pi 推理档位格式有误：{error}"))?;
+    let levels = if model.get("reasoning").and_then(Value::as_bool) == Some(true) { levels } else { Vec::new() };
+    Ok(ModelOption {
         value: value.unwrap_or(&full).to_owned(),
         display_name: model.get("name").and_then(Value::as_str).unwrap_or(id).to_owned(),
         description: id.to_owned(),
@@ -370,10 +362,47 @@ fn model_option(model: &Value, value: Option<&str>, thinking: Option<&str>) -> O
     })
 }
 
-fn model_options(models: &[Value], current: Option<&Value>, thinking: Option<&str>) -> Vec<ModelOption> {
-    let mut options: Vec<ModelOption> = current.and_then(|model| model_option(model, Some(DEFAULT_MODEL), thinking)).into_iter().collect();
-    options.extend(models.iter().filter_map(|model| model_option(model, None, thinking)));
-    options
+async fn info_call<W, R>(stdin: &mut W, lines: &mut tokio::io::Lines<R>, id: &str, mut request: Value) -> Result<Value, String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    request["id"] = json!(id);
+    stdin.write_all(format!("{request}\n").as_bytes()).await.map_err(|error| error.to_string())?;
+    while let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? {
+        let Ok(reply) = serde_json::from_str::<Value>(&line) else { continue };
+        if reply.get("id").and_then(Value::as_str) != Some(id) { continue; }
+        return match reply.get("success").and_then(Value::as_bool) {
+            Some(true) => Ok(reply.get("data").cloned().unwrap_or(Value::Null)),
+            Some(false) => Err(reply.get("error").and_then(Value::as_str).unwrap_or("Pi 读取模型信息失败").to_owned()),
+            None => Err("Pi 模型信息响应缺少 success".into()),
+        };
+    }
+    Err("Pi 在返回模型信息前退出".into())
+}
+
+async fn read_model_options<W, R>(stdin: &mut W, lines: &mut tokio::io::Lines<R>) -> Result<Vec<ModelOption>, String>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    let available = info_call(stdin, lines, "models", json!({"type": "get_available_models"})).await?;
+    let models = available.get("models").and_then(Value::as_array).ok_or("Pi 响应缺少模型列表")?;
+    let state = info_call(stdin, lines, "state", json!({"type": "get_state"})).await?;
+    let mut options = Vec::new();
+    if let Some(current) = state.get("model").filter(|model| !model.is_null()) {
+        let levels = info_call(stdin, lines, "levels", json!({"type": "get_available_thinking_levels"})).await?;
+        options.push(model_option(current, Some(DEFAULT_MODEL), levels["levels"].clone(), state.get("thinkingLevel").and_then(Value::as_str))?);
+    }
+    // Pi applies per-model defaults and provider-specific capability maps in memory.
+    // RPC set_model uses persist=false; --no-session keeps these probes out of task files.
+    for model in models {
+        info_call(stdin, lines, "set-model", json!({"type": "set_model", "provider": model.get("provider"), "modelId": model.get("id")})).await?;
+        let state = info_call(stdin, lines, "state", json!({"type": "get_state"})).await?;
+        let levels = info_call(stdin, lines, "levels", json!({"type": "get_available_thinking_levels"})).await?;
+        options.push(model_option(model, None, levels["levels"].clone(), state.get("thinkingLevel").and_then(Value::as_str))?);
+    }
+    Ok(options)
 }
 
 /// Skips extensions, which would connect the user's MCP servers just to list models.
@@ -396,28 +425,11 @@ pub async fn info() -> Result<CliInfo, String> {
         .map_err(|error| format!("Failed to start pi: {error}"))?;
     let mut stdin = child.stdin.take().ok_or("pi has no stdin")?;
     let stdout = child.stdout.take().ok_or("pi has no stdout")?;
-    let request = format!("{}\n{}\n", json!({"id": "models", "type": "get_available_models"}), json!({"id": "state", "type": "get_state"}));
-    stdin.write_all(request.as_bytes()).await.map_err(|error| error.to_string())?;
-    let read = async {
-        let mut lines = AsyncBufReader::new(stdout).lines();
-        let (mut models, mut current, mut thinking) = (None, None, None);
-        while models.is_none() || current.is_none() {
-            let Some(line) = lines.next_line().await.map_err(|error| error.to_string())? else { break };
-            let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
-            match value.get("id").and_then(Value::as_str) {
-                Some("models") => models = value.pointer("/data/models").and_then(Value::as_array).cloned(),
-                Some("state") => {
-                    current = Some(value.pointer("/data/model").cloned().unwrap_or(Value::Null));
-                    thinking = value.pointer("/data/thinkingLevel").and_then(Value::as_str).map(str::to_owned);
-                }
-                _ => {}
-            }
-        }
-        Ok::<_, String>((models.unwrap_or_default(), current, thinking))
-    };
-    let (models, current, thinking) = tokio::time::timeout(INFO_TIMEOUT, read).await.map_err(|_| "pi did not answer in time".to_owned())??;
+    let mut lines = AsyncBufReader::new(stdout).lines();
+    let models = tokio::time::timeout(INFO_TIMEOUT, read_model_options(&mut stdin, &mut lines)).await
+        .map_err(|_| "Pi 读取模型信息超过 20 秒".to_owned())??;
     drop(stdin);
-    Ok(CliInfo { models: model_options(&models, current.as_ref(), thinking.as_deref()), usage: None })
+    Ok(CliInfo { models, usage: None })
 }
 
 #[derive(Default)]
@@ -570,7 +582,7 @@ pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: TurnSink) ->
     let channels = runs.begin(&task_id)?;
     let result = async {
         emit(TurnEvent::Started { task_id: task_id.clone() })?;
-        run_turn(runs, &task_id, &cwd, &session_args, &request, channels, &emit).await
+        run_turn(runs, &task_id, &cwd, &session_args, &request, channels, &on_event).await
     }
     .await;
     runs.finish(&task_id);
@@ -587,13 +599,21 @@ async fn run_turn(
     session_args: &[String],
     request: &TurnRequest,
     channels: RunChannels,
-    emit: &impl Fn(TurnEvent) -> Result<(), String>,
+    sink: &TurnSink,
 ) -> Result<(), String> {
+    let emit = |event| sink.send(event);
     let RunChannels { mut cancel, mut input } = channels;
     let env = login_env::login_env().await;
     let program = login_env::find_in_path("pi", env.get("PATH")).ok_or("pi was not found in the login shell PATH")?;
     let mut args: Vec<String> = vec!["--mode".to_owned(), "rpc".to_owned()];
-    args.extend_from_slice(session_args);
+    if request.options.ephemeral {
+        args.extend([
+            "--no-session", "--no-tools", "--no-extensions", "--no-skills", "--no-prompt-templates",
+            "--system-prompt", crate::titles::SYSTEM_PROMPT,
+        ].map(str::to_owned));
+    } else {
+        args.extend_from_slice(session_args);
+    }
     if let Some(model) = &request.options.model {
         args.extend(["--model".to_owned(), model.clone()]);
     }
@@ -637,11 +657,18 @@ async fn run_turn(
                     return Err("pi exited before the turn finished".to_owned());
                 };
                 let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+                if let Some((id, result)) = crate::titles::name_response(crate::titles::NameProtocol::Pi, &value) {
+                    runs.settle_metadata(task_id, &id, result);
+                    continue;
+                }
                 match value.get("type").and_then(Value::as_str) {
                     Some("response") => {
                         let is_prompt = value.get("id").and_then(Value::as_str) == Some("prompt");
                         if is_prompt && value.get("success").and_then(Value::as_bool) == Some(false) {
                             return Err(value.get("error").and_then(Value::as_str).unwrap_or("pi refused the prompt").to_owned());
+                        }
+                        if is_prompt && value.get("success").and_then(Value::as_bool) == Some(true) {
+                            sink.accepted(task_id).await?;
                         }
                         if is_prompt && value.pointer("/data/disposition").and_then(Value::as_str) == Some("handled") {
                             finished = Some(TurnEvent::Finished { is_error: false, cancelled: false, message: None });
@@ -806,16 +833,68 @@ mod tests {
     }
 
     #[test]
-    fn lists_models_with_their_thinking_levels() {
-        let model = json!({"provider": "p", "id": "m", "name": "Model", "reasoning": true, "thinkingLevelMap": {"minimal": null, "low": "low", "high": "high"}});
-        let options = model_options(std::slice::from_ref(&model), Some(&model), Some("high"));
-        assert_eq!(options[1].default_effort.as_deref(), Some("high"));
-        assert_eq!(options[0].value, "default");
-        assert_eq!(options[0].resolved_model, "p/m");
-        assert_eq!(options[1].value, "p/m");
-        assert!(!options[1].supported_effort_levels.contains(&"minimal".to_owned()));
-        assert!(options[1].supported_effort_levels.contains(&"high".to_owned()));
+    fn uses_pi_capabilities_including_off_and_keeps_fixed_models_without_a_slider() {
+        let model = json!({"provider": "p", "id": "m", "name": "Model", "reasoning": true});
+        let option = model_option(&model, Some(DEFAULT_MODEL), json!(["off", "low", "high", "max"]), Some("high")).unwrap();
+        assert_eq!(option.value, "default");
+        assert_eq!(option.resolved_model, "p/m");
+        assert_eq!(option.supported_effort_levels, ["off", "low", "high", "max"]);
+        assert_eq!(option.default_effort.as_deref(), Some("high"));
         let plain = json!({"provider": "p", "id": "n", "reasoning": false});
-        assert!(!model_option(&plain, None, None).unwrap().supports_effort);
+        let plain = model_option(&plain, None, json!(["off"]), Some("off")).unwrap();
+        assert!(!plain.supports_effort);
+        assert!(plain.supported_effort_levels.is_empty());
+    }
+
+    #[test]
+    fn reads_each_models_own_defaults_and_available_levels_without_a_prompt() {
+        tauri::async_runtime::block_on(async {
+            let (client, server) = tokio::io::duplex(8192);
+            let (read, mut input) = tokio::io::split(client);
+            let mut lines = AsyncBufReader::new(read).lines();
+            let model_a = json!({"provider":"p", "id":"a", "reasoning":true});
+            let model_b = json!({"provider":"p", "id":"b", "reasoning":true});
+            let mock = tokio::spawn(async move {
+                let (read, mut output) = tokio::io::split(server);
+                let mut lines = AsyncBufReader::new(read).lines();
+                let mut current = model_b.clone();
+                let mut methods = Vec::new();
+                while let Some(line) = lines.next_line().await.unwrap() {
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let method = request["type"].as_str().unwrap();
+                    methods.push(method.to_owned());
+                    let is_a = current["id"] == "a";
+                    let data = match method {
+                        "get_available_models" => json!({"models":[model_a, model_b]}),
+                        "get_state" => json!({"model":current,"thinkingLevel":if is_a {"low"} else {"max"}}),
+                        "get_available_thinking_levels" => json!({"levels":if is_a {vec!["off","low","high"]} else {vec!["medium","high","max"]}}),
+                        "set_model" => { current = if request["modelId"] == "a" {model_a.clone()} else {model_b.clone()}; current.clone() },
+                        other => panic!("metadata probe sent {other}"),
+                    };
+                    let response = json!({"id":request["id"],"type":"response","command":method,"success":true,"data":data});
+                    output.write_all(format!("{response}\n").as_bytes()).await.unwrap();
+                }
+                methods
+            });
+            let options = read_model_options(&mut input, &mut lines).await.unwrap();
+            assert_eq!(options.iter().map(|option| option.value.as_str()).collect::<Vec<_>>(), ["default","p/a","p/b"]);
+            assert_eq!(options[0].default_effort.as_deref(), Some("max"));
+            assert_eq!(options[1].default_effort.as_deref(), Some("low"));
+            assert_eq!(options[1].supported_effort_levels, ["off","low","high"]);
+            assert_eq!(options[2].default_effort.as_deref(), Some("max"));
+            assert_eq!(options[2].supported_effort_levels, ["medium","high","max"]);
+            drop(input); drop(lines);
+            assert_eq!(mock.await.unwrap().iter().filter(|method| method.as_str() == "set_model").count(), 2);
+        });
+    }
+
+    #[test]
+    fn metadata_errors_reach_the_page() {
+        tauri::async_runtime::block_on(async {
+            let mut input = tokio::io::sink();
+            let mut lines = AsyncBufReader::new(b"{\"type\":\"response\",\"id\":\"models\",\"success\":false,\"error\":\"invalid provider configuration\"}\n".as_slice()).lines();
+            let error = read_model_options(&mut input, &mut lines).await.unwrap_err();
+            assert_eq!(error, "invalid provider configuration");
+        });
     }
 }

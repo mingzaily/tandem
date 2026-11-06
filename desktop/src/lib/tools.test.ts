@@ -36,6 +36,36 @@ describe('describeTool', () => {
     expect(describeTool(tool('Grep', { pattern: 'foo' })).text).toBe('foo');
   });
 
+  it('shows MCP server and readable tool labels, keeping arguments in the hover detail', () => {
+    const display = describeTool(tool('mcp__memory__search_nodes', { query: '队列设计' }));
+    expect(display.text).toBe('memory · search nodes');
+    expect(display.title).toBe('mcp__memory__search_nodes\n队列设计');
+    expect(display.fileName).toBeNull();
+    expect(display.command).toBeNull();
+  });
+
+  it('preserves the server namespace and tool suffix in colon-form MCP names', () => {
+    const display = describeTool(tool('mcp:custom__docs:read_by_url:latest', { url: 'https://example.com/doc' }));
+    expect(display.text).toBe('custom__docs · read by url:latest');
+    expect(display.title).toBe('mcp:custom__docs:read_by_url:latest\nhttps://example.com/doc');
+  });
+
+  it('uses Cindy detail priority and limits the hover summary while retaining the original input', () => {
+    const item = tool('mcp__docs__read__by_url', { description: 'd'.repeat(100), query: 'q' });
+    const display = describeTool(item);
+    expect(display.text).toBe('docs · read by url');
+    expect(display.title).toBe(`mcp__docs__read__by_url\n${'d'.repeat(77)}...`);
+    expect(item.input).toContain('d'.repeat(100));
+  });
+
+  it('keeps unnamed and incomplete MCP identifiers as raw tool names', () => {
+    expect(describeTool(tool('mcp__memory__search', {}))).toMatchObject({ text: 'memory · search', title: 'mcp__memory__search' });
+    for (const name of ['mcp__memory', 'mcp:memory', 'mcp____search', 'mcp__memory__']) {
+      expect(describeTool(tool(name, { query: 'query stays in the details' })).text).toBe(name);
+    }
+    expect(describeTool(tool('PluginTool', { query: 'query stays in the details' })).text).toBe('PluginTool');
+  });
+
   it('survives input that is not JSON', () => {
     expect(describeTool({ ...tool('Bash', {}), input: '{broken' }).text).toBe('');
   });

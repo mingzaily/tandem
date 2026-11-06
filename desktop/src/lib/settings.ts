@@ -1,4 +1,5 @@
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { preferencesMemory, preferencesSnapshot, saveConfig, type Config } from './storage';
 
 export type ThemeSetting = 'system' | 'light' | 'dark';
 export type LanguageSetting = 'system' | 'zh' | 'en';
@@ -60,7 +61,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
 export const MIN_UI_FONT_SIZE = 12;
 export const MAX_UI_FONT_SIZE = 18;
 
-const SETTINGS_KEY = 'tandem.settings';
 const SCALED_SIZES: [string, number][] = [
   ...[10, 11, 12, 13, 14, 15, 16, 18, 20, 24, 28].map((size): [string, number] => [String(size), size]),
   ['xs', 12],
@@ -68,20 +68,28 @@ const SCALED_SIZES: [string, number][] = [
 ];
 
 export function loadSettings(): AppSettings {
-  try {
-    const stored = localStorage.getItem(SETTINGS_KEY);
-    return stored ? { ...DEFAULT_SETTINGS, ...(JSON.parse(stored) as Partial<AppSettings>) } : DEFAULT_SETTINGS;
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
+  return settingsFromConfig(preferencesSnapshot().config);
+}
+
+/** Window appearance follows accepted Rust snapshots, including after a failed save. */
+export const loadConfirmedSettings = () => settingsFromConfig(preferencesMemory.confirmed().config);
+
+function settingsFromConfig(config: Config): AppSettings {
+  return {
+    theme: config.theme, lightTheme: config.light_theme, darkTheme: config.dark_theme, language: config.language,
+    uiFontSize: config.ui_font_size, sendWithCmdEnter: config.send_with_cmd_enter, translucentSidebar: config.translucent_sidebar,
+    keepInMenuBar: config.keep_in_menu_bar, notifyWhenDone: config.notify_when_done, conversationDir: config.conversation_dir || null,
+    pastConversationDirs: config.past_conversation_dirs,
+  };
 }
 
 export function saveSettings(settings: AppSettings) {
-  try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  } catch {
-    // Keeps working for this session.
-  }
+  saveConfig({
+    theme: settings.theme, light_theme: settings.lightTheme, dark_theme: settings.darkTheme, language: settings.language,
+    ui_font_size: settings.uiFontSize, send_with_cmd_enter: settings.sendWithCmdEnter, translucent_sidebar: settings.translucentSidebar,
+    keep_in_menu_bar: settings.keepInMenuBar, notify_when_done: settings.notifyWhenDone, conversation_dir: settings.conversationDir ?? '',
+    past_conversation_dirs: settings.pastConversationDirs,
+  });
 }
 
 /** Sizes are tokens, so scaling the tokens scales the whole interface from one number. */
@@ -103,11 +111,13 @@ export function applySettings(settings: AppSettings) {
   for (const [name, value] of scaledFontTokens(settings.uiFontSize)) root.style.setProperty(name, value);
   root.style.setProperty('--app-ui-font-size', `${settings.uiFontSize}px`);
   // The window's own material and controls follow this too, not only the page.
-  getCurrentWindow()
+  return getCurrentWindow()
     .setTheme(settings.theme === 'system' ? null : settings.theme)
     .catch(console.error);
 }
 
 export function watchSystemTheme(current: () => AppSettings) {
-  systemDark().addEventListener('change', () => applySettings(current()));
+  const onChange = () => applySettings(current());
+  systemDark().addEventListener('change', onChange);
+  return () => systemDark().removeEventListener('change', onChange);
 }

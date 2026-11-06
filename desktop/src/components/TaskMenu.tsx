@@ -1,15 +1,10 @@
-import { Archive, ArchiveRestore, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
-import { revealTaskFolder, type Agent } from '../lib/api';
+import { Archive, ArchiveRestore, CaseSensitive, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
+import { revealTaskFolder, type Agent, type TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
 import { toggleArchived, togglePin, type TaskMeta } from '../lib/taskMeta';
+import { terminalResumeCommand } from '../lib/terminalResume';
 import { MENU_ROW } from './ComposerMenu';
 import { FloatingMenu } from './FloatingMenu';
-
-const RESUME_COMMANDS: Record<Agent, (id: string) => string> = {
-  claude: (id) => `claude --resume ${id}`,
-  codex: (id) => `codex resume ${id}`,
-  pi: (id) => `pi --session ${id}`,
-};
 
 export interface TaskMenuAnchor {
   id: string;
@@ -19,19 +14,22 @@ export interface TaskMenuAnchor {
 
 interface TaskMenuProps {
   anchor: TaskMenuAnchor;
-  agent: Agent;
+  task: TaskSummary;
   meta: TaskMeta;
   onMetaChange: (meta: TaskMeta) => void;
   onRename: (id: string) => void;
+  onGenerateTitle: (agent: Agent, id: string) => void;
+  generatingTitle: boolean;
   onClose: () => void;
 }
 
-export function TaskMenu({ anchor, agent, meta, onMetaChange, onRename, onClose }: TaskMenuProps) {
-  const { id } = anchor;
+export function TaskMenu({ anchor, task, meta, onMetaChange, onRename, onGenerateTitle, generatingTitle, onClose }: TaskMenuProps) {
+  const { id, agent } = task;
   const isPinned = meta.pins.includes(id);
   const isArchived = meta.archived.includes(id);
-  const items: { label: string; icon: LucideIcon; run: () => void }[] = [
+  const items: { label: string; icon: LucideIcon; run: () => void; disabled?: boolean }[] = [
     { label: t('taskRename'), icon: Pencil, run: () => onRename(id) },
+    { label: t(generatingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: CaseSensitive, run: () => onGenerateTitle(agent, id), disabled: generatingTitle },
     ...(isArchived
       ? []
       : [
@@ -49,22 +47,23 @@ export function TaskMenu({ anchor, agent, meta, onMetaChange, onRename, onClose 
     {
       label: t('taskCopyResume'),
       icon: Copy,
-      run: () => void navigator.clipboard.writeText(RESUME_COMMANDS[agent](id)).catch(console.error),
+      run: () => void navigator.clipboard.writeText(terminalResumeCommand(task)).catch(console.error),
     },
     { label: t('taskReveal'), icon: FolderOpen, run: () => void revealTaskFolder(agent, id).catch(console.error) },
   ];
   return (
     <FloatingMenu x={anchor.x} y={anchor.y} label={t('taskMenu')} onClose={onClose}>
-      {items.map(({ label, icon: Icon, run }) => (
+      {items.map(({ label, icon: Icon, run, disabled }) => (
         <button
           key={label}
           type="button"
           role="menuitem"
+          disabled={disabled}
           onClick={() => {
             onClose();
             run();
           }}
-          className={MENU_ROW}
+          className={`${MENU_ROW} disabled:opacity-40`}
         >
           <Icon size={15} strokeWidth={1.8} aria-hidden className="shrink-0 text-[var(--cmd-palette-item-icon)]" />
           <span className="min-w-0 flex-1 truncate">{label}</span>

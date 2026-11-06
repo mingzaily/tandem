@@ -1,5 +1,5 @@
-import { ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
+import { useCallback, useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import {
   agentStatus,
@@ -23,7 +23,7 @@ import {
 import { t, type StringKey } from '../lib/i18n';
 import { projectName } from '../lib/items';
 import { loadAgentStatus, saveAgentStatus } from '../lib/preferences';
-import { AgentMark } from './AgentMark';
+import { INITIAL_REMOTE_FORM, remoteFormDirty, remoteFormReducer } from '../lib/remoteSettings';
 import {
   DARK_THEMES,
   LIGHT_THEMES,
@@ -34,6 +34,8 @@ import {
   type ThemeChoice,
   type ThemeSetting,
 } from '../lib/settings';
+import { AgentMark } from './AgentMark';
+import { SettingsButton } from './SettingsButton';
 
 const JOB_LINES = 8;
 
@@ -56,16 +58,19 @@ const ROW_HINT = 'text-12 leading-[1.4] text-[var(--text-secondary)]';
 const DIVIDER = 'mx-4 h-px bg-[var(--settings-theme-card-border)]';
 const CHIP = 'h-7 rounded-full px-3 text-12 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
     <section className="flex flex-col gap-[14px] pb-9">
-      <h3 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">{title}</h3>
+      <div className="flex min-h-8 items-center justify-between gap-3">
+        <h3 className="text-16 font-medium leading-[1.2] text-[var(--settings-section-title)]">{title}</h3>
+        {action}
+      </div>
       <div className={CARD}>{children}</div>
     </section>
   );
 }
 
-function Row({ label, hint, children }: { label: string; hint?: string; children?: ReactNode }) {
+function Row({ label, hint, children }: { label: string; hint?: ReactNode; children?: ReactNode }) {
   return (
     <div className={ROW}>
       <span className="flex min-w-0 flex-col gap-1">
@@ -77,15 +82,16 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
   );
 }
 
-function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function Switch({ label, checked, disabled = false, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
     <button
       type="button"
       role="switch"
       aria-label={label}
       aria-checked={checked}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative h-5 w-9 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
+      className={`relative h-5 w-9 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-default disabled:opacity-60 ${
         checked ? 'bg-[var(--switch-track-on)]' : 'bg-[var(--switch-track-off)]'
       }`}
     >
@@ -269,8 +275,6 @@ function GeneralTab({ settings, onChange }: TabProps) {
 }
 
 const AGENT_NAMES: Record<AgentStatus['command'], string> = { claude: 'Claude Code', codex: 'Codex', pi: 'Pi' };
-const AGENT_BUTTON =
-  'inline-flex h-8 shrink-0 items-center rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] transition-colors hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
 const LINK = /https?:\/\/\S+/;
 
 interface AgentJob {
@@ -358,22 +362,22 @@ function AgentsTab() {
                   {jobHere?.isRunning ? (
                     <>
                       {link ? (
-                        <button type="button" onClick={() => void openExternal(link)} className={AGENT_BUTTON}>
+                        <SettingsButton type="button" onClick={() => void openExternal(link)}>
                           {t('openLink')}
-                        </button>
+                        </SettingsButton>
                       ) : null}
-                      <button type="button" onClick={() => void stopAgentJob()} className={AGENT_BUTTON}>
+                      <SettingsButton type="button" onClick={() => void stopAgentJob()}>
                         {t('agentStop')}
-                      </button>
+                      </SettingsButton>
                     </>
                   ) : !agent.installed ? (
-                    <button type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)} className={AGENT_BUTTON}>
+                    <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)}>
                       {t('agentInstall')}
-                    </button>
+                    </SettingsButton>
                   ) : agent.login ? (
-                    <button type="button" disabled={job?.isRunning} onClick={() => run(agent.command, loginAgent)} className={AGENT_BUTTON}>
+                    <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, loginAgent)}>
                       {agent.login.loggedIn ? t('agentRelogin') : t('agentLogin')}
-                    </button>
+                    </SettingsButton>
                   ) : null}
                 </span>
               </div>
@@ -393,10 +397,7 @@ function AgentsTab() {
   );
 }
 
-const PROJECT_BUTTON =
-  'inline-flex h-8 shrink-0 items-center gap-2 rounded-full border border-[var(--settings-theme-card-border)] px-3 text-13 text-[var(--text-primary)] hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
-
-const RELAY_DOCS_URL = 'https://github.com/mingzaily/tandem/blob/main/relay/README.md';
+const RELAY_DOCS_URL = 'https://mingzaily.github.io/tandem/guide/quick-start';
 const REMOTE_INPUT =
   'selectable h-8 w-[280px] rounded-lg border border-[var(--settings-theme-card-border)] bg-transparent px-2.5 text-13 text-[var(--text-primary)] outline-none placeholder:text-[var(--text-tertiary)] focus:border-[var(--focus-ring)]';
 const REMOTE_STATUS: Record<RemoteLinkStatus, StringKey> = {
@@ -406,118 +407,182 @@ const REMOTE_STATUS: Record<RemoteLinkStatus, StringKey> = {
   failed: 'remoteStatusFailed',
 };
 
-function RemoteTab() {
-  const [state, setState] = useState<RemoteState | null>(null);
-  const [relayUrl, setRelayUrl] = useState('');
-  const [hostToken, setHostToken] = useState('');
-  const [error, setError] = useState<string | null>(null);
+type RemoteOperation = 'save' | 'toggle' | 'pair' | 'cancelPair' | `revoke:${string}`;
 
-  const refresh = useCallback(() => {
-    remoteState()
-      .then((next) => {
-        setState(next);
-        setRelayUrl((current) => current || next.relayUrl);
-      })
-      .catch((reason) => setError(String(reason)));
+function RemoteTab() {
+  const relayFormId = useId();
+  const [state, setState] = useState<RemoteState | null>(null);
+  const [form, updateForm] = useReducer(remoteFormReducer, INITIAL_REMOTE_FORM);
+  const [pending, setPending] = useState<RemoteOperation | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [configurationError, setConfigurationError] = useState<string | null>(null);
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const operation = useRef<RemoteOperation | null>(null);
+  const active = useRef(true);
+  const revision = useRef(0);
+
+  const refresh = useCallback(async () => {
+    const request = ++revision.current;
+    try {
+      const next = await remoteState();
+      if (!active.current || request !== revision.current) return;
+      setState(next);
+      updateForm({ type: 'received', relayUrl: next.relayUrl });
+      setLoadError(null);
+    } catch (reason) {
+      if (active.current && request === revision.current) setLoadError(String(reason));
+    }
   }, []);
+
   useEffect(() => {
-    refresh();
-    const unlisten = onRemoteChanged(refresh);
-    return () => void unlisten.then((stop) => stop());
+    active.current = true;
+    void refresh();
+    const unlisten = onRemoteChanged(() => void refresh());
+    return () => {
+      active.current = false;
+      revision.current++;
+      void unlisten.then((stop) => stop());
+    };
   }, [refresh]);
 
-  const attempt = (action: Promise<void>) => {
+  const pairing = state?.pairing;
+  useEffect(() => {
+    if (!pairing) return;
+    const timer = window.setTimeout(() => void refresh(), Math.max(0, pairing.expiresAtMs - Date.now()) + 1);
+    return () => window.clearTimeout(timer);
+  }, [pairing?.expiresAtMs, refresh]);
+  useEffect(() => setCopied(false), [pairing?.text]);
+
+  const run = async (kind: RemoteOperation, action: () => Promise<void>, committed?: () => void) => {
+    if (operation.current) return;
+    operation.current = kind;
+    setPending(kind);
+    const setError = kind === 'save' || kind === 'toggle' ? setConfigurationError : setDeviceError;
     setError(null);
-    action.then(refresh).catch((reason) => setError(String(reason)));
-  };
-  const save = (enabled: boolean) => {
-    attempt(remoteConfigure(enabled, relayUrl, hostToken || null));
-    setHostToken('');
+    try {
+      await action();
+      if (!active.current) return;
+      committed?.();
+      await refresh();
+    } catch (reason) {
+      if (active.current) setError(String(reason));
+    } finally {
+      operation.current = null;
+      if (active.current) setPending(null);
+    }
   };
 
-  if (!state) return null;
+  if (!state) {
+    return <Section title={t('remoteSection')}>
+      <div className="flex items-center justify-between gap-3 px-4 py-4">
+        <p role={loadError ? 'alert' : 'status'} className={ROW_HINT}>{loadError ?? t('remoteLoading')}</p>
+        {loadError ? <SettingsButton onClick={() => void refresh()}>{t('remoteRefresh')}</SettingsButton> : null}
+      </div>
+    </Section>;
+  }
+
+  const busy = pending !== null;
+  const dirty = remoteFormDirty(form);
+  const hasSavedConfiguration = !!state.relayUrl && state.hasHostToken;
+  const canEnable = hasSavedConfiguration && !dirty;
+  const canSave = !!form.relayUrl.trim() && (state.hasHostToken || !!form.hostToken.trim());
+  const canPair = state.status === 'online' && !dirty && !loadError;
+  const enableHint = !state.enabled && !canEnable
+    ? t(dirty ? 'remoteSaveBeforeEnable' : 'remoteConfigureFirst')
+    : t('remoteEnableHint');
+  const pairHint = pending === 'pair' ? t('remotePairCreating') : dirty ? t('remoteSaveBeforePair')
+    : state.status === 'online' ? t('remotePairReady') : t('remoteConnectBeforePair');
   const statusText = state.error ? `${t(REMOTE_STATUS[state.status])}：${state.error}` : t(REMOTE_STATUS[state.status]);
+  const edit = (type: 'editUrl' | 'editToken', value: string) => {
+    setConfigurationError(null);
+    updateForm({ type, value });
+  };
+  const copyPairing = async (text: string) => {
+    setDeviceError(null);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch (reason) {
+      setDeviceError(String(reason));
+    }
+  };
+
   return (
     <>
-      <Section title={t('remoteSection')}>
-        <Row label={t('remoteEnable')} hint={t('remoteEnableHint')}>
-          <Switch label={t('remoteEnable')} checked={state.enabled} onChange={save} />
+      <Section title={t('remoteSection')} action={
+        <button type="button" onClick={() => void openExternal(RELAY_DOCS_URL)} className="inline-flex shrink-0 items-center gap-1 rounded text-12 text-[var(--text-secondary)] underline underline-offset-4 transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
+          {t('remoteDocs')}<ExternalLink size={13} strokeWidth={1.7} aria-hidden />
+        </button>
+      }>
+        <Row label={t('remoteEnable')} hint={
+          state.enabled ? <span role="status">{statusText} · {enableHint}</span> : enableHint
+        }>
+          <Switch label={t('remoteEnable')} checked={state.enabled} disabled={busy || !!loadError || (!state.enabled && !canEnable)}
+            onChange={(enabled) => void run('toggle', () => remoteConfigure(enabled, state.relayUrl, null))} />
         </Row>
-        <div className={DIVIDER} />
-        <Row label={t('remoteRelayUrl')} hint={statusText}>
-          <input
-            value={relayUrl}
-            aria-label={t('remoteRelayUrl')}
-            placeholder="wss://relay.example.com/ws"
-            spellCheck={false}
-            onChange={(event) => setRelayUrl(event.target.value)}
-            className={REMOTE_INPUT}
-          />
-        </Row>
-        <div className={DIVIDER} />
-        <Row label={t('remoteRelayToken')}>
-          <input
-            type="password"
-            value={hostToken}
-            aria-label={t('remoteRelayToken')}
-            placeholder={state.hasHostToken ? t('remoteTokenSaved') : ''}
-            onChange={(event) => setHostToken(event.target.value)}
-            className={REMOTE_INPUT}
-          />
-        </Row>
-        <div className={DIVIDER} />
-        <div className="flex items-center justify-between gap-3 px-4 py-3">
-          <button
-            type="button"
-            onClick={() => void openExternal(RELAY_DOCS_URL)}
-            className="inline-flex min-w-0 shrink-0 items-center gap-1 rounded-md text-13 text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-          >
-            {t('remoteDocs')}
-            <ExternalLink size={13} strokeWidth={1.7} aria-hidden />
-          </button>
-          <span className="flex min-w-0 items-center justify-end gap-3">
-            {error ? <span className="selectable min-w-0 text-13 text-[var(--text-danger)]">{error}</span> : null}
-            <button type="button" onClick={() => save(state.enabled)} className={PROJECT_BUTTON}>
-              {t('remoteSave')}
-            </button>
-          </span>
-        </div>
       </Section>
-      <Section title={t('remoteDevices')}>
-        {state.clients.length === 0 ? <Row label={t('remoteNoDevices')} /> : null}
+      <Section title={t('remoteRelaySection')} action={
+        <span className="flex shrink-0 items-center gap-2">
+          {dirty ? <SettingsButton variant="quiet" disabled={busy} onClick={() => {
+            setConfigurationError(null);
+            updateForm({ type: 'discarded', relayUrl: state.relayUrl });
+          }}>{t('remoteDiscard')}</SettingsButton> : null}
+          <SettingsButton type="submit" form={relayFormId} variant="primary" busy={pending === 'save'}
+            disabled={busy || !dirty || !canSave || !!loadError}>{t('remoteSave')}</SettingsButton>
+        </span>
+      }>
+        <form id={relayFormId} onSubmit={(event) => {
+          event.preventDefault();
+          if (!dirty || !canSave || loadError) return;
+          const relayUrl = form.relayUrl.trim();
+          const hostToken = form.hostToken.trim() || null;
+          void run('save', () => remoteConfigure(state.enabled, relayUrl, hostToken),
+            () => updateForm({ type: 'saved', relayUrl }));
+        }}>
+          <Row label={t('remoteRelayUrl')}>
+            <input type="url" required value={form.relayUrl} aria-label={t('remoteRelayUrl')}
+              placeholder="wss://relay.example.com/ws" spellCheck={false} disabled={busy}
+              onChange={(event) => edit('editUrl', event.target.value)} className={REMOTE_INPUT} />
+          </Row>
+          <div className={DIVIDER} />
+          <Row label={t('remoteRelayToken')}>
+            <input type="password" value={form.hostToken} aria-label={t('remoteRelayToken')} required={!state.hasHostToken}
+              placeholder={state.hasHostToken ? t('remoteTokenSaved') : ''} disabled={busy}
+              onChange={(event) => edit('editToken', event.target.value)} className={REMOTE_INPUT} />
+          </Row>
+          {configurationError ? <p role="alert" className="selectable px-4 pb-3 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{configurationError}</p> : null}
+          {loadError ? <div className="flex items-center justify-between gap-3 px-4 pb-3">
+            <p role="alert" className="selectable min-w-0 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{loadError}</p>
+            <SettingsButton variant="quiet" disabled={busy} onClick={() => void refresh()}>{t('remoteRefresh')}</SettingsButton>
+          </div> : null}
+        </form>
+      </Section>
+      <Section title={t('remoteDevices')} action={pairing ?
+        <SettingsButton busy={pending === 'cancelPair'} disabled={busy} onClick={() => void run('cancelPair', remoteCancelPairing)}>{t('remotePairCancel')}</SettingsButton> :
+        <SettingsButton busy={pending === 'pair'} disabled={busy || !canPair} onClick={() => void run('pair', remoteBeginPairing)}>{t('remotePair')}</SettingsButton>
+      }>
+        {state.clients.length === 0 && !pairing ? <Row label={t('remoteNoDevices')} hint={pairHint} /> : null}
         {state.clients.map((client, index) => (
           <div key={client.clientId}>
             {index > 0 ? <div className={DIVIDER} /> : null}
             <Row label={client.name || client.clientId} hint={client.isOnline ? t('remoteDeviceOnline') : t('remoteDeviceOffline')}>
-              <button type="button" onClick={() => attempt(remoteRevoke(client.clientId))} className={PROJECT_BUTTON}>
-                {t('remoteRevoke')}
-              </button>
+              <SettingsButton variant="quiet" danger busy={pending === `revoke:${client.clientId}`} disabled={busy}
+                onClick={() => void run(`revoke:${client.clientId}`, () => remoteRevoke(client.clientId))}>{t('remoteRevoke')}</SettingsButton>
             </Row>
           </div>
         ))}
-        <div className={DIVIDER} />
-        {state.pairing ? (
-          <div className="flex items-start gap-4 px-4 py-4">
-            <img src={state.pairing.qr} alt="" width={160} height={160} className="shrink-0 rounded-lg bg-white p-2" />
-            <div className="flex min-w-0 flex-col items-start gap-3">
+        {pairing ? <>
+          {state.clients.length > 0 ? <div className={DIVIDER} /> : null}
+          <div className="flex flex-wrap items-start gap-4 px-4 py-4">
+            <img src={pairing.qr} alt={t('remotePairImage')} width={160} height={160} className="shrink-0 rounded-lg bg-white p-2" />
+            <div className="flex min-w-0 flex-1 flex-col items-start gap-3">
               <span className={ROW_HINT}>{t('remotePairHint')}</span>
-              <span className="flex gap-2">
-                <button type="button" onClick={() => void navigator.clipboard.writeText(state.pairing?.text ?? '')} className={PROJECT_BUTTON}>
-                  {t('remotePairCopy')}
-                </button>
-                <button type="button" onClick={() => attempt(remoteCancelPairing())} className={PROJECT_BUTTON}>
-                  {t('remotePairCancel')}
-                </button>
-              </span>
+              <SettingsButton disabled={busy} onClick={() => void copyPairing(pairing.text)}>{t(copied ? 'remotePairCopied' : 'remotePairCopy')}</SettingsButton>
             </div>
           </div>
-        ) : (
-          <div className="flex justify-end px-4 py-3">
-            <button type="button" disabled={state.status !== 'online'} onClick={() => attempt(remoteBeginPairing())} className={`${PROJECT_BUTTON} disabled:cursor-not-allowed disabled:opacity-40`}>
-              {t('remotePair')}
-            </button>
-          </div>
-        )}
+        </> : state.clients.length > 0 && !canPair ? <><div className={DIVIDER} /><p className={`${ROW_HINT} px-4 py-3`}>{pairHint}</p></> : null}
+        {deviceError ? <p role="alert" className="selectable px-4 pb-3 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{deviceError}</p> : null}
       </Section>
     </>
   );
@@ -525,6 +590,9 @@ function RemoteTab() {
 
 function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir }: TabProps & ProjectsProps) {
   const [discovered, setDiscovered] = useState<DiscoveredProject[] | null>(null);
+  const [picking, setPicking] = useState<'project' | 'directory' | null>(null);
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [directoryError, setDirectoryError] = useState<string | null>(null);
   useEffect(() => {
     let isCurrent = true;
     discoverProjects()
@@ -543,49 +611,45 @@ function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange,
   const changeConversationDir = (next: string | null) => {
     const previous = settings.conversationDir;
     const past = previous && previous !== next ? [...settings.pastConversationDirs, previous] : settings.pastConversationDirs;
-    onChange({
-      ...settings,
-      conversationDir: next,
-      pastConversationDirs: [...new Set(past)].filter((dir) => dir !== next),
-    });
+    onChange({ ...settings, conversationDir: next, pastConversationDirs: [...new Set(past)].filter((dir) => dir !== next) });
+  };
+  const chooseFolder = async (kind: 'project' | 'directory') => {
+    setPicking(kind);
+    const setError = kind === 'project' ? setProjectError : setDirectoryError;
+    setError(null);
+    try {
+      const selected = await pickProject();
+      if (selected) {
+        if (kind === 'project') {
+          if (!extraProjects.includes(selected)) onExtraProjectsChange([...extraProjects, selected]);
+        } else changeConversationDir(selected);
+      }
+    } catch (reason) {
+      setError(String(reason));
+    } finally {
+      setPicking(null);
+    }
   };
   return (
     <>
-      <Section title={t('addedProjects')}>
+      <Section title={t('addedProjects')} action={
+        <SettingsButton busy={picking === 'project'} disabled={picking !== null} onClick={() => void chooseFolder('project')}>
+          <FolderPlus size={14} strokeWidth={1.8} aria-hidden />{t('settingsAddProject')}
+        </SettingsButton>
+      }>
         {extraProjects.length === 0 ? <Row label={t('noAddedProjects')} hint={t('addedProjectsHint')} /> : null}
         {extraProjects.map((cwd, index) => (
           <div key={cwd}>
             {index > 0 ? <div className={DIVIDER} /> : null}
             <Row label={projectName(cwd)} hint={cwd}>
-              <button
-                type="button"
-                aria-label={t('removeProject', { name: projectName(cwd) })}
-                title={t('removeProject', { name: projectName(cwd) })}
-                onClick={() => onExtraProjectsChange(extraProjects.filter((item) => item !== cwd))}
-                className="flex size-7 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--settings-menu-bg-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-              >
+              <SettingsButton variant="quiet" iconOnly aria-label={t('removeProject', { name: projectName(cwd) })}
+                title={t('removeProject', { name: projectName(cwd) })} onClick={() => onExtraProjectsChange(extraProjects.filter((item) => item !== cwd))}>
                 <X size={14} aria-hidden />
-              </button>
+              </SettingsButton>
             </Row>
           </div>
         ))}
-        <div className={DIVIDER} />
-        <div className="px-4 py-3">
-          <button
-            type="button"
-            onClick={() => {
-              pickProject()
-                .then((cwd) => {
-                  if (cwd && !extraProjects.includes(cwd)) onExtraProjectsChange([...extraProjects, cwd]);
-                })
-                .catch(console.error);
-            }}
-            className={PROJECT_BUTTON}
-          >
-            <FolderPlus size={14} strokeWidth={1.8} aria-hidden />
-            {t('addProject')}
-          </button>
-        </div>
+        {projectError ? <p role="alert" className="selectable px-4 pb-3 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{projectError}</p> : null}
       </Section>
       <Section title={t('discoveredProjects')}>
         {discovered === null ? <Row label={t('discoveredChecking')} /> : null}
@@ -594,40 +658,24 @@ function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange,
           <div key={project.cwd}>
             {index > 0 ? <div className={DIVIDER} /> : null}
             <Row label={projectName(project.cwd)} hint={project.cwd}>
-              <button
-                type="button"
-                onClick={() => onExtraProjectsChange([...extraProjects, project.cwd])}
-                className={PROJECT_BUTTON}
-              >
-                {t('joinProject')}
-              </button>
+              <SettingsButton onClick={() => onExtraProjectsChange([...extraProjects, project.cwd])}>{t('joinProject')}</SettingsButton>
             </Row>
           </div>
         ))}
       </Section>
       <Section title={t('conversationWorkspace')}>
-        <Row label={settings.conversationDir ?? defaultConversationDir} hint={t('conversationWorkspaceHint')} />
+        <Row label={t('conversationDirectory')} hint={settings.conversationDir ?? defaultConversationDir}>
+          <span className="flex items-center gap-2">
+            {settings.conversationDir ? <SettingsButton variant="quiet" iconOnly disabled={picking !== null}
+              aria-label={t('conversationReset')} title={t('conversationReset')} onClick={() => changeConversationDir(null)}>
+              <RotateCcw size={14} aria-hidden />
+            </SettingsButton> : null}
+            <SettingsButton busy={picking === 'directory'} disabled={picking !== null} onClick={() => void chooseFolder('directory')}>{t('conversationChange')}</SettingsButton>
+          </span>
+        </Row>
         <div className={DIVIDER} />
-        <div className="flex gap-2 px-4 py-3">
-          <button
-            type="button"
-            onClick={() => {
-              pickProject()
-                .then((dir) => {
-                  if (dir) changeConversationDir(dir);
-                })
-                .catch(console.error);
-            }}
-            className={PROJECT_BUTTON}
-          >
-            {t('conversationChange')}
-          </button>
-          {settings.conversationDir ? (
-            <button type="button" onClick={() => changeConversationDir(null)} className={PROJECT_BUTTON}>
-              {t('conversationReset')}
-            </button>
-          ) : null}
-        </div>
+        <p className={`${ROW_HINT} px-4 py-3`}>{t('conversationWorkspaceHint')}</p>
+        {directoryError ? <p role="alert" className="selectable px-4 pb-3 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{directoryError}</p> : null}
       </Section>
     </>
   );
@@ -667,12 +715,13 @@ interface ProjectsProps {
 }
 
 interface SettingsViewProps extends TabProps, ProjectsProps {
+  initialTab?: TabId;
   version: string;
   onBack: () => void;
 }
 
-export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack }: SettingsViewProps) {
-  const [tab, setTab] = useState<TabId>('general');
+export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack, initialTab = 'general' }: SettingsViewProps) {
+  const [tab, setTab] = useState<TabId>(initialTab);
   const active = TABS.find(({ id }) => id === tab) ?? TABS[0];
   return (
     <div role="main" aria-label={t('settings')} className="relative flex h-full w-full bg-[var(--settings-bg)] pb-5">

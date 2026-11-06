@@ -11,6 +11,12 @@ export interface TurnPrefs {
 
 export const DEFAULT_PREFS: TurnPrefs = { model: null, effort: null, permissionMode: 'ask' };
 
+export function titleOptions(prefs: TurnPrefs, models: ModelOption[]): Pick<TurnOptions, 'model' | 'effort'> {
+  const model = models.find((option) => option.value === (prefs.model ?? 'default'));
+  const levels = model?.supportsEffort ? model.supportedEffortLevels : [];
+  return { model: prefs.model, effort: levels.includes('low') ? 'low' : levels[0] ?? null };
+}
+
 /** Leaves out whatever the chosen model cannot do, so the CLI never rejects the turn. */
 export function turnOptions(prefs: TurnPrefs, models: ModelOption[]): TurnOptions {
   const model = models.find((option) => option.value === (prefs.model ?? 'default'));

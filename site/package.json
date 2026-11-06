@@ -1,0 +1,16 @@
+{
+  "name": "tandem-site",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.2",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "dev": "vitepress dev",
+    "typecheck": "tsc --noEmit",
+    "build": "pnpm typecheck && vitepress build",
+    "build:pages": "node ../.github/scripts/build-pages.mjs",
+    "test": "node --test test/*.test.mjs",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": { "vitepress": "1.6.4", "vue": "^3.5.0", "typescript": "^5.9.3", "@types/node": "^24.0.0" }
+}

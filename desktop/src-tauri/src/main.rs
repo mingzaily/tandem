@@ -32,7 +32,7 @@ fn main() {
             tauri::async_runtime::spawn_blocking(move || {
                 let result = (|| {
                     let storage = app.state::<storage::Store>();
-                    let _permit = storage.permit()?;
+                    storage.ensure_writable()?;
                     app.state::<queue::Store>().image(&path)
                 })();
                 let (status, media_type, body) = match result {
@@ -117,18 +117,13 @@ fn main() {
             commands::remote_revoke,
             commands::preferences,
             commands::update_preferences,
-            commands::migrate_preferences,
-            commands::preview_preferences,
             commands::set_system_language,
         ])
         .setup(|app| {
             let root = conversations::home_dir().map_err(std::io::Error::other)?.join(".tandem");
-            let legacy = app.path().app_data_dir()?;
             #[cfg(debug_assertions)]
             let root = std::env::var_os("TANDEM_DRIVE_DATA_DIR").map(std::path::PathBuf::from).unwrap_or(root);
-            #[cfg(debug_assertions)]
-            let legacy = std::env::var_os("TANDEM_DRIVE_LEGACY_DIR").map(std::path::PathBuf::from).unwrap_or(legacy);
-            let store = storage::Store::open(root, legacy);
+            let store = storage::Store::open(root);
             let preferences = store.snapshot();
             let script = preferences.initialization_script();
             let theme = preferences.native_theme();

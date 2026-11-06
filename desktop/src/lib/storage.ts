@@ -1,4 +1,4 @@
-import { migratePreferences, onPreferencesChanged, previewPreferences, readPreferences, setSystemLanguage, updatePreferences, type Agent } from './api';
+import { onPreferencesChanged, readPreferences, setSystemLanguage, updatePreferences, type Agent } from './api';
 import type { TaskMeta } from './taskMeta';
 
 export interface StoredTurnPrefs { model: string; effort: string; permission_mode: string }
@@ -24,13 +24,11 @@ export interface ViewState {
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   projectsSeeded: boolean;
-  migrationVersion: number;
 }
 export interface PreferencesSnapshot {
   config: Config;
   state: ViewState;
   revision: number;
-  migrationPending: boolean;
   errors: string[];
 }
 declare global { interface Window { __TANDEM_PREFERENCES__?: PreferencesSnapshot } }
@@ -43,8 +41,8 @@ export const DEFAULT_SNAPSHOT: PreferencesSnapshot = {
     conversation_dir: '', past_conversation_dirs: [], projects: [], new_task_agent: 'claude',
     agents: { claude: prefs(), codex: prefs(), pi: prefs() },
   },
-  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false, migrationVersion: 0 },
-  revision: 0, migrationPending: false, errors: [],
+  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false },
+  revision: 0, errors: [],
 };
 
 type Patch = Record<string, unknown>;
@@ -102,7 +100,6 @@ export class PreferencesMemory {
     this.rebuild();
   };
   report = (error: unknown) => { this.failure = String(error); this.rebuild(); };
-  clearFailure = () => { this.failure = null; this.rebuild(); };
 
   change(target: Change['target'], next: Patch) {
     const patch = difference(this.snapshot[target], { ...this.snapshot[target], ...next }) as Patch | undefined;
@@ -145,24 +142,6 @@ export const subscribePreferences = preferencesMemory.subscribe;
 export const saveConfig = (patch: Patch) => preferencesMemory.change('config', patch);
 export const saveViewState = (patch: Patch) => preferencesMemory.change('state', patch);
 
-// Kept in the old WebView for one version. Normal reads/writes never use localStorage.
-const LEGACY_KEYS = [
-  'tandem.settings', 'tandem.turnPrefs', 'tandem.codexPrefs', 'tandem.piPrefs', 'tandem.newTaskAgent',
-  'tandem.taskMeta', 'tandem.extraProjects', 'tandem.projectOrder', 'tandem.sidebar', 'tandem.sidebarWidth', 'tandem.projectsSeeded',
-];
-export function legacyPreferences(): Record<string, string> {
-  return Object.fromEntries(LEGACY_KEYS.flatMap((key) => { const value = localStorage.getItem(key); return value === null ? [] : [[key, value]]; }));
-}
-async function runMigration(legacy: Record<string, string>) {
-  try {
-    preferencesMemory.accept(await migratePreferences(legacy));
-    preferencesMemory.clearFailure();
-  } catch (error) { preferencesMemory.report(error); }
-}
-export async function retryMigration() {
-  try { await runMigration(legacyPreferences()); } catch (error) { preferencesMemory.report(error); }
-}
-
 export async function connectPreferences(isMain: boolean) {
   // Subscribe before fetching, closing the race between window creation and listener setup.
   await onPreferencesChanged(preferencesMemory.accept);
@@ -171,12 +150,5 @@ export async function connectPreferences(isMain: boolean) {
     const updateLanguage = () => setSystemLanguage(navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en');
     await updateLanguage();
     window.addEventListener('languagechange', () => { void updateLanguage().catch((error) => preferencesMemory.report(error)); });
-    if (preferencesSnapshot().migrationPending) {
-      try {
-        const legacy = legacyPreferences();
-        preferencesMemory.accept(await previewPreferences(legacy));
-        void runMigration(legacy);
-      } catch (error) { preferencesMemory.report(error); }
-    }
   }
 }

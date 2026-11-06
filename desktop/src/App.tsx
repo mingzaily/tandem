@@ -1,6 +1,6 @@
 import { getVersion } from '@tauri-apps/api/app';
 import { MoreHorizontal } from 'lucide-react';
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BrandLockup } from './components/BrandLockup';
 import { AgentMark } from './components/AgentMark';
 import { AGENT_NAMES } from './lib/modelRows';
@@ -101,7 +101,7 @@ import {
 } from './lib/preferences';
 
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
-import { preferencesSnapshot, subscribePreferences } from './lib/storage';
+import { subscribePreferences } from './lib/storage';
 import { acceptNativeTitle, taskTitle, type TaskMeta } from './lib/taskMeta';
 import { mergeQueue } from './lib/pendingQueue';
 import { requestAnswerFailure } from './lib/requestAnswer';
@@ -135,7 +135,6 @@ function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice
 }
 
 export function App() {
-  const migrationPending = useSyncExternalStore(subscribePreferences, () => preferencesSnapshot().migrationPending);
   const [claudeTasks, setClaudeTasks] = useState<TaskSummary[] | null>(null);
   const [codexTasks, setCodexTasks] = useState<TaskSummary[]>([]);
   const [piTasks, setPiTasks] = useState<TaskSummary[]>([]);
@@ -381,7 +380,6 @@ export function App() {
 
   useEffect(() => {
     setQueuesLoaded(false);
-    if (migrationPending) return;
     let current = true;
     setQueueLoadError(null);
     void queueListening.current.then(() => listQueues()).then((loaded) => {
@@ -390,7 +388,7 @@ export function App() {
       setQueuesLoaded(true);
     }).catch((error) => { if (current) setQueueLoadError(t('queueFailed', { error: String(error) })); });
     return () => { current = false; };
-  }, [migrationPending, updateQueue]);
+  }, [updateQueue]);
 
   const cancelQueueEdit = useCallback(() => {
     const edit = queueEditRef.current;

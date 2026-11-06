@@ -47,6 +47,7 @@
 | [measurements/2026-11-06-final-review.md](measurements/2026-11-06-final-review.md) | 参考 | 查看最终 review 清单、单次写入者授权、确认重试、模型按钮、图片存储与 release 性能复测 |
 | [measurements/2026-11-06-tool-status.md](measurements/2026-11-06-tool-status.md) | 参考 | 查看运行行工具名称、MCP 可读标签、参数悬停与展开、浅深色和窄窗口验收 |
 | [measurements/2026-11-06-unified-storage.md](measurements/2026-11-06-unified-storage.md) | 参考 | 查看统一数据目录、TOML 手改、双窗口配置同步、一次性迁移与性能验收 |
+| [measurements/2026-11-07-storage-final-review.md](measurements/2026-11-07-storage-final-review.md) | 参考 | 查看旧导入删除、坏状态隔离、未知字段、双实例写锁、旧数据清理、桌面 CI 与最终复审 |
 | [reference/](reference/README.md) | 参考 | 查 loom 的历史文档，以及本地的 Cindy、ccgui 代码 |
 
 ## 收录规则

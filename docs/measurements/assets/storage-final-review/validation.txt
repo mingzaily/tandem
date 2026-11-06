@@ -1,0 +1,310 @@
+Desktop frontend
+
+> tandem@0.0.1 test /Users/mingzaily/Code/golang/mingzaily/tandem/desktop
+> vitest run
+
+
+ RUN  v3.2.7 /Users/mingzaily/Code/golang/mingzaily/tandem/desktop
+
+ ✓ src/lib/items.test.ts (24 tests) 11ms
+ ✓ src/lib/pendingQueue.test.ts (6 tests) 2ms
+ ✓ src/lib/trayRefresh.test.ts (4 tests) 117ms
+ ✓ src/lib/remotePresence.test.ts (6 tests) 216ms
+ ✓ src/lib/storage.test.ts (6 tests) 267ms
+ ✓ src/lib/modelEffort.test.ts (4 tests) 134ms
+ ✓ src/lib/composerStatus.test.ts (9 tests) 6ms
+ ✓ src/components/RemoteAccessNotice.test.tsx (6 tests) 30ms
+ ✓ src/lib/terminalResume.test.ts (4 tests) 1570ms
+   ✓ terminal resume commands > resumes claude from its task directory in sh and zsh  789ms
+   ✓ terminal resume commands > resumes codex from its task directory in sh and zsh  377ms
+   ✓ terminal resume commands > resumes pi from its task directory in sh and zsh  382ms
+ ✓ src/components/Composer.test.tsx (4 tests) 33ms
+ ✓ src/components/RunningStatus.test.tsx (3 tests) 15ms
+ ✓ src/components/QueuePauseStatus.test.tsx (1 test) 10ms
+ ✓ src/components/PendingQueuePanel.test.tsx (4 tests) 28ms
+ ✓ src/components/ModelPickerPanel.test.tsx (1 test) 65ms
+ ✓ src/lib/tokenRate.test.ts (5 tests) 6ms
+ ✓ src/lib/designTokens.test.ts (4 tests) 5ms
+ ✓ src/components/ModelConfigFlyout.test.tsx (2 tests) 13ms
+ ✓ src/components/RequestPrompts.test.tsx (2 tests) 29ms
+ ✓ src/lib/fileChanges.test.ts (12 tests) 38ms
+ ✓ src/lib/composerMenuPosition.test.ts (6 tests) 3ms
+ ✓ src/lib/modelRows.test.ts (9 tests) 7ms
+ ✓ src/lib/taskMeta.test.ts (5 tests) 4ms
+ ✓ src/lib/tools.test.ts (15 tests) 8ms
+ ✓ src/lib/navHistory.test.ts (4 tests) 4ms
+ ✓ src/lib/modelFlyoutPosition.test.ts (4 tests) 3ms
+ ✓ src/lib/composerFocus.test.ts (6 tests) 5ms
+ ✓ src/lib/preloadTheme.test.ts (2 tests) 5ms
+ ✓ src/lib/remoteSettings.test.ts (4 tests) 4ms
+ ✓ src/lib/requestAnswer.test.ts (3 tests) 5ms
+ ✓ src/lib/settings.test.ts (2 tests) 2ms
+
+ Test Files  30 passed (30)
+      Tests  167 passed (167)
+   Start at  01:09:57
+   Duration  4.67s (transform 1.73s, setup 0ms, collect 7.12s, tests 2.64s, environment 6ms, prepare 5.21s)
+
+
+
+Desktop Rust tests
+   Compiling tandem v0.0.1 (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.05s
+     Running unittests src/main.rs (target/debug/deps/tandem-06423a8949c30ae2)
+
+running 194 tests
+test agents::tests::one_job_at_a_time ... ok
+test agents::tests::only_known_agents_can_be_installed_or_logged_in ... ok
+test agents::tests::reads_claude_login_status ... ok
+test agents::tests::takes_the_first_line_with_text ... ok
+test attachments::tests::a_held_count_limit_bounds_memory ... ok
+test agents::tests::keeps_only_the_version_number ... ok
+test attachments::tests::a_path_a_rule_cannot_name_exactly_gets_no_rule ... ok
+test attachments::tests::taking_needs_every_id_and_uses_each_once ... ok
+test attachments::tests::images_are_inlined_and_other_files_go_by_path ... ok
+test cli_info::tests::a_rejected_model_switch_never_borrows_the_previous_models_default ... ok
+test cli_info::tests::collects_models_and_usage_from_both_answers ... ok
+test cli_info::tests::reads_the_effort_a_model_would_use ... ok
+test agents::tests::a_job_can_be_stopped ... ok
+test attachments::tests::refuses_folders_and_pasted_data_that_is_not_an_image ... ok
+test cli_info::tests::accounts_without_plan_limits_show_no_usage ... ok
+test cli_info::tests::early_process_exit_does_not_replace_cached_models_with_an_empty_list ... ok
+test cli_info::tests::model_initialization_errors_keep_their_reason ... ok
+test cli_info::tests::stream_windows_report_fractions_as_percentages ... ok
+test cli_info::tests::usage_read_errors_keep_the_previous_limits ... ok
+test codex::tests::a_failed_turn_reports_its_reason ... ok
+test codex::tests::a_thread_becomes_a_task_named_by_its_title_or_first_message ... ok
+test codex::tests::a_turn_always_states_its_permissions_and_only_full_access_leaves_the_sandbox ... ok
+test codex::tests::a_command_is_announced_when_it_starts_and_finished_once ... ok
+test codex::tests::answers_questions_by_id_and_decisions_in_codex_terms ... ok
+test codex::tests::codex_app_attachment_envelopes_show_the_request_and_non_image_files ... ok
+test codex::tests::counts_patch_lines_without_the_file_headers ... ok
+test codex::tests::lists_the_default_model_first_and_skips_hidden_ones ... ok
+test codex::tests::items_become_the_same_messages_as_claude ... ok
+test codex::tests::maps_usage_windows_by_length ... ok
+test codex::tests::model_capabilities_keep_every_codex_effort_in_protocol_order ... ok
+test codex::tests::ordinary_user_markdown_and_partial_envelopes_stay_intact ... ok
+test codex::tests::numeric_request_ids_stay_numbers_in_replies ... ok
+test codex::tests::reasoning_summaries_lose_their_bold_markers ... ok
+test codex::tests::strips_the_shell_wrapper_from_commands ... ok
+test codex::tests::remembers_file_paths_for_the_approval_that_follows ... ok
+test codex::tests::reads_a_fork_from_its_own_file_when_its_parent_is_gone ... ok
+test conversations::tests::temp_folders_are_not_offered ... ok
+test codex::tests::the_config_picks_the_default_effort_when_the_model_has_it ... ok
+test conversations::tests::a_stamp_changes_with_the_file ... ok
+test conversations::tests::creates_one_folder_per_conversation ... ok
+test git_info::tests::a_folder_outside_git_has_no_branch ... ok
+test conversations::tests::offers_real_projects_once_and_newest_first ... ok
+test conversations::tests::names_each_conversation_folder_for_codex ... ok
+test login_env::tests::ignores_text_printed_by_shell_startup_files ... ok
+test login_env::tests::output_without_marker_is_empty ... ok
+test login_env::tests::finds_only_executable_files ... ok
+test git_info::tests::follows_a_worktree_pointer ... ok
+test git_info::tests::shortens_a_detached_head ... ok
+test git_info::tests::reads_a_branch_from_a_subfolder ... ok
+test pi::tests::extension_dialogs_become_cards_and_their_replies_match ... ok
+test pi::tests::metadata_errors_reach_the_page ... ok
+test pi::tests::a_session_name_outranks_the_first_prompt ... ok
+test pi::tests::stream_events_become_the_shared_turn_events ... ok
+test pi::tests::finds_a_task_only_by_a_real_id ... ok
+test pi::tests::lists_only_tasks_under_the_roots_and_skips_nested_runs ... ok
+test pi::tests::reads_the_branch_ending_at_the_last_entry ... ok
+test pi::tests::uses_pi_capabilities_including_off_and_keeps_fixed_models_without_a_slider ... ok
+test agents::tests::a_job_reports_both_streams_and_whether_it_worked ... ok
+test pi::tests::reads_each_models_own_defaults_and_available_levels_without_a_prompt ... ok
+test attachments::tests::an_oversized_image_file_goes_by_path ... ok
+test queue::tests::a_completion_write_failure_keeps_the_remaining_queue_paused_in_memory ... ok
+test queue::tests::a_claimed_message_stays_on_disk_until_cli_acceptance ... ok
+test queue::tests::a_corrupt_queue_is_preserved_while_healthy_tasks_keep_working ... ok
+test queue::tests::a_failed_receipt_write_keeps_the_durable_message_for_crash_recovery ... ok
+test queue::tests::a_failed_attempt_consumes_its_writer_override ... ok
+test queue::tests::a_crash_after_claim_restores_the_head_and_pauses_for_a_resend_decision ... ok
+test queue::tests::a_recovery_write_failure_keeps_the_valid_queue_and_its_original_evidence ... ok
+test queue::tests::a_second_stop_overrides_an_earlier_resume_request ... ok
+test queue::tests::a_success_event_without_receipt_keeps_the_head_and_pauses ... ok
+test queue::tests::a_sent_image_preview_survives_queue_cache_cleanup ... ok
+test queue::tests::an_unreadable_queue_does_not_block_other_queues ... ok
+test queue::tests::accepted_messages_are_removed_durably_and_stay_removed_after_restart ... ok
+test queue::tests::concurrent_dispatchers_claim_each_message_once ... ok
+test queue::tests::empty_queue_files_are_deleted_after_removal_and_receipt ... ok
+test queue::tests::failed_persistence_keeps_the_existing_queue_and_draft_attachments ... ok
+test queue::tests::editing_locks_one_row_and_dragging_locks_the_whole_queue_by_owner ... ok
+test queue::tests::an_empty_completed_queue_stays_ready_after_restart ... ok
+test queue::tests::measure_large_image_queue_operations ... ignored
+test queue::tests::loading_cleans_empty_queue_files ... ok
+test queue::tests::edit_reorder_and_delete_preserve_options_and_only_affect_unsent_rows ... ok
+test queue::tests::orphaned_images_are_cleaned_after_an_interrupted_first_enqueue ... ok
+test queue::tests::enqueue_during_a_new_direct_turn_drains_after_clearing_a_stopped_queue ... ok
+test queue::tests::image_payloads_are_immutable_files_and_survive_restart_until_receipt ... ok
+test queue::tests::future_queued_turns_and_explicit_resume_recheck_external_writers ... ok
+test queue::tests::quarantining_metadata_preserves_its_image_payloads_across_new_sends ... ok
+test queue::tests::repeated_corruption_preserves_each_file_and_reports_unknown_task_ids ... ok
+test queue::tests::errors_pause_and_preflight_failure_restores_the_unsent_head ... ok
+test queue::tests::queues_are_per_task_and_restart_paused_with_options_and_attachments ... ok
+test queue::tests::reserve_persists_a_fresh_empty_queue_after_a_failure ... ok
+test queue::tests::resume_while_stopping_waits_for_process_exit_and_then_continues ... ok
+test queue::tests::validates_ipc_content_task_ids_and_agent_options ... ok
+test remote::crypto::tests::a_message_only_opens_with_its_own_key_and_counter ... ok
+test queue::tests::sending_to_an_idle_empty_queue_starts_a_new_turn_after_a_stop ... ok
+test queue::tests::stop_wins_over_a_successful_finish_until_explicit_resume ... ok
+test queue::tests::title_metadata_writes_hold_dispatch_and_keep_a_paused_queue_paused ... ok
+test remote::crypto::tests::rejects_a_point_of_the_wrong_length_or_off_the_curve ... ok
+test queue::tests::writer_override_is_transient_and_older_queue_files_recheck_writers ... ok
+test remote::ops::tests::a_new_task_starts_only_in_an_added_folder ... ok
+test queue::tests::running_turn_drains_fifo_only_after_completion ... ok
+test remote::crypto::tests::the_pair_code_always_has_six_digits ... ok
+test remote::ops::tests::a_phone_picks_from_the_same_permissions_as_the_computer ... ok
+test remote::ops::tests::a_turn_names_either_a_task_or_a_folder ... ok
+test remote::ops::tests::host_projects_follow_the_saved_sidebar_order_including_conversations ... ok
+test remote::ops::tests::pages_count_back_from_the_end_and_leave_images_behind ... ok
+test remote::ops::tests::projects_without_a_saved_position_come_first_as_in_the_sidebar ... ok
+test remote::crypto::tests::matches_the_shared_session_vectors ... ok
+test remote::store::tests::plain_websockets_are_only_for_this_machine ... ok
+test remote::tests::deltas_merge_so_a_snapshot_stays_small ... ok
+test remote::tests::pairing_is_available_after_registration_and_before_its_monotonic_deadline ... ok
+test runner::tests::a_question_is_answered_with_the_original_input_and_the_answers ... ok
+test runner::tests::a_request_can_only_be_answered_once ... ok
+test runner::tests::a_task_cannot_run_twice_and_can_run_again_after_finishing ... ok
+test runner::tests::a_tool_request_reaches_the_page_and_allowing_returns_the_original_input ... ok
+test remote::crypto::tests::both_sides_of_a_handshake_reach_the_same_keys ... ok
+test runner::tests::allowing_for_the_task_needs_a_rule_from_the_cli ... ok
+test runner::tests::answer_errors_distinguish_settlement_from_a_failed_answer ... ok
+test runner::tests::cancel_signals_the_running_turn ... ok
+test runner::tests::allowing_for_the_task_stays_in_the_session_and_carries_to_later_turns ... ok
+test runner::tests::ending_a_turn_releases_waiting_metadata_requests ... ok
+test runner::tests::ignores_subagent_output_and_unknown_lines ... ok
+test runner::tests::metadata_requests_use_the_running_process_without_a_user_message ... ok
+test runner::tests::new_tasks_use_a_session_id_and_existing_tasks_resume ... ok
+test runner::tests::only_a_new_task_starts_a_worktree ... ok
+test runner::tests::options_and_task_rules_become_flags_and_the_default_mode_adds_none ... ok
+test runner::tests::output_tokens_add_up_across_messages ... ok
+test runner::tests::parses_text_and_thinking_deltas ... ok
+test runner::tests::parses_tool_use_and_tool_result ... ok
+test runner::tests::prompts_are_sent_as_escaped_json ... ok
+test runner::tests::reads_context_usage_from_assistant_lines ... ok
+test runner::tests::rejects_options_that_could_become_other_flags ... ok
+test runner::tests::reports_errors_and_the_context_window_from_the_result ... ok
+test runner::tests::title_requests_are_ephemeral_and_disable_tools_and_hooks ... ok
+test runner::tests::requests_tandem_cannot_handle_are_still_answered ... ok
+test sessions::tests::a_compact_command_leaves_only_its_divider ... ok
+test sessions::tests::a_root_covers_itself_and_what_is_inside_it_only ... ok
+test sessions::tests::clipped_tool_input_stays_valid_json ... ok
+test sessions::tests::clips_long_output_on_a_character_boundary ... ok
+test remote::crypto::tests::matches_the_shared_pairing_vectors ... ok
+test remote::store::tests::a_damaged_file_starts_over ... ok
+test sessions::tests::context_comes_from_the_last_request_on_the_active_branch ... ok
+test sessions::tests::hides_background_task_notifications ... ok
+test sessions::tests::a_compaction_summary_is_a_marker_and_never_a_title ... ok
+test sessions::tests::image_tags_leave_the_text_alone_otherwise ... ok
+test sessions::tests::follows_the_logical_parent_across_compaction ... ok
+test sessions::tests::hides_sidechains_meta_lines_and_cli_bookkeeping ... ok
+test sessions::tests::lists_only_session_files_with_a_working_directory ... ok
+test remote::store::tests::saves_privately_and_loads_back ... ok
+test sessions::tests::drops_branches_abandoned_by_rewinding ... ok
+test sessions::tests::keeps_parallel_tool_calls_that_sit_beside_the_active_path ... ok
+test sessions::tests::missing_projects_directory_is_an_empty_list ... ok
+test sessions::tests::messages_carry_the_line_timestamp ... ok
+test sessions::tests::rejects_ids_that_are_not_uuids ... ok
+test sessions::tests::titles_skip_attached_file_lines_unless_nothing_else_is_there ... ok
+test sessions::tests::user_images_reach_the_page_only_as_plain_image_types ... ok
+test sessions::tests::prefers_custom_title_then_generated_title_then_first_prompt ... ok
+test sessions::tests::skips_a_partial_last_line ... ok
+test storage::config::tests::editing_project_paths_keeps_comments_inside_the_array ... ok
+test sessions::tests::reads_every_block_kind_in_order ... ok
+test storage::config::tests::changes_keep_comments_order_and_unrelated_manual_settings ... ok
+test sessions::tests::shows_what_the_user_typed_during_a_turn ... ok
+test storage::config::tests::syntax_types_and_invalid_values_are_rejected ... ok
+test remote::crypto::tests::signatures_are_bound_to_their_label_and_key ... ok
+test remote::tests::the_pairing_code_fits_in_a_qr_image ... ok
+test storage::tests::a_failed_state_quarantine_keeps_the_original_instead_of_replacing_it ... ok
+test storage::tests::gitignore_keeps_user_entries_and_adds_private_paths_once ... ok
+test storage::tests::missing_state_and_new_directory_are_immediately_writable ... ok
+test storage::tests::a_second_instance_is_read_only_and_cannot_quarantine_the_owners_state ... ok
+test storage::tests::manual_edits_apply_and_invalid_files_stay_intact_until_the_user_repairs_them ... ok
+test storage::tests::damaged_state_is_preserved_and_keeps_sending_available ... ok
+test storage::tests::unknown_state_fields_are_discarded_without_losing_known_values ... ok
+test titles::tests::a_complete_text_response_is_normalized ... ok
+test titles::tests::a_failed_or_tool_calling_response_never_becomes_a_title ... ok
+test storage::tests::removing_an_alias_and_unpinning_are_saved_without_reintroducing_old_state ... ok
+test storage::tests::state_commits_are_private_and_remote_context_comes_directly_from_backend_state ... ok
+test titles::tests::an_empty_or_tool_only_task_has_no_title_material ... ok
+test titles::tests::naming_jobs_are_per_task_and_release_their_slot_after_failure_or_completion ... ok
+test titles::tests::a_long_transcript_keeps_the_goal_and_recent_result_within_its_budget ... ok
+test storage::tests::settings_writes_read_unobserved_edits_and_refuse_invalid_unobserved_edits ... ok
+test titles::tests::native_name_replies_match_only_our_metadata_operations ... ok
+test titles::tests::native_name_requests_are_metadata_for_the_named_task ... ok
+test titles::tests::native_names_are_bounded_single_line_text ... ok
+test titles::tests::title_normalization_accepts_common_model_wrappers ... ok
+test titles::tests::titles_have_a_unicode_length_limit_and_require_usable_text ... ok
+test titles::tests::transcript_uses_conversation_text_and_keeps_images_as_markers ... ok
+test writers::tests::a_missing_folder_means_no_writers ... ok
+test titles::tests::unicode_message_clipping_keeps_complete_characters ... ok
+test writers::tests::a_held_codex_lock_is_a_writer_and_a_free_one_is_not ... ok
+test storage::tests::system_language_is_memory_only_and_explicit_language_remains_authoritative ... ok
+test writers::tests::only_real_markers_count ... ok
+test writers::tests::a_quiet_codex_turn_still_counts_as_running ... ok
+test storage::tests::state_damaged_after_startup_is_preserved_before_a_new_view_write ... ok
+test storage::tests::unknown_config_fields_warn_while_known_fields_apply_and_comments_survive ... ok
+test writers::tests::lists_live_sessions_and_skips_dead_ones_and_other_files ... ok
+test queue::delivery_tests::cli_receipts_control_queue_retention ... ok
+
+test result: ok. 193 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.07s
+
+
+
+Desktop clippy
+    Checking tandem v0.0.1 (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.33s
+
+
+Relay WebSocket tests
+
+> tandem-relay@0.1.0 test /Users/mingzaily/Code/golang/mingzaily/tandem/relay
+> cargo build --locked && tsx --test test/*.test.ts
+
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.18s
+✔ 相对配对期限支持完整五分钟，并按中转时间过期 (485.894958ms)
+✔ 准入令牌一次使用、过期、撤销与 hash 持久化 (104.370792ms)
+✔ 真实 relay + fake-host + PWA 协议层完成配对、重连、流式、确认、提问和撤销 (136.008375ms)
+✔ 首次握手被 disconnect 后，PWA 保留配对身份并自动重连 (1561.806084ms)
+✔ fake-host 对未知身份关闭 4410，其他已配对连接继续可用 (49.809584ms)
+✔ 转发隔离、覆盖 from、超大帧保持连接、host 替换 (42.347791ms)
+✔ 版本、准入超时和 IP 失败限制 (140.491542ms)
+✔ 房间隔离和每房间八台手机上限 (35.611666ms)
+✔ 持久令牌重启后恢复，HOST_OFFLINE 与重新上线 (21.708583ms)
+✔ 准入帧和硬上限在帧头处拒绝，不等待正文 (19.687417ms)
+✔ 全局连接上限包括尚未准入的连接 (147.81325ms)
+✔ allow 确认在长期令牌落盘后返回，disconnect 限定本房间 (39.82025ms)
+✔ 可信代理按 X-Forwarded-For 最后一段限流 (38.381791ms)
+✔ disconnect 区分可重连会话与需要重新配对的设备 (33.339042ms)
+✔ 损坏的准入文件在启动日志中报告路径与恢复办法 (27.409ms)
+✔ 准入文件读取失败有恢复提示，改名后重连可重新登记原令牌 (97.83325ms)
+✔ host data 必须带 to，配对令牌存活至多五分钟 (31.47375ms)
+✔ revoke 先发送已排队的最终回复，再发送关闭帧 (32.7205ms)
+✔ disconnect 先发送已排队的最终回复，再发送关闭帧 (28.305542ms)
+✔ WebSocket 自动回复 ping，超大二进制帧保留连接 (36.124792ms)
+ℹ tests 20
+ℹ suites 0
+ℹ pass 20
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 3580.495417
+
+
+Site tests
+
+> tandem-site@ test /Users/mingzaily/Code/golang/mingzaily/tandem/site
+> node --test test/*.test.mjs
+
+✔ built pages contain valid local navigation, fragments and no internal development documents (56.109041ms)
+✔ published PWA installs within its own path and preserves other applications caches (29.862083ms)
+ℹ tests 2
+ℹ suites 0
+ℹ pass 2
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 173.694917

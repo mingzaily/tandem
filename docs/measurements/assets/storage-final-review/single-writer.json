@@ -1,0 +1,10 @@
+{
+  "twoInstancesAliveAtVerification": true,
+  "rootFilesUnchanged": true,
+  "rejectedOperations": [
+    "update config",
+    "update state",
+    "load queues",
+    "send turn"
+  ]
+}

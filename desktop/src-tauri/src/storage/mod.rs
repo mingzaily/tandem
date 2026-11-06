@@ -2,7 +2,6 @@
 
 pub mod config;
 pub mod io;
-mod migration;
 
 use config::Config;
 use serde::{Deserialize, Serialize};
@@ -13,14 +12,13 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock, RwLockReadGuard};
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
-const MIGRATION_VERSION: u32 = 1;
 pub const CHANGED: &str = "preferences-changed";
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct TaskMeta {
     pub pins: Vec<String>,
     pub archived: Vec<String>,
@@ -28,15 +26,13 @@ pub struct TaskMeta {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase")]
 pub struct ViewState {
     pub task_meta: TaskMeta,
     pub project_order: Vec<String>,
     pub sidebar_collapsed: bool,
     pub sidebar_width: f64,
     pub projects_seeded: bool,
-    /// Written last, after all legacy data has been copied and configuration persisted.
-    pub migration_version: u32,
 }
 
 impl Default for ViewState {
@@ -47,7 +43,6 @@ impl Default for ViewState {
             sidebar_collapsed: false,
             sidebar_width: 260.,
             projects_seeded: false,
-            migration_version: 0,
         }
     }
 }
@@ -58,7 +53,6 @@ pub struct Snapshot {
     pub config: Config,
     pub state: ViewState,
     pub revision: u64,
-    pub migration_pending: bool,
     pub errors: Vec<String>,
 }
 
@@ -82,56 +76,52 @@ impl Snapshot {
 }
 
 struct Data {
-    migration_pending: bool,
     config: Config,
     state: ViewState,
     revision: u64,
     seen_config: Result<Option<Vec<u8>>, String>,
     config_error: Option<String>,
     state_error: Option<String>,
-    migration_error: Option<String>,
+    config_warnings: Vec<String>,
     write_error: Option<String>,
-    ownership: Option<File>,
     system_language: Option<String>,
 }
 
 pub struct Store {
     root: PathBuf,
-    legacy: PathBuf,
-    /// Every queue access takes a read permit. Migration takes the exclusive permit before
-    /// checking for active work and keeps it until the final state.json commit.
-    ready: RwLock<bool>,
+    // The open file holds the single-writer lock for this process's lifetime.
+    ownership: Result<File, String>,
     data: Mutex<Data>,
 }
 
 impl Store {
-    pub fn open(root: PathBuf, legacy: PathBuf) -> Self {
+    pub fn open(root: PathBuf) -> Self {
         let ownership = acquire(&root);
-        let seen_config = io::read_optional(&root.join("config.toml"));
-        let loaded_config = decode_config(&seen_config);
-        let loaded_state = read_state(&root.join("state.json"));
-        let ready = ownership.is_ok()
-            && loaded_state
-                .as_ref()
-                .is_ok_and(|state| state.migration_version == MIGRATION_VERSION);
-        let data = Data {
-            migration_pending: !ready,
-            config: loaded_config.clone().unwrap_or_default(),
-            state: loaded_state.clone().unwrap_or_default(),
-            revision: 0,
-            seen_config,
-            config_error: loaded_config.err(),
-            state_error: loaded_state.err(),
-            migration_error: ownership.as_ref().err().cloned(),
-            write_error: None,
-            ownership: ownership.ok(),
-            system_language: None,
+        let mut seen_config = io::read_optional(&root.join("config.toml"));
+        if ownership.is_ok() && matches!(seen_config, Ok(None)) {
+            seen_config = io::atomic_write(&root.join("config.toml"), config::TEMPLATE.as_bytes())
+                .map(|()| Some(config::TEMPLATE.as_bytes().to_vec()));
+        }
+        let (config, config_warnings, config_error) = match decode_config(&seen_config) {
+            Ok((config, warnings)) => (config, warnings, None),
+            Err(error) => (Config::default(), Vec::new(), Some(error)),
         };
+        let (state, state_error) = read_state(&root.join("state.json"), ownership.is_ok())
+            .unwrap_or_else(|error| (ViewState::default(), Some(error)));
         Self {
             root,
-            legacy,
-            ready: RwLock::new(ready),
-            data: Mutex::new(data),
+            ownership,
+            data: Mutex::new(Data {
+                config,
+                state,
+                config_warnings,
+                config_error,
+                state_error,
+                revision: 0,
+                seen_config,
+                write_error: None,
+                system_language: None,
+            }),
         }
     }
 
@@ -140,25 +130,24 @@ impl Store {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        snapshot(&self.data.lock().expect("preferences mutex"))
+        snapshot(
+            &self.data.lock().expect("preferences mutex"),
+            self.ownership.as_ref().err(),
+        )
     }
 
-    pub fn permit(&self) -> Result<RwLockReadGuard<'_, bool>, String> {
-        let ready = self.ready.read().map_err(|error| error.to_string())?;
-        if !*ready {
-            return Err("本地数据尚未就绪，请处理存储提示后重试迁移".into());
-        }
-        Ok(ready)
+    pub fn ensure_writable(&self) -> Result<(), String> {
+        self.ownership.as_ref().map(|_| ()).map_err(Clone::clone)
     }
 
-    pub fn is_ready(&self) -> bool {
-        *self.ready.read().expect("storage gate")
+    pub fn is_writable(&self) -> bool {
+        self.ownership.is_ok()
     }
 
     /// Malformed hand edits stay on disk. Settings writes read and validate that same file,
     /// so an unnoticed invalid edit is protected as well as one the watcher already reported.
     pub fn update(&self, target: &str, patch: Map<String, Value>) -> Result<Snapshot, String> {
-        let _permit = self.permit()?;
+        self.ensure_writable()?;
         let mut data = self.data.lock().map_err(|error| error.to_string())?;
         let result = match target {
             "config" => self.update_config(&mut data, patch),
@@ -171,7 +160,7 @@ impl Store {
             .map(|error| format!("保存本地设置失败：{error}"));
         data.revision += 1;
         result
-            .map(|()| snapshot(&data))
+            .map(|()| snapshot(&data, self.ownership.as_ref().err()))
             .map_err(|error| format!("保存本地设置失败：{error}"))
     }
 
@@ -189,16 +178,17 @@ impl Store {
         io::atomic_write(&self.root.join("config.toml"), &bytes)?;
         data.config = config;
         data.config_error = None;
+        data.config_warnings = config::warnings(&document);
         data.seen_config = Ok(Some(bytes));
         Ok(())
     }
 
     fn update_state(&self, data: &mut Data, patch: Map<String, Value>) -> Result<(), String> {
-        if patch.contains_key("migrationVersion") {
-            return Err("迁移版本由后端维护".into());
+        let (current, error) = read_state(&self.root.join("state.json"), true)?;
+        if error.is_some() {
+            data.state_error = error;
         }
-        let mut value = serde_json::to_value(read_state(&self.root.join("state.json"))?)
-            .expect("view state serializes");
+        let mut value = serde_json::to_value(current).expect("view state serializes");
         config::merge(&mut value, &Value::Object(patch));
         let state: ViewState = serde_json::from_value(value).map_err(|error| error.to_string())?;
         if !state.sidebar_width.is_finite() || !(180.0..=480.0).contains(&state.sidebar_width) {
@@ -209,23 +199,21 @@ impl Store {
             &serde_json::to_vec_pretty(&state).expect("view state serializes"),
         )?;
         data.state = state;
-        data.state_error = None;
         Ok(())
     }
 
     /// Polls only the small config file. Comparing contents also catches replacements by editors
     /// that preserve a file's timestamp. File IO runs outside the UI thread.
     pub fn poll(&self) -> Option<Snapshot> {
-        // The watcher waits outside the data mutex while a migration owns the files.
-        let _permit = self.ready.read().expect("storage gate");
         let mut data = self.data.lock().expect("preferences mutex");
         let seen = io::read_optional(&self.root.join("config.toml"));
         if seen == data.seen_config {
             return None;
         }
         match decode_config(&seen) {
-            Ok(config) => {
+            Ok((config, warnings)) => {
                 data.config = config;
+                data.config_warnings = warnings;
                 data.config_error = None;
                 data.write_error = None;
             }
@@ -236,94 +224,7 @@ impl Store {
         }
         data.seen_config = seen;
         data.revision += 1;
-        Some(snapshot(&data))
-    }
-
-    pub fn migrate(
-        &self,
-        legacy_page: HashMap<String, String>,
-        idle: impl FnOnce() -> Result<(), String>,
-        other_instance: impl Fn() -> Result<(), String>,
-        activate: impl FnOnce(),
-    ) -> Result<Snapshot, String> {
-        let mut ready = self.ready.write().map_err(|error| error.to_string())?;
-        let was_ready = *ready;
-        let result: Result<Option<(Config, ViewState)>, String> = (|| {
-            let mut data = self.data.lock().map_err(|error| error.to_string())?;
-            if data.ownership.is_none() {
-                data.ownership = Some(acquire(&self.root)?);
-                // The previous owner may have changed both files while this window waited.
-                data.state = read_state(&self.root.join("state.json"))?;
-                data.seen_config = io::read_optional(&self.root.join("config.toml"));
-                match decode_config(&data.seen_config) {
-                    Ok(config) => {
-                        data.config = config;
-                        data.config_error = None;
-                    }
-                    Err(error) => data.config_error = Some(error),
-                }
-            }
-            if data.state.migration_version == MIGRATION_VERSION {
-                return Ok(None);
-            }
-            // Configuration reads and window creation stay available during image copying.
-            drop(data);
-            idle()?;
-            other_instance()?;
-            migration::run(&self.root, &self.legacy, legacy_page, other_instance).map(Some)
-        })();
-        let mut data = self.data.lock().map_err(|error| error.to_string())?;
-        if let Ok(Some((config, state))) = &result {
-            data.config = config.clone();
-            data.state = state.clone();
-            data.config_error = None;
-            data.state_error = None;
-            data.seen_config = io::read_optional(&self.root.join("config.toml"));
-        }
-        drop(data);
-        // Consumers reload their memory while all disk writers are still fenced. Otherwise
-        // a waiting remote-settings write could replace the newly migrated pairing keys.
-        if result.is_ok() && !was_ready {
-            activate();
-        }
-        let mut data = self.data.lock().map_err(|error| error.to_string())?;
-        data.migration_error = result
-            .as_ref()
-            .err()
-            .map(|error| format!("本地数据迁移暂停：{error}。旧数据已保留，可修正后重试"));
-        *ready = result.is_ok();
-        data.migration_pending = result.is_err();
-        data.revision += 1;
-        result.map(|_| snapshot(&data)).map_err(|_| {
-            data.migration_error
-                .clone()
-                .expect("failed migration has an error")
-        })
-    }
-
-    pub fn preview(&self, legacy_page: HashMap<String, String>) -> Result<Snapshot, String> {
-        let ready = self.ready.write().map_err(|error| error.to_string())?;
-        let mut data = self.data.lock().map_err(|error| error.to_string())?;
-        if *ready || data.ownership.is_none() {
-            return Ok(snapshot(&data));
-        }
-        let result = migration::prepare(&self.root, legacy_page).map(|prepared| {
-            data.config = prepared.config;
-            data.state = prepared.state;
-            data.seen_config = io::read_optional(&self.root.join("config.toml"));
-            data.config_error = None;
-            data.state_error = None;
-        });
-        data.migration_error = result
-            .as_ref()
-            .err()
-            .map(|error| format!("读取旧配置失败：{error}。旧数据已保留，请修正后重试迁移"));
-        data.revision += 1;
-        result.map(|()| snapshot(&data)).map_err(|_| {
-            data.migration_error
-                .clone()
-                .expect("failed preview has an error")
-        })
+        Some(snapshot(&data, self.ownership.as_ref().err()))
     }
 
     pub fn remote_context(&self) -> crate::remote::Context {
@@ -376,7 +277,7 @@ impl Store {
     }
 }
 
-fn decode_config(bytes: &Result<Option<Vec<u8>>, String>) -> Result<Config, String> {
+fn decode_config(bytes: &Result<Option<Vec<u8>>, String>) -> Result<(Config, Vec<String>), String> {
     let bytes = bytes.as_ref().map_err(Clone::clone)?;
     let text = bytes
         .as_deref()
@@ -384,33 +285,52 @@ fn decode_config(bytes: &Result<Option<Vec<u8>>, String>) -> Result<Config, Stri
         .transpose()
         .map_err(|error| format!("config.toml 编码错误：{error}"))?
         .unwrap_or("");
-    config::parse(text).map(|(_, config)| config)
+    config::parse(text).map(|(document, config)| (config, config::warnings(&document)))
 }
 
-fn read_state(path: &Path) -> Result<ViewState, String> {
-    let Some(bytes) = io::read_optional(path)? else {
-        return Ok(ViewState::default());
-    };
-    serde_json::from_slice(&bytes)
-        .map_err(|error| format!("state.json 读取失败：{error}，原文件已保留"))
+fn read_state(path: &Path, writable: bool) -> Result<(ViewState, Option<String>), String> {
+    let result = io::read_optional(path).and_then(|bytes| match bytes {
+        Some(bytes) => serde_json::from_slice(&bytes).map_err(|error| error.to_string()),
+        None => Ok(ViewState::default()),
+    });
+    match result {
+        Ok(state) => Ok((state, None)),
+        Err(error) => {
+            let preservation = if writable {
+                let corrupt = path.with_extension(format!("json.{}.corrupt", uuid::Uuid::new_v4()));
+                match fs::rename(path, &corrupt) {
+                    Ok(()) => format!("已保留到 {}", corrupt.display()),
+                    Err(rename_error) => return Err(format!(
+                        "读取 {} 失败：{error}。原文件保留，改名失败：{rename_error}。请检查原路径和目录权限，界面状态保存暂不可用",
+                        path.display()
+                    )),
+                }
+            } else {
+                "原文件保留，此实例为只读".into()
+            };
+            Ok((
+                ViewState::default(),
+                Some(format!(
+                    "读取 {} 失败：{error}。{preservation}。界面状态已恢复为默认值",
+                    path.display()
+                )),
+            ))
+        }
+    }
 }
 
-fn snapshot(data: &Data) -> Snapshot {
+fn snapshot(data: &Data, ownership_error: Option<&String>) -> Snapshot {
     Snapshot {
         config: data.config.clone(),
         state: data.state.clone(),
         revision: data.revision,
-        migration_pending: data.migration_pending,
-        errors: [
-            &data.config_error,
-            &data.state_error,
-            &data.migration_error,
-            &data.write_error,
-        ]
-        .into_iter()
-        .flatten()
-        .cloned()
-        .collect(),
+        errors: [&data.config_error, &data.state_error, &data.write_error]
+            .into_iter()
+            .flatten()
+            .chain(ownership_error)
+            .chain(&data.config_warnings)
+            .cloned()
+            .collect(),
     }
 }
 
@@ -426,15 +346,38 @@ fn acquire(root: &Path) -> Result<File, String> {
         .map_err(|error| error.to_string())?;
     // flock protects all Tandem-owned writers across processes; the open file owns the lock.
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("另一个 Tandem 正在使用本地数据，请先退出另一个 Tandem，再重试迁移".into());
+        return Err("另一个 Tandem 正在使用本地数据，请先退出另一个 Tandem，重新打开此窗口".into());
     }
-    migration::ensure_gitignore(root)?;
+    ensure_gitignore(root)?;
     match fs::set_permissions(root.join("remote.json"), fs::Permissions::from_mode(0o600)) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("保护 remote.json 失败：{error}")),
     }
     Ok(file)
+}
+
+pub fn ensure_gitignore(root: &Path) -> Result<(), String> {
+    let path = root.join(".gitignore");
+    let mut text = io::read_optional(&path)?
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or_default();
+    let original = text.clone();
+    for entry in ["/remote.json", "/cache/", "/.storage.lock", ".tmp*"] {
+        if !text.lines().any(|line| line == entry) {
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(entry);
+            text.push('\n');
+        }
+    }
+    if text != original {
+        io::atomic_write(&path, text.as_bytes())?;
+    }
+    Ok(())
 }
 
 pub fn publish(app: &AppHandle) {
@@ -456,37 +399,6 @@ pub fn watch(app: AppHandle) {
             publish(&app);
         }
     });
-}
-
-/// Older builds predate the storage lock. Migrating while one is alive could split its queue
-/// from the copied queue, so migration waits for that process to exit.
-pub fn check_legacy_instance() -> Result<(), String> {
-    #[cfg(debug_assertions)]
-    if std::env::var_os("TANDEM_DRIVE_DATA_DIR").is_some() {
-        return Ok(());
-    }
-    let output = std::process::Command::new("/bin/ps")
-        .args(["-axo", "pid=,comm="])
-        .output()
-        .map_err(|error| format!("检查旧窗口失败：{error}"))?;
-    if !output.status.success() {
-        return Err("读取进程列表失败，请重试迁移".into());
-    }
-    let own = std::process::id().to_string();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let line = line.trim();
-        let Some((pid, command)) = line.split_once(char::is_whitespace) else {
-            continue;
-        };
-        if pid != own
-            && Path::new(command.trim())
-                .file_name()
-                .is_some_and(|name| name == "tandem" || name == "Tandem")
-        {
-            return Err("旧版 Tandem 仍在运行，请先结束其中的任务并退出旧版应用".into());
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

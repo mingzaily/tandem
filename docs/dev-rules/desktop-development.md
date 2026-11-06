@@ -35,7 +35,7 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 测试窗口要关掉通知（`notifyWhenDone: false`），否则会弹到用户屏幕上。每批结束删掉测试任务（Claude 的项目目录、Pi 的会话目录、Codex 的 `thread/delete`）。
 
-测试脚本改过的 `localStorage` 要在结束时还原。同一应用标识的页面共用 WebKit 数据；Tandem 文件默认统一到 `~/.tandem/`，替身验收必须设置独立 DATA_DIR 和 LEGACY_DIR。Codex 的实测会写进用户真实的 `~/.codex`：测完用 `thread/delete` 删掉测试线程，并比较 `config.toml` 的哈希。
+页面只在内存保存状态，测试脚本通过后端命令设置配置，不读写 `localStorage`。同一应用标识共用 WebKit 运行数据，替身验收使用独立 `productName`、`identifier` 和 `TANDEM_DRIVE_DATA_DIR`，只操作临时目录。需要测真实 Codex 时也用临时 `CODEX_HOME`，结束后通过 `thread/delete` 删除测试线程。每批检查用户 CLI 配置的哈希。
 
 `TANDEM_DRIVE_PANEL=1` 打开菜单栏面板，测试点不了菜单栏图标。`TANDEM_DRIVE_CLOSE=<秒>` 到时间关主窗口，和点红色按钮走同一条路。`TANDEM_DRIVE_PAIR_FILE=<路径>` 把配对码写到文件，`TANDEM_DRIVE_PAIR_ALLOW=1` 代答配对弹窗，这几个都只在调试版生效。
 
@@ -43,9 +43,9 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 `TANDEM_DRIVE_ATTACH=路径:路径` 按拖入窗口的方式送入附件，系统文件对话框驱动不了时用它测试。
 
-`TANDEM_DRIVE_DATA_DIR=<临时目录>` 隔离整个 `~/.tandem/`，`TANDEM_DRIVE_LEGACY_DIR=<临时目录>` 注入旧 Application Support 来源。迁移验收必须同时设置这两个入口；它们只编译进调试版。`TANDEM_DRIVE_QUEUE_DIR=<临时目录>` 仍可单独隔离队列，完整存储验收优先使用 DATA_DIR。`TANDEM_DRIVE_REPORT=<路径>` 将页面发出的 `drive-report` 事件逐条写成 JSON 行，便于备份 localStorage 和记录断言结果。这些入口均只在调试版启用，报告路径由启动环境指定。替身测试同时把 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 指向临时目录，测试完成后恢复 localStorage 并删除替身任务。
+`TANDEM_DRIVE_DATA_DIR=<临时目录>` 隔离整个 `~/.tandem/`，仅在调试版生效。`TANDEM_DRIVE_QUEUE_DIR=<临时目录>` 可单独隔离队列，完整存储验收优先使用 DATA_DIR。`TANDEM_DRIVE_REPORT=<路径>` 将页面发出的 `drive-report` 事件逐条写成 JSON 行，报告路径由启动环境指定。替身测试同时把 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 指向临时目录，结束后删除替身任务、数据和测试专用 WebKit 配置目录。
 
-替身测试的调试构建使用独立应用标识以隔离 WebKit 的 localStorage，并用 DATA_DIR、LEGACY_DIR 隔离文件存储：`pnpm tauri build --debug --bundles app --config '{"identifier":"com.mingzaily.tandem.model-audit"}'`。仍需在测试前备份、测试后恢复该测试页面的 localStorage。正式版按上面的常规命令构建，使用仓库配置中的应用标识。
+替身测试的调试构建使用独立应用名称和标识：`pnpm tauri build --debug --bundles app --config '{"productName":"Tandem Audit","identifier":"com.mingzaily.tandem.audit"}'`。用 DATA_DIR 隔离文件存储；测试首次启动可直接使用空目录。正式版按上面的常规命令构建，使用仓库配置中的应用标识。
 
 多个调试包使用独立的 `productName` 与 `identifier`。同名包反复采用不同标识时，系统的应用路径缓存会让截图工具仍按旧标识查找；独立名称让工具准确定位测试实例。
 

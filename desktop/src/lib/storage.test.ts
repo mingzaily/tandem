@@ -11,12 +11,12 @@ const snapshot = (): PreferencesSnapshot => structuredClone(DEFAULT_SNAPSHOT);
 afterEach(() => { vi.doUnmock('./api'); vi.unstubAllGlobals(); vi.resetModules(); });
 
 describe('backend-owned preferences', () => {
-  it('reads the injected theme synchronously and never reads normal preferences from localStorage', async () => {
+  it('reads the injected theme synchronously and never reads normal preferences from browser persistence', async () => {
     const initial = snapshot();
     initial.config.theme = 'dark';
     initial.config.ui_font_size = 16;
     vi.stubGlobal('window', { __TANDEM_PREFERENCES__: initial });
-    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('legacy storage must not be read'); } });
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('browser persistence must not be read'); } });
     vi.resetModules();
     const { loadSettings } = await import('./settings');
     expect(loadSettings()).toMatchObject({ theme: 'dark', uiFontSize: 16 });
@@ -94,42 +94,4 @@ describe('backend-owned preferences', () => {
     expect(memory.get().state.taskMeta).toBe(initial.state.taskMeta);
   });
 
-  it('only exports the migration allowlist and leaves the previous version intact', async () => {
-    const values = { 'tandem.settings': '{"theme":"dark"}', 'unrelated': 'leave here' };
-    const getItem = vi.fn((key: string) => values[key as keyof typeof values] ?? null);
-    const setItem = vi.fn();
-    const removeItem = vi.fn();
-    vi.stubGlobal('localStorage', { getItem, setItem, removeItem });
-    const { legacyPreferences } = await import('./storage');
-    expect(legacyPreferences()).toEqual({ 'tandem.settings': '{"theme":"dark"}' });
-    expect(getItem).not.toHaveBeenCalledWith('unrelated');
-    expect(setItem).not.toHaveBeenCalled();
-    expect(removeItem).not.toHaveBeenCalled();
-  });
-
-  it('prepares the first appearance before painting and copies queue files without holding up startup', async () => {
-    const copying = deferred<PreferencesSnapshot>();
-    const initial = snapshot();
-    initial.migrationPending = true;
-    const preview = structuredClone(initial);
-    preview.revision = 1;
-    preview.config.theme = 'dark';
-    const migrate = vi.fn(() => copying.promise);
-    vi.doMock('./api', () => ({
-      readPreferences: async () => initial, onPreferencesChanged: async () => () => {},
-      setSystemLanguage: async () => {}, previewPreferences: async () => preview,
-      migratePreferences: migrate, updatePreferences: vi.fn(),
-    }));
-    vi.stubGlobal('localStorage', { getItem: () => null });
-    vi.stubGlobal('window', { __TANDEM_PREFERENCES__: initial, addEventListener: vi.fn() });
-    vi.stubGlobal('navigator', { language: 'zh-CN' });
-    vi.resetModules();
-    const storage = await import('./storage');
-    await storage.connectPreferences(true);
-    expect(storage.preferencesMemory.confirmed().config.theme).toBe('dark');
-    expect(storage.preferencesSnapshot().migrationPending).toBe(true);
-    expect(migrate).toHaveBeenCalledTimes(1);
-    copying.resolve({ ...preview, revision: 2, migrationPending: false });
-    await vi.waitFor(() => expect(storage.preferencesSnapshot().migrationPending).toBe(false));
-  });
 });

@@ -1,0 +1,92 @@
+   Compiling tandem v0.0.1 (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 18.52s
+     Running unittests src/main.rs (target/debug/deps/tandem-06423a8949c30ae2)
+
+running 20 tests
+
+thread 'storage::tests::damaged_state_is_preserved_and_keeps_sending_available' (160734635) panicked at src/storage/tests.rs:15:9:
+view state must not block sending
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test storage::tests::damaged_state_is_preserved_and_keeps_sending_available ... FAILED
+test storage::tests::existing_toml_values_win_and_injected_configuration_is_safely_serialized ... ok
+test storage::tests::a_busy_task_or_old_process_defers_migration_without_writing_new_data ... ok
+test storage::tests::manual_config_edits_during_migration_are_reloaded_before_commit ... ok
+test storage::tests::measure_large_queue_migration ... ignored, explicit filesystem performance measurement
+test storage::tests::exclusive_migration_blocks_queue_writers_and_a_second_app_cannot_write ... ok
+test storage::tests::a_corrupt_source_or_state_never_gets_a_completion_marker_or_overwrites_user_data ... ok
+thread 'storage::tests::missing_state_and_new_directory_are_immediately_writable' (160734680) panicked at src/storage/tests.rs:30:5:
+assertion failed: store.permit().is_ok()
+
+test storage::tests::missing_state_and_new_directory_are_immediately_writable ... FAILED
+test storage::tests::a_waiting_window_reloads_the_previous_owners_configuration_and_view_state ... ok
+test storage::tests::manual_edits_apply_and_invalid_files_stay_intact_until_the_user_repairs_them ... ok
+test storage::tests::preference_preview_keeps_the_original_appearance_without_committing_migration ... ok
+test storage::tests::failed_copy_keeps_sources_and_can_retry_after_a_partial_attempt ... ok
+
+thread 'storage::tests::unknown_state_fields_are_discarded_without_losing_known_values' (160734717) panicked at src/storage/tests.rs:41:9:
+called `Result::unwrap()` on an `Err` value: Error("unknown field `futureView`, expected one of `taskMeta`, `projectOrder`, `sidebarCollapsed`, `sidebarWidth`, `projectsSeeded`, `migrationVersion`", line: 0, column: 0)
+test storage::tests::unknown_state_fields_are_discarded_without_losing_known_values ... FAILED
+test storage::tests::migrated_consumers_are_activated_before_waiting_writers_resume ... ok
+test storage::tests::system_language_is_memory_only_and_explicit_language_remains_authoritative ... ok
+test storage::tests::settings_writes_read_unobserved_edits_and_refuse_invalid_unobserved_edits ... ok
+test storage::tests::removing_an_alias_and_unpinning_are_saved_without_reintroducing_old_state ... ok
+
+thread 'storage::tests::unknown_config_fields_warn_while_known_fields_apply_and_comments_survive' (160734710) panicked at src/storage/tests.rs:55:5:
+assertion `left == right` failed
+  left: "system"
+ right: "dark"
+test storage::tests::unknown_config_fields_warn_while_known_fields_apply_and_comments_survive ... FAILED
+test storage::tests::state_commits_are_private_and_remote_context_comes_directly_from_backend_state ... ok
+test storage::tests::migrates_page_files_images_and_keys_once_and_keeps_the_previous_version ... ok
+
+failures:
+
+failures:
+    storage::tests::damaged_state_is_preserved_and_keeps_sending_available
+    storage::tests::missing_state_and_new_directory_are_immediately_writable
+    storage::tests::unknown_config_fields_warn_while_known_fields_apply_and_comments_survive
+    storage::tests::unknown_state_fields_are_discarded_without_losing_known_values
+
+test result: FAILED. 15 passed; 4 failed; 1 ignored; 0 measured; 183 filtered out; finished in 0.48s
+
+error: test failed, to rerun pass `--bin tandem`
+
+   Compiling tandem-relay v0.1.0 (/Users/mingzaily/Code/golang/mingzaily/tandem/relay)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 5.64s
+     Running unittests src/lib.rs (target/debug/deps/tandem_relay-90ae9d3b051e80ed)
+
+running 1 test
+
+thread 'store::tests::unreadable_grants_report_path_and_recovery_without_exposing_contents' (160733799) panicked at src/store.rs:145:9:
+Is a directory (os error 21)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test store::tests::unreadable_grants_report_path_and_recovery_without_exposing_contents ... FAILED
+
+failures:
+
+failures:
+    store::tests::unreadable_grants_report_path_and_recovery_without_exposing_contents
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.01s
+
+error: test failed, to rerun pass `--lib`
+
+   Compiling tandem v0.0.1 (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.21s
+     Running unittests src/main.rs (target/debug/deps/tandem-06423a8949c30ae2)
+
+running 1 test
+
+thread 'storage::tests::a_failed_state_quarantine_keeps_the_original_instead_of_replacing_it' (160853038) panicked at src/storage/tests.rs:124:5:
+a failed quarantine must preserve the original
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test storage::tests::a_failed_state_quarantine_keeps_the_original_instead_of_replacing_it ... FAILED
+
+failures:
+
+failures:
+    storage::tests::a_failed_state_quarantine_keeps_the_original_instead_of_replacing_it
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 193 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `--bin tandem`

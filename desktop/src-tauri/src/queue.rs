@@ -178,12 +178,6 @@ pub struct Store {
 }
 
 impl Store {
-    pub fn ensure_idle(&self) -> Result<(), String> {
-        let state = self.state.lock().map_err(|error| error.to_string())?;
-        if state.active.is_empty() && state.locks.is_empty() && state.queues.values().all(|queue| queue.in_flight.is_none()) { Ok(()) }
-        else { Err("队列仍在发送或编辑，结束后再迁移本地数据".into()) }
-    }
-
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -269,11 +263,7 @@ impl Store {
                     queue.paused = false;
                     queue.error = None;
                 }
-                let migrating = queue
-                    .all_entries()
-                    .flat_map(|entry| &entry.attachments)
-                    .any(SavedAttachment::has_inline_image);
-                if recovering || migrating || empty {
+                if recovering || empty {
                     let save_error = self.save(&mut queue).err();
                     if let Some(error) = &save_error {
                         queue.paused = true;
@@ -798,7 +788,7 @@ pub async fn access<T: Send + 'static>(
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let storage = app.state::<crate::storage::Store>();
-        let _permit = storage.permit()?;
+        storage.ensure_writable()?;
         let store = app.state::<Store>();
         let result = work(store.inner());
         for error in store.take_errors()? {
@@ -845,22 +835,18 @@ impl Observed {
 pub async fn dispatch(
     app: &AppHandle,
     agent: Agent,
-    task_id: Option<String>,
-    cwd: Option<String>,
-    prompt: String,
-    attachments: Prepared,
-    options: TurnOptions,
+    request: codex::TurnRequest,
     sink: TurnSink,
 ) -> Result<(), String> {
-    // New tasks have no queue to reserve yet, but obey the same migration gate.
-    { let storage = app.state::<crate::storage::Store>(); let _permit = storage.permit()?; }
-    if let Some(id) = task_id.clone() {
+    // All new tasks obey the single-writer lock before creating a queue.
+    { let storage = app.state::<crate::storage::Store>(); storage.ensure_writable()?; }
+    if let Some(id) = request.task_id.clone() {
         if let Some(snapshot) = access(app, move |store| store.reserve(&id, agent)).await? {
             announce(app, &snapshot);
         }
     }
     let (result, observed) =
-        run_reserved(app, agent, task_id, cwd, prompt, attachments, options, sink).await?;
+        run_reserved(app, agent, request, sink).await?;
     if let Some(id) = observed.task_id {
         let next = id.clone();
         let success = observed.success && result.is_ok();
@@ -880,13 +866,10 @@ pub async fn dispatch(
 async fn run_reserved(
     app: &AppHandle,
     agent: Agent,
-    task_id: Option<String>,
-    cwd: Option<String>,
-    prompt: String,
-    attachments: Prepared,
-    options: TurnOptions,
+    request: codex::TurnRequest,
     sink: TurnSink,
 ) -> Result<(Result<(), String>, Observed), String> {
+    let codex::TurnRequest { task_id, cwd, prompt, attachments, options } = request;
     let observed = Arc::new(Mutex::new(Observed {
         task_id: task_id.clone(),
         ..Default::default()
@@ -1008,11 +991,11 @@ async fn drain(app: &AppHandle, id: &str) -> Result<(), String> {
                 run_reserved(
                     app,
                     agent,
-                    Some(id.to_owned()),
-                    None,
-                    entry.prompt.clone(),
-                    prepared,
-                    entry.options.clone(),
+                    codex::TurnRequest {
+                        task_id: Some(id.to_owned()), cwd: None,
+                        prompt: entry.prompt.clone(), attachments: prepared,
+                        options: entry.options.clone(),
+                    },
                     sink,
                 )
                 .await?
@@ -1185,7 +1168,7 @@ mod tests {
     }
 
     #[test]
-    fn loading_cleans_legacy_empty_queue_files() {
+    fn loading_cleans_empty_queue_files() {
         let dir = tempfile::tempdir().unwrap();
         let queue = store(&dir);
         let task = id();
@@ -1228,7 +1211,7 @@ mod tests {
         let attachment_id = image["id"].as_str().unwrap().to_owned();
         let head = Entry::new(
             "image".into(),
-            attachments.capture(&[attachment_id.clone()]).unwrap(),
+            attachments.capture(std::slice::from_ref(&attachment_id)).unwrap(),
             TurnOptions::default(),
         )
         .unwrap();
@@ -1249,6 +1232,13 @@ mod tests {
             preview["preview"],
             format!("queue-image://localhost/{task}/{attachment_id}")
         );
+        assert_eq!(
+            queue.image(&format!("/{task}/{attachment_id}")).unwrap(),
+            ("image/png", bytes.to_vec())
+        );
+        for invalid in ["/../secret", &format!("/{task}/../secret"), &format!("/{task}/%2Fsecret")] {
+            assert!(queue.image(invalid).is_err());
+        }
         queue.edit(&task, &entry_id, "edited".into()).unwrap();
         assert_eq!(
             fs::metadata(&image_path).unwrap().modified().unwrap(),
@@ -1275,7 +1265,7 @@ mod tests {
         ).unwrap();
         let image_id = image["id"].as_str().unwrap().to_owned();
         queue.enqueue(&task, Agent::Claude, Entry::new(
-            "live image".into(), attachments.capture(&[image_id.clone()]).unwrap(), TurnOptions::default(),
+            "live image".into(), attachments.capture(std::slice::from_ref(&image_id)).unwrap(), TurnOptions::default(),
         ).unwrap()).unwrap();
         let (_, sent, _) = queue.claim(&task).unwrap().unwrap();
         let (_prepared, view) = sent.prepare(&queue.image_dir(&task)).unwrap();
@@ -1304,7 +1294,7 @@ mod tests {
                 Agent::Claude,
                 Entry::new(
                     "keep image".into(),
-                    attachments.capture(&[attachment_id.clone()]).unwrap(),
+                    attachments.capture(std::slice::from_ref(&attachment_id)).unwrap(),
                     TurnOptions::default(),
                 )
                 .unwrap(),
@@ -1320,104 +1310,6 @@ mod tests {
             .enqueue(&task, Agent::Claude, entry("new send"))
             .unwrap();
         assert!(image_path.exists(), "quarantined metadata lost its image");
-    }
-
-    #[test]
-    fn legacy_inline_images_migrate_once_and_use_the_restricted_preview_protocol() {
-        let dir = tempfile::tempdir().unwrap();
-        let queue = store(&dir);
-        let task = id();
-        let attachments = Attachments::default();
-        let bytes = [0x89, b'P', b'N', b'G', 13, 10];
-        let image = serde_json::to_value(
-            attachments
-                .add_pasted_image(&STANDARD.encode(bytes))
-                .unwrap(),
-        )
-        .unwrap();
-        let image_id = image["id"].as_str().unwrap().to_owned();
-        let legacy = TaskQueue {
-            task_id: task.clone(),
-            agent: Agent::Claude,
-            entries: vec![Entry::new(
-                "legacy".into(),
-                attachments.capture(&[image_id.clone()]).unwrap(),
-                TurnOptions::default(),
-            )
-            .unwrap()],
-            in_flight: None,
-            paused: false,
-            error: None,
-            revision: 1,
-        };
-        fs::create_dir_all(&queue.root).unwrap();
-        let path = queue.root.join(format!("{task}.json"));
-        fs::write(&path, serde_json::to_vec(&legacy).unwrap()).unwrap();
-        let snapshot = queue.list().unwrap().remove(0);
-        assert!(snapshot.paused);
-        assert!(!fs::read_to_string(&path)
-            .unwrap()
-            .contains(&STANDARD.encode(bytes)));
-        assert_eq!(
-            queue.image(&format!("/{task}/{image_id}")).unwrap(),
-            ("image/png", bytes.to_vec())
-        );
-        assert!(queue.image("/../secret").is_err());
-        assert!(queue.image(&format!("/{task}/../secret")).is_err());
-        assert!(queue.image(&format!("/{task}/%2Fsecret")).is_err());
-    }
-
-    #[test]
-    fn image_migration_failure_pauses_only_its_queue_and_keeps_legacy_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let queue = store(&dir);
-        let task = id();
-        let healthy = id();
-        let attachments = Attachments::default();
-        let image = serde_json::to_value(
-            attachments
-                .add_pasted_image(&STANDARD.encode([0x89, b'P', b'N', b'G']))
-                .unwrap(),
-        )
-        .unwrap();
-        let image_id = image["id"].as_str().unwrap().to_owned();
-        let legacy = TaskQueue {
-            task_id: task.clone(),
-            agent: Agent::Claude,
-            entries: vec![Entry::new(
-                "legacy".into(),
-                attachments.capture(&[image_id]).unwrap(),
-                TurnOptions::default(),
-            )
-            .unwrap()],
-            in_flight: None,
-            paused: false,
-            error: None,
-            revision: 1,
-        };
-        queue
-            .enqueue(&healthy, Agent::Claude, entry("healthy"))
-            .unwrap();
-        let path = queue.root.join(format!("{task}.json"));
-        let bytes = serde_json::to_vec(&legacy).unwrap();
-        fs::write(&path, &bytes).unwrap();
-        fs::write(queue.root.join("images"), b"blocked").unwrap();
-        drop(queue);
-        let restarted = store(&dir);
-        let snapshots = restarted.list().unwrap();
-        assert_eq!(snapshots.len(), 2);
-        assert!(snapshots
-            .iter()
-            .find(|q| q.task_id == task)
-            .unwrap()
-            .error
-            .is_some());
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        restarted.resume(&healthy).unwrap();
-        assert_eq!(
-            restarted.claim(&healthy).unwrap().unwrap().1.prompt,
-            "healthy"
-        );
     }
 
     #[test]
@@ -1450,7 +1342,7 @@ mod tests {
             let attachment_id = added["added"][0]["id"].as_str().unwrap().to_owned();
             let head = Entry::new(
                 format!("image {index}"),
-                attachments.capture(&[attachment_id.clone()]).unwrap(),
+                attachments.capture(std::slice::from_ref(&attachment_id)).unwrap(),
                 TurnOptions::default(),
             )
             .unwrap();
@@ -1805,7 +1697,7 @@ mod tests {
             .to_owned();
         let path = dir.path().join("notes.txt");
         fs::write(&path, "notes").unwrap();
-        let file = serde_json::to_value(attachments.add_paths(&[path.clone()])).unwrap();
+        let file = serde_json::to_value(attachments.add_paths(std::slice::from_ref(&path))).unwrap();
         let file_id = file["added"][0]["id"].as_str().unwrap().to_owned();
         let ids = vec![image_id, file_id];
         let options = TurnOptions {

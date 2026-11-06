@@ -239,7 +239,7 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
     let inner_for_turn = inner.clone();
     let id_for_turn = run_id.clone();
     tauri::async_runtime::spawn(async move {
-        let result = commands::dispatch_turn(&inner_for_turn.app, agent, task_id, cwd, prompt, Default::default(), options, sink).await;
+        let result = crate::queue::dispatch(&inner_for_turn.app, agent, codex::TurnRequest { task_id, cwd, prompt, attachments: Default::default(), options }, sink).await;
         Remote(inner_for_turn.clone()).end_run(&id_for_turn, &result);
     });
     Ok(json!({"runId": run_id}))

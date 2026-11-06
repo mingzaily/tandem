@@ -1,0 +1,23 @@
+{
+  "auditProcessesStopped": true,
+  "isolatedNativeSessionsDeleted": true,
+  "isolatedDataDeleted": true,
+  "isolatedWebKitProfileDeleted": true,
+  "debugBundleDeleted": true,
+  "testLocalStorageUsed": false,
+  "userAppClosed": false,
+  "removedTestPaths": [
+    "/Users/mingzaily/Library/WebKit/com.mingzaily.tandem.final-audit",
+    "desktop/src-tauri/target/debug/bundle/macos/Tandem Final Audit.app",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/damaged",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/missing",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/unknown",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/extra-state",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/fresh",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/owner",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/bin",
+    "/private/var/folders/jj/dtv6gz9j3fq06zx59f21h3bm0000gn/T/tandem-final-audit-6e68ij4u/zdot",
+    "/Users/mingzaily/Library/Caches/com.mingzaily.tandem.final-audit"
+  ],
+  "remainingProcess": "Normal release, kept open at the user request"
+}

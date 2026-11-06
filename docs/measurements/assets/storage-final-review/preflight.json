@@ -1,0 +1,24 @@
+{
+  "oldInventory": [
+    {
+      "path": "queues",
+      "kind": "directory",
+      "bytes": 96
+    },
+    {
+      "path": "queues/20f65960-8a33-43d2-9e91-4e0b48f06951.json",
+      "kind": "file",
+      "bytes": 117
+    }
+  ],
+  "migrationVersion": 1,
+  "configExists": true,
+  "oldQueues": {
+    "20f65960-8a33-43d2-9e91-4e0b48f06951.json": 0
+  },
+  "newQueues": {},
+  "oldQueueErrors": {},
+  "newQueueErrors": {},
+  "missingOldEntries": [],
+  "newInlineImages": []
+}

@@ -37,7 +37,7 @@ pub async fn generate_task_title(
     app: AppHandle, reader: State<'_, codex::Reader>, jobs: State<'_, titles::Jobs>, agent: Agent, id: String,
     model: Option<String>, effort: Option<String>,
 ) -> Result<String, String> {
-    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
+    { let store = app.state::<storage::Store>(); store.ensure_writable()?; }
     let _job = jobs.begin(&id)?;
     let content = read_any(reader.inner(), agent, id).await?;
     titles::generate(agent, content.messages, runner::TurnOptions { model, effort, ..Default::default() }).await
@@ -47,7 +47,7 @@ pub async fn generate_task_title(
 pub async fn rename_native_task(
     app: AppHandle, reader: State<'_, codex::Reader>, jobs: State<'_, titles::Jobs>, agent: Agent, id: String, title: String,
 ) -> Result<(), String> {
-    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
+    { let store = app.state::<storage::Store>(); store.ensure_writable()?; }
     queue::validate_task_id(&id)?;
     titles::validate_name(&title)?;
     let _job = jobs.begin(&id)?;
@@ -58,42 +58,35 @@ pub async fn rename_native_task(
     }
 }
 
-/// The one way a turn starts, from the page or from a phone.
-pub(crate) async fn dispatch_turn(
-    app: &AppHandle,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SendRequest {
     agent: Agent,
     task_id: Option<String>,
     cwd: Option<String>,
     prompt: String,
-    attachments: attachments::Prepared,
+    attachment_ids: Vec<String>,
     options: runner::TurnOptions,
-    sink: runner::TurnSink,
-) -> Result<(), String> {
-    queue::dispatch(app, agent, task_id, cwd, prompt, attachments, options, sink).await
 }
 
 #[tauri::command]
 pub async fn send_turn(
     app: AppHandle,
     remote: State<'_, Remote>,
-    agent: Agent,
-    task_id: Option<String>,
-    cwd: Option<String>,
     attachments: State<'_, attachments::Attachments>,
-    prompt: String,
-    attachment_ids: Vec<String>,
-    options: runner::TurnOptions,
+    request: SendRequest,
     on_event: Channel<runner::TurnEvent>,
 ) -> Result<(), String> {
+    let SendRequest { agent, task_id, cwd, prompt, attachment_ids, options } = request;
     if prompt.trim().is_empty() && attachment_ids.is_empty() {
         return Err("There is nothing to send".into());
     }
-    // A deferred migration keeps draft attachment IDs available for the user's retry.
-    { let store = app.state::<storage::Store>(); let _permit = store.permit()?; }
+    // Check the single-writer lock before consuming draft attachment IDs.
+    { let store = app.state::<storage::Store>(); store.ensure_writable()?; }
     let prepared = attachments.take(&attachment_ids)?;
     let page_sink = runner::TurnSink::new(move |event| on_event.send(event).map_err(|error| error.to_string()));
     let (run_id, sink) = remote.track(agent, page_sink);
-    let result = dispatch_turn(&app, agent, task_id, cwd, prompt, prepared, options, sink).await;
+    let result = queue::dispatch(&app, agent, codex::TurnRequest { task_id, cwd, prompt, attachments: prepared, options }, sink).await;
     remote.end_run(&run_id, &result);
     result
 }
@@ -255,7 +248,7 @@ pub fn default_conversation_dir(store: State<'_, storage::Store>) -> String {
 
 #[tauri::command]
 pub async fn create_conversation_dir(store: State<'_, storage::Store>, base: Option<String>) -> Result<String, String> {
-    { let _permit = store.permit()?; }
+    store.ensure_writable()?;
     let base = base.unwrap_or_else(|| store.root().join("conversations").to_string_lossy().into_owned());
     blocking(move || conversations::create_dir(Some(&base))).await
 }
@@ -478,14 +471,14 @@ pub async fn remote_configure(app: AppHandle, remote: State<'_, Remote>, enabled
     let remote = remote.inner().clone();
     blocking(move || {
         let store = app.state::<storage::Store>();
-        let _permit = store.permit()?;
+        store.ensure_writable()?;
         remote.configure(enabled, relay_url, host_token)
     }).await
 }
 
 #[tauri::command]
 pub async fn remote_begin_pairing(store: State<'_, storage::Store>, remote: State<'_, Remote>) -> Result<(), String> {
-    { let _permit = store.permit()?; }
+    store.ensure_writable()?;
     remote.begin_pairing().await
 }
 
@@ -499,7 +492,7 @@ pub async fn remote_revoke(app: AppHandle, remote: State<'_, Remote>, client_id:
     let remote = remote.inner().clone();
     blocking(move || {
         let store = app.state::<storage::Store>();
-        let _permit = store.permit()?;
+        store.ensure_writable()?;
         remote.revoke(&client_id)
     }).await
 }
@@ -522,30 +515,6 @@ pub async fn update_preferences(app: AppHandle, window: WebviewWindow, target: S
     if window.label() != "main" { return Err("请在主窗口修改设置".into()); }
     let writer = app.clone();
     let result = blocking(move || writer.state::<storage::Store>().update(&target, patch)).await;
-    storage::publish(&app);
-    result
-}
-
-#[tauri::command]
-pub async fn preview_preferences(app: AppHandle, window: WebviewWindow, legacy: std::collections::HashMap<String, String>) -> Result<storage::Snapshot, String> {
-    if window.label() != "main" { return Err("请在主窗口读取旧配置".into()); }
-    let reading = app.clone();
-    let result = blocking(move || reading.state::<storage::Store>().preview(legacy)).await;
-    storage::publish(&app);
-    result
-}
-
-#[tauri::command]
-pub async fn migrate_preferences(app: AppHandle, window: WebviewWindow, legacy: std::collections::HashMap<String, String>) -> Result<storage::Snapshot, String> {
-    if window.label() != "main" { return Err("请在主窗口迁移本地数据".into()); }
-    let migrating = app.clone();
-    let result = blocking(move || migrating.state::<storage::Store>().migrate(legacy, || {
-        migrating.state::<runner::Runs>().ensure_idle()?;
-        migrating.state::<queue::Store>().ensure_idle()
-    }, storage::check_legacy_instance, || {
-        migrating.state::<Remote>().update_context(migrating.state::<storage::Store>().remote_context());
-        migrating.state::<Remote>().storage_ready();
-    })).await;
     storage::publish(&app);
     result
 }

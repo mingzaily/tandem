@@ -4,8 +4,6 @@ import type { PreferencesSnapshot } from './storage';
 
 export const readPreferences = () => invoke<PreferencesSnapshot>('preferences');
 export const updatePreferences = (target: 'config' | 'state', patch: Record<string, unknown>) => invoke<PreferencesSnapshot>('update_preferences', { target, patch });
-export const migratePreferences = (legacy: Record<string, string>) => invoke<PreferencesSnapshot>('migrate_preferences', { legacy });
-export const previewPreferences = (legacy: Record<string, string>) => invoke<PreferencesSnapshot>('preview_preferences', { legacy });
 export const onPreferencesChanged = (handler: (snapshot: PreferencesSnapshot) => void) => listen<PreferencesSnapshot>('preferences-changed', ({ payload }) => handler(payload));
 export const setSystemLanguage = (language: 'zh' | 'en') => invoke<void>('set_system_language', { language });
 
@@ -331,12 +329,14 @@ export function sendTurn(
   const channel = new Channel<TurnEvent>();
   channel.onmessage = onEvent;
   return invoke('send_turn', {
-    agent,
-    taskId: 'taskId' in target ? target.taskId : null,
-    cwd: 'cwd' in target ? target.cwd : null,
-    attachmentIds: attachments.map((attachment) => attachment.id),
-    prompt,
-    options,
+    request: {
+      agent,
+      taskId: 'taskId' in target ? target.taskId : null,
+      cwd: 'cwd' in target ? target.cwd : null,
+      attachmentIds: attachments.map((attachment) => attachment.id),
+      prompt,
+      options,
+    },
     onEvent: channel,
   });
 }

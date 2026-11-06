@@ -226,11 +226,6 @@ impl From<String> for AnswerError {
 }
 
 impl Runs {
-    pub fn ensure_idle(&self) -> Result<(), String> {
-        if self.runs.lock().map_err(|error| error.to_string())?.is_empty() { Ok(()) }
-        else { Err("任务仍在运行，结束后再迁移本地数据".into()) }
-    }
-
     pub fn begin(&self, task_id: &str) -> Result<RunChannels, String> {
         let mut runs = self.runs.lock().map_err(|error| error.to_string())?;
         if runs.contains_key(task_id) {
@@ -433,7 +428,7 @@ fn suggested_rules(request: &Value) -> Vec<Value> {
 }
 
 enum ControlAction {
-    Ask { request_id: String, request: PendingRequest, event: TurnEvent },
+    Ask { request_id: String, request: Box<PendingRequest>, event: TurnEvent },
     Reply(String),
     Settled(String),
 }
@@ -473,7 +468,7 @@ fn parse_control(value: &Value) -> Option<ControlAction> {
             let rules = suggested_rules(request);
             Some(ControlAction::Ask {
                 request_id,
-                request: PendingRequest { tool_name, input, rules, codex_rpc_id: None, pi_method: None },
+                request: Box::new(PendingRequest { tool_name, input, rules, codex_rpc_id: None, pi_method: None }),
                 event,
             })
         }
@@ -654,7 +649,7 @@ async fn run_claude(
                 }
                 match parse_control(&value) {
                     Some(ControlAction::Ask { request_id, request, event }) => {
-                        runs.add_pending(&target.task_id, request_id, request);
+                        runs.add_pending(&target.task_id, request_id, *request);
                         emit(event)?;
                     }
                     Some(ControlAction::Reply(reply)) => write_line(&mut stdin, &reply).await,
@@ -922,7 +917,7 @@ mod tests {
         let Some(ControlAction::Ask { request_id, request, .. }) = parse_control(&ask(body)) else {
             panic!("expected a request");
         };
-        runs.add_pending("a", request_id, request);
+        runs.add_pending("a", request_id, *request);
         channels
     }
 

@@ -51,9 +51,10 @@ enum Stored {
     File { name: String, path: PathBuf },
 }
 
-/// Queue images become immutable files; inline data is accepted while migrating older queues.
+/// Captured image bytes exist only in memory; queue JSON stores immutable image-file references.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum SavedStored {
+    #[serde(skip)]
     Image { name: String, media_type: String, data: String },
     ImageFile { name: String, media_type: String },
     File { name: String, path: PathBuf },
@@ -86,8 +87,6 @@ impl SavedAttachment {
     pub fn image_id(&self) -> Option<&str> {
         match self.stored { SavedStored::Image { .. } | SavedStored::ImageFile { .. } => Some(&self.id), SavedStored::File { .. } => None }
     }
-
-    pub fn has_inline_image(&self) -> bool { matches!(self.stored, SavedStored::Image { .. }) }
 
     pub fn validate_image_file(&self, dir: &Path) -> Result<(), String> {
         if let SavedStored::ImageFile { .. } = self.stored {
@@ -327,7 +326,7 @@ impl Prepared {
 
 fn read_rule(path: &Path) -> Option<String> {
     let path = path.to_str()?;
-    let is_exact = !path.contains(|c: char| matches!(c, '*' | '?' | '[' | ']' | '{' | '}' | '!' | '\\' | ','));
+    let is_exact = !path.contains(['*', '?', '[', ']', '{', '}', '!', '\\', ',']);
     is_exact.then(|| format!("Read(/{path})"))
 }
 

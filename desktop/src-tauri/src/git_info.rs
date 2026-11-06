@@ -70,6 +70,6 @@ mod tests {
     fn a_folder_outside_git_has_no_branch() {
         let dir = tempfile::tempdir().unwrap();
         // The temp folder's own parents are not repositories on a normal machine.
-        assert!(git_dir(dir.path()).map_or(true, |found| !found.starts_with(dir.path())));
+        assert!(git_dir(dir.path()).is_none_or(|found| !found.starts_with(dir.path())));
     }
 }

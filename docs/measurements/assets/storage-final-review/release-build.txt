@@ -1,0 +1,39 @@
+
+> tandem@0.0.1 tauri /Users/mingzaily/Code/golang/mingzaily/tandem/desktop
+> tauri build --bundles app
+
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `pnpm build`
+
+> tandem@0.0.1 build /Users/mingzaily/Code/golang/mingzaily/tandem/desktop
+> tsc --noEmit && vite build
+
+vite v6.4.5 building for production...
+transforming...
+✓ 2105 modules transformed.
+rendering chunks...
+computing gzip size...
+dist/index.html                                              0.39 kB │ gzip:   0.27 kB
+dist/assets/inter-vietnamese-wght-normal-CBcvBZtf.woff2     10.25 kB
+dist/assets/inter-greek-ext-wght-normal-DlzME5K_.woff2      11.23 kB
+dist/assets/inter-cyrillic-wght-normal-DqGufNeO.woff2       18.75 kB
+dist/assets/inter-greek-wght-normal-CkhJZR-_.woff2          19.00 kB
+dist/assets/inter-cyrillic-ext-wght-normal-BOeWTOD4.woff2   25.96 kB
+dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2          48.26 kB
+dist/assets/inter-latin-ext-wght-normal-DO1Apj_S.woff2      85.07 kB
+dist/assets/ModelPickerPanel-Ib_BMqT6.css                    0.41 kB │ gzip:   0.18 kB
+dist/assets/MessageStream-BAhVlsTg.css                       3.61 kB │ gzip:   1.25 kB
+dist/assets/index-D9NfnXOm.css                             134.44 kB │ gzip:  23.27 kB
+dist/assets/PendingQueuePanel-CAmus227.js                    9.49 kB │ gzip:   3.48 kB
+dist/assets/ModelPickerPanel-CqY9wf5Q.js                    15.01 kB │ gzip:   5.03 kB
+dist/assets/index-CSwTT1bM.js                               35.31 kB │ gzip:  10.76 kB
+dist/assets/MessageStream-BTLO5Q2z.js                      359.27 kB │ gzip: 109.32 kB
+dist/assets/index-GsT2uHJN.js                              433.62 kB │ gzip: 130.97 kB
+✓ built in 2.86s
+   Compiling tandem v0.0.1 (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri)
+    Finished `release` profile [optimized] target(s) in 1m 59s
+       Built application at: /Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri/target/release/tandem
+    Bundling Tandem.app (/Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri/target/release/bundle/macos/Tandem.app)
+    Finished 1 bundle at:
+        /Users/mingzaily/Code/golang/mingzaily/tandem/desktop/src-tauri/target/release/bundle/macos/Tandem.app (5.57 MiB)
+

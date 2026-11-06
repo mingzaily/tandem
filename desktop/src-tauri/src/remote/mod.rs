@@ -172,7 +172,7 @@ impl Remote {
         let storage = app.state::<crate::storage::Store>();
         let path = storage.root().join("remote.json");
         let config = store::load(&path);
-        let ready = storage.is_ready();
+        let writable = storage.is_writable();
         let context = storage.remote_context();
         let remote = Self(Arc::new(Inner {
             app,
@@ -189,14 +189,8 @@ impl Remote {
             next_run: AtomicU64::new(1),
             seq: AtomicU64::new(0),
         }));
-        if ready { remote.restart_link(); }
+        if writable { remote.restart_link(); }
         Ok(remote)
-    }
-
-    pub fn storage_ready(&self) {
-        *self.0.lock_config() = store::load(&self.0.path);
-        self.restart_link();
-        self.0.notify_changed();
     }
 
     pub fn state(&self) -> RemoteState {

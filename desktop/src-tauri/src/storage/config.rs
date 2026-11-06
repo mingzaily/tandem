@@ -38,7 +38,7 @@ permission_mode = "ask"
 "#;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct TurnPrefs {
     pub model: String,
     pub effort: String,
@@ -56,7 +56,7 @@ impl Default for TurnPrefs {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Agents {
     pub claude: TurnPrefs,
     pub codex: TurnPrefs,
@@ -64,7 +64,7 @@ pub struct Agents {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct Config {
     pub theme: String,
     pub light_theme: String,
@@ -174,6 +174,33 @@ pub fn parse(text: &str) -> Result<(DocumentMut, Config), String> {
     Ok((document, config))
 }
 
+/// Derive field names from the serialized schema, keeping TOML-only unknown fields intact.
+pub fn warnings(document: &DocumentMut) -> Vec<String> {
+    fn collect(item: &Item, schema: &Value, prefix: &str, fields: &mut Vec<String>) {
+        if let (Some(table), Some(known)) = (item.as_table_like(), schema.as_object()) {
+            for (key, value) in table.iter() {
+                let path = if prefix.is_empty() {
+                    key.to_owned()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                match known.get(key) {
+                    Some(schema) => collect(value, schema, &path, fields),
+                    None => fields.push(path),
+                }
+            }
+        }
+    }
+    let schema = serde_json::to_value(Config::default()).expect("config serializes");
+    let mut fields = Vec::new();
+    collect(document.as_item(), &schema, "", &mut fields);
+    if fields.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!("config.toml 未知字段已忽略：{}", fields.join("、"))]
+    }
+}
+
 /// The patch only contains changed leaves. Rereading the file before this preserves manual edits
 /// made since the last watcher tick; changing a value also preserves its inline comment.
 pub fn patch(document: &mut DocumentMut, changes: &Map<String, Value>) -> Result<Config, String> {
@@ -187,7 +214,7 @@ pub fn patch(document: &mut DocumentMut, changes: &Map<String, Value>) -> Result
         document.as_item_mut(),
         replacement.as_item(),
         &Value::Object(changes.clone()),
-    );
+    )?;
     Ok(config)
 }
 
@@ -206,10 +233,14 @@ pub fn merge(current: &mut Value, patch: &Value) {
     }
 }
 
-fn replace_leaves(current: &mut Item, replacement: &Item, patch: &Value) {
+fn replace_leaves(current: &mut Item, replacement: &Item, patch: &Value) -> Result<(), String> {
     if let Value::Object(fields) = patch {
         for (key, value) in fields {
-            replace_leaves(&mut current[key], &replacement[key], value);
+            let next = replacement
+                .as_table_like()
+                .and_then(|table| table.get(key))
+                .ok_or_else(|| format!("设置字段不存在：{key}"))?;
+            replace_leaves(&mut current[key], next, value)?;
         }
     } else {
         let mut value = replacement.clone();
@@ -221,6 +252,7 @@ fn replace_leaves(current: &mut Item, replacement: &Item, patch: &Value) {
         }
         *current = value;
     }
+    Ok(())
 }
 
 /// Keep the formatting of retained paths. Comments attached to a removed path become
@@ -282,10 +314,10 @@ mod tests {
     }
 
     #[test]
-    fn schema_errors_are_rejected_instead_of_silently_ignoring_a_typo() {
+    fn syntax_types_and_invalid_values_are_rejected() {
         for source in [
             "theme = 'broken'",
-            "them = 'dark'",
+            "ui_font_size = 'large'",
             "ui_font_size = 100",
             "projects = ['relative']",
             "theme = [",

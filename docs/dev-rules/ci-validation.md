@@ -56,11 +56,11 @@ node .github/scripts/container-smoke.mjs tandem-relay:local
 
 | 工作流 | 触发 | 验证与产物 |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | 相关改动进入 main、指向 main 的 PR、其他工作流调用 | 共享检查和本机架构容器验收；被发布工作流调用时，容器检查由发布任务执行 |
+| `.github/workflows/ci.yml` | 相关改动进入 main、指向 main 的 PR、其他工作流调用 | macOS 桌面端检查、共享检查和本机架构容器验收；被 relay 发布工作流调用时跳过桌面端检查，容器检查由发布任务执行 |
 | `.github/workflows/site-pages.yml` | 相关改动进入 main、手动触发 | 共享检查成功后上传组合产物并发布 Pages；浏览器检查属于发布门禁 |
 | `.github/workflows/relay-image.yml` | `relay-v*` tag、手动触发 | 先通过共享检查，再加载并启动 amd64 待发布镜像；成功后构建并推送 amd64 / arm64 版本与 SHA 标签 |
 
-通用 CI 的路径覆盖 relay、PWA、官网、共用设计 token、自动化文件、协议和测试向量。PR 校验使用只读仓库权限；GHCR 写权限只授予镜像发布与版本晋升任务。已有桌面端构建和原生互通仍按桌面开发文档执行。
+通用 CI 的路径覆盖 `desktop/**`、relay、PWA、官网、自动化文件、协议和测试向量。独立 `macos-15` job 在桌面端运行 typecheck、前端测试、Rust 测试与 `cargo clippy --all-targets -- -D warnings`；第三方 Action 固定到 commit SHA。PR 校验使用只读仓库权限；GHCR 写权限只授予镜像发布与版本晋升任务。桌面端窗口验收、构建和原生互通仍按桌面开发文档执行。
 
 ### latest 晋升
 

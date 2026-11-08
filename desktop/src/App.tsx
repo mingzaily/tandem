@@ -1,5 +1,4 @@
 import { getVersion } from '@tauri-apps/api/app';
-import { MoreHorizontal } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { BrandLockup } from './components/BrandLockup';
 import { AgentMark } from './components/AgentMark';
@@ -17,6 +16,8 @@ import { RemoteAccessIndicator, RemoteAccessNotice, RemoteRevokeDialog } from '.
 import { SettingsView } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { TaskMenu, type TaskMenuAnchor } from './components/TaskMenu';
+import { TaskHeaderActions } from './components/TaskHeaderActions';
+import { markUnread, type SidebarOptions } from './lib/sidebarModel';
 import { TitleBarActions } from './components/TitleBarActions';
 import {
   answerRequest,
@@ -75,7 +76,7 @@ import { describeUsage, titleOptions, turnOptions, type TurnPrefs } from './lib/
 import type { ModelReadState } from './lib/modelEffort';
 import { t } from './lib/i18n';
 import { emptyRateHistory, recordActivity, type RateHistory } from './lib/tokenRate';
-import { applyTurnEvent, buildItems, CONVERSATION_CWD, groupRoot, isUnder, projectName, turnStatus, type Item } from './lib/items';
+import { applyTurnEvent, buildItems, CONVERSATION_CWD, groupRoot, isUnder, lastEditablePrompt, projectName, turnStatus, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
 import {
   areProjectsSeeded,
@@ -101,7 +102,7 @@ import {
 } from './lib/preferences';
 
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
-import { subscribePreferences } from './lib/storage';
+import { preferencesSnapshot, saveConfig, saveViewState, subscribePreferences } from './lib/storage';
 import { acceptNativeTitle, taskTitle, type TaskMeta } from './lib/taskMeta';
 import { mergeQueue } from './lib/pendingQueue';
 import { requestAnswerFailure } from './lib/requestAnswer';
@@ -162,6 +163,16 @@ export function App() {
   taskMetaRef.current = taskMeta;
   const [extraProjects, setExtraProjects] = useState(loadExtraProjects);
   const [projectOrder, setProjectOrder] = useState(loadProjectOrder);
+  const [pinnedProjects, setPinnedProjects] = useState(() => preferencesSnapshot().state.pinnedProjects);
+  const [unreadTasks, setUnreadTasks] = useState(() => preferencesSnapshot().state.unreadTasks);
+  const changeUnread = useCallback((change: (current: string[]) => string[]) => {
+    setUnreadTasks((current) => {
+      const next = change(current);
+      if (next !== current) saveViewState({ unreadTasks: next });
+      return next;
+    });
+  }, []);
+  const [sidebarOptions, setSidebarOptions] = useState<SidebarOptions>(() => ({ groupByCli: preferencesSnapshot().config.sidebar_group_by_cli, sort: preferencesSnapshot().config.sidebar_sort }));
   const remotePresence = useRemotePresence();
   const [remoteRevokeTarget, setRemoteRevokeTarget] = useState<RemoteClient | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
@@ -558,6 +569,7 @@ export function App() {
           const notice = finishedNotice(event);
           if (notice) setNotices((current) => ({ ...current, [id]: notice }));
           if (!event.cancelled) notifyIfAway(event.isError ? t('notifyFailed') : t('notifyDone'), id);
+          if (!event.cancelled && selectedIdRef.current !== id) changeUnread((current) => markUnread(current, id));
           // Preserve the completed stream until the native file replaces it. A following queued
           // turn can start while that read is in flight, and owns its own live content.
           if (selectedIdRef.current === id) setHistory((current) => [...current, ...streamed]);
@@ -573,7 +585,7 @@ export function App() {
       };
       return { onEvent, taskId: () => taskId };
     },
-    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn],
+    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn, changeUnread],
   );
 
   // Turns started from a phone show here too, each with its own handler until it finishes.
@@ -621,6 +633,9 @@ export function App() {
       setTaskMeta(loadTaskMeta());
       setExtraProjects(loadExtraProjects());
       setProjectOrder(loadProjectOrder());
+      setPinnedProjects(preferencesSnapshot().state.pinnedProjects);
+      setUnreadTasks(preferencesSnapshot().state.unreadTasks);
+      setSidebarOptions({ groupByCli: preferencesSnapshot().config.sidebar_group_by_cli, sort: preferencesSnapshot().config.sidebar_sort });
       setSidebarCollapsed(loadSidebarCollapsed());
       setSidebarWidth(loadSidebarWidth());
       setAllPrefs({ claude: loadPrefsFor('claude'), codex: loadPrefsFor('codex'), pi: loadPrefsFor('pi') });
@@ -725,6 +740,11 @@ export function App() {
     [pending],
   );
   const selectedTask = tasks?.find((task) => task.id === selectedId);
+  // Opening a task reads it.
+  useEffect(() => {
+    if (selectedId) changeUnread((current) => current.includes(selectedId) ? current.filter((id) => id !== selectedId) : current);
+  }, [selectedId, changeUnread]);
+  const unread = useMemo(() => new Set(unreadTasks), [unreadTasks]);
   const menuTask = menuAnchor ? tasks?.find((task) => task.id === menuAnchor.id) : undefined;
   const items = useMemo(() => {
     if (!selectedId) return [];
@@ -825,16 +845,44 @@ export function App() {
   const isHeldByWriter = Boolean(
     selectedId && selectedWriter && !(selectedWriter.canOverride && overriddenWriters.has(selectedId)),
   );
-  const wasBusyElsewhere = useRef<{ id: string | null; isBusy: boolean }>({ id: null, isBusy: false });
+  // Only Claude can truncate its own task to replace a prompt; Codex and Pi would fork a new task.
+  const editableId = selectedAgent === 'claude' && selectedTask && !isRunning && !selectedPending && !selectedWriter
+    && !selectedQueue?.entries.length ? lastEditablePrompt(items) : null;
+  const editLast = useCallback((itemId: string, prompt: string) => new Promise<void>((resolve, reject) => {
+    if (!selectedId) { reject(new Error(t('untitled'))); return; }
+    const id = selectedId;
+    const options = { ...turnOptions(prefs, info.models), editLast: itemId };
+    const userItem = userItemFor(prompt, [], `live-user-${crypto.randomUUID()}`);
+    const turn = createTurnHandler({ agent: 'claude', taskId: id, newCwd: null, prompt, userItem, selectOnStart: false });
+    let started = false;
+    void sendTurn('claude', { taskId: id }, prompt, [], options, (event) => {
+      if (event.type === 'started' && !started) {
+        started = true;
+        // The replaced turn leaves the view now; the native file decides what stays once the turn ends.
+        setHistory((current) => {
+          const index = current.findIndex((item) => item.id === itemId);
+          return index < 0 ? current : current.slice(0, index);
+        });
+        resolve();
+      }
+      turn.onEvent(event);
+    }).catch((error) => {
+      if (!started) { reject(error); return; }
+      setNotices((current) => ({ ...current, [id]: { text: t('turnFailed', { error: String(error) }), isError: true } }));
+      setLive(({ [id]: _removed, ...rest }) => rest);
+      clearTurn(id);
+    });
+  }), [selectedId, prefs, info.models, createTurnHandler, clearTurn]);
+  const wasBusyElsewhere = useRef<{ id: string | null; isBusy: boolean; isOpen: boolean }>({ id: null, isBusy: false, isOpen: false });
   useEffect(() => {
     const isBusy = selectedWriter?.isBusy ?? false;
     const previous = wasBusyElsewhere.current;
-    wasBusyElsewhere.current = { id: selectedId, isBusy };
-    if (selectedId && previous.id === selectedId && previous.isBusy && !isBusy) {
+    wasBusyElsewhere.current = { id: selectedId, isBusy, isOpen: Boolean(selectedWriter) };
+    if (selectedId && previous.id === selectedId && (previous.isBusy && !isBusy || previous.isOpen && !selectedWriter)) {
       void loadHistory(selectedAgent, selectedId);
       void refreshTasks();
     }
-  }, [selectedId, selectedAgent, selectedWriter?.isBusy, loadHistory, refreshTasks]);
+  }, [selectedId, selectedAgent, selectedWriter, loadHistory, refreshTasks]);
 
   // A task open elsewhere keeps changing, so this view follows its file.
   const followState = useRef<{ id: string | null; stamp: string | null; nextAt: number; isLoading: boolean }>({
@@ -1041,9 +1089,12 @@ export function App() {
   ) : null;
 
   if (selection.kind === 'settings') {
+    const previous = nav.entries.slice(0, nav.index).reverse().find((entry) => entry.kind !== 'settings');
+    const settingsProject = previous?.kind === 'task' ? tasks?.find((task) => task.id === previous.id)?.cwd ?? newTaskCwds[previous.id] ?? null : previous?.kind === 'new' ? previous.cwd : null;
     return (
       <>
         <SettingsView
+          currentProject={settingsProject}
           initialTab={selection.tab}
           settings={settings}
           onChange={changeSettings}
@@ -1073,11 +1124,19 @@ export function App() {
           loaded={tasks !== null}
           selectedId={selectedId}
           running={running}
+          unread={unread}
           waiting={waiting}
           external={external}
           meta={taskMeta}
           extraProjects={extraProjects}
           conversationRoots={conversationRoots}
+          pinnedProjects={pinnedProjects}
+          options={sidebarOptions}
+          menuTaskId={menuAnchor?.id ?? null}
+          generatingTitles={generatingTitles}
+          onGenerateTitle={(task) => void generateTitle(task.agent, task.id)}
+          onOptionsChange={(options) => { setSidebarOptions(options); saveConfig({ sidebar_group_by_cli: options.groupByCli, sidebar_sort: options.sort }); }}
+          onPinnedProjectsChange={(paths) => { setPinnedProjects(paths); saveViewState({ pinnedProjects: paths }); }}
           projectOrder={projectOrder}
           onProjectOrderChange={(order) => {
             setProjectOrder(order);
@@ -1116,27 +1175,21 @@ export function App() {
             </span>
             {selectedId ? <span data-tauri-drag-region role="img" aria-label={AGENT_NAMES[selectedAgent]} title={AGENT_NAMES[selectedAgent]} className="shrink-0 text-[var(--text-secondary)]"><AgentMark agent={selectedAgent} size={14} /></span> : null}
           </div>
-          {selectedTask ? (
-            <button
-              type="button"
-              aria-label={t('taskMenu')}
-              title={t('taskMenu')}
-              onClick={(event) => {
-                const bounds = event.currentTarget.getBoundingClientRect();
-                setMenuAnchor({ id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 });
-              }}
-              className="ml-2 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[hsl(var(--titlebar-icon))] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
-            >
-              <MoreHorizontal size={15} aria-hidden />
-            </button>
-          ) : null}
+          {selectedTask ? <TaskHeaderActions task={selectedTask} menuOpen={menuAnchor?.id === selectedTask.id}
+            onMenu={(bounds) => setMenuAnchor(menuAnchor ? null : { id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 })}
+            onError={(error) => setNotices((current) => ({ ...current, [selectedTask.id]: { text: String(error), isError: true } }))} /> : null}
         </header>
         {selectedId ? (
           <ConversationLayout key={selectedId} messages={(bottomPadding) => (
             <Suspense fallback={null}>
               <MessageStream
+                taskId={selectedId}
+                agent={selectedAgent}
                 items={items}
                 isRunning={isRunning}
+                editableId={editableId}
+                onEditLast={editLast}
+                sendWithCmdEnter={settings.sendWithCmdEnter}
                 cwd={taskCwd}
                 isLoading={loadedId !== selectedId && !unwrittenTasks.current.has(selectedId)}
                 bottomPadding={bottomPadding}
@@ -1336,7 +1389,7 @@ interface TurnSource {
 
 function WriterNotice({ writer, onSendAnyway }: { writer: ExternalWriter; onSendAnyway: () => void }) {
   const key = !writer.canOverride
-    ? 'writerCodexOpen'
+    ? writer.isBusy ? 'writerCodexBusy' : 'writerCodexOpen'
     : writer.fromTerminal
       ? writer.isBusy
         ? 'writerBusyTerminal'

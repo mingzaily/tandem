@@ -1,8 +1,10 @@
 import { ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
-import { useCallback, useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import {
   agentStatus,
+  agentResources,
+  type AgentInventory,
   discoverProjects,
   installAgent,
   loginAgent,
@@ -31,12 +33,13 @@ import {
   MIN_UI_FONT_SIZE,
   type AppSettings,
   type LanguageSetting,
-  type ThemeChoice,
   type ThemeSetting,
 } from '../lib/settings';
 import { AgentMark } from './AgentMark';
+import { SettingsSelect } from './SettingsSelect';
 import { SettingsButton } from './SettingsButton';
 
+const AgentResources = lazy(() => import('./AgentResources'));
 const JOB_LINES = 8;
 
 type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'remote' | 'about';
@@ -56,7 +59,7 @@ const ROW = 'flex items-center justify-between gap-3 px-4 py-4';
 const ROW_LABEL = 'text-13 font-medium text-[var(--settings-section-title)]';
 const ROW_HINT = 'text-12 leading-[1.4] text-[var(--text-secondary)]';
 const DIVIDER = 'mx-4 h-px bg-[var(--settings-theme-card-border)]';
-const CHIP = 'h-7 rounded-full px-3 text-12 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]';
+
 
 function Section({ title, action, children }: { title: string; action?: ReactNode; children: ReactNode }) {
   return (
@@ -104,112 +107,28 @@ function Switch({ label, checked, disabled = false, onChange }: { label: string;
   );
 }
 
-function Chips<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { id: T; text: string }[]; onChange: (value: T) => void }) {
-  return (
-    <div role="radiogroup" aria-label={label} className="flex gap-1">
-      {options.map((option) => (
-        <button
-          key={option.id}
-          type="button"
-          role="radio"
-          aria-checked={option.id === value}
-          onClick={() => onChange(option.id)}
-          className={`${CHIP} ${
-            option.id === value
-              ? 'bg-[var(--settings-menu-bg-selected)] font-medium text-[var(--text-primary)]'
-              : 'text-[var(--text-secondary)] hover:bg-[var(--settings-menu-bg-hover)]'
-          }`}
-        >
-          {option.text}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ThemePreview({ theme }: { theme: ThemeSetting }) {
-  const light = 'var(--settings-theme-auto-light)';
-  const dark = 'var(--settings-theme-auto-dark)';
-  const background =
-    theme === 'system' ? `linear-gradient(90deg, ${light} 50%, ${dark} 50%)` : theme === 'light' ? light : dark;
-  return <span aria-hidden style={{ background }} className="block h-[60px] w-[92px] rounded-[8px] border border-[var(--settings-theme-card-border)]" />;
-}
-
 const THEMES: { id: ThemeSetting; label: StringKey }[] = [
   { id: 'system', label: 'themeSystem' },
   { id: 'light', label: 'themeLight' },
   { id: 'dark', label: 'themeDark' },
 ];
 
-/** A small picture drawn with the theme's own colors, because the tokens work on any element. */
-function ThemeSwatch({ theme }: { theme: ThemeChoice }) {
-  return (
-    <span
-      aria-hidden
-      data-theme={theme.id}
-      className={`relative block h-[60px] w-[92px] overflow-hidden rounded-[8px] border border-[var(--settings-theme-card-border)] bg-[var(--surface)] ${theme.isDark ? 'dark' : ''}`}
-    >
-      <span className="absolute inset-y-0 left-0 w-[24px] border-r border-[var(--border-default)] bg-[hsl(var(--sidebar))]" />
-      <span className="absolute left-[32px] top-[12px] h-[5px] w-[36px] rounded-full bg-[var(--text-primary)] opacity-70" />
-      <span className="absolute left-[32px] top-[23px] h-[5px] w-[50px] rounded-full bg-[var(--text-secondary)] opacity-40" />
-      <span className="absolute bottom-[7px] left-[30px] right-[6px] h-[13px] rounded-full border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)]" />
-      <span className="absolute bottom-[10px] right-[9px] size-[7px] rounded-full bg-[var(--send-btn-bg)]" />
-    </span>
-  );
-}
-
-function ThemeGroup({ title, themes, value, onChange }: { title: string; themes: ThemeChoice[]; value: string; onChange: (id: string) => void }) {
-  return (
-    <Section title={title}>
-      <div role="radiogroup" aria-label={title} className="flex flex-wrap gap-3 px-4 py-4">
-        {themes.map((theme) => (
-          <button
-            key={theme.id}
-            type="button"
-            role="radio"
-            aria-checked={value === theme.id}
-            onClick={() => onChange(theme.id)}
-            className={`flex w-[104px] flex-col items-center gap-1.5 rounded-xl p-1.5 text-12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
-              value === theme.id
-                ? 'bg-[var(--settings-menu-bg-selected)] font-medium text-[var(--text-primary)]'
-                : 'text-[var(--text-secondary)] hover:bg-[var(--settings-menu-bg-hover)]'
-            }`}
-          >
-            <ThemeSwatch theme={theme} />
-            <span className="w-full truncate text-center">{theme.name === 'Plain' ? t('themePlain') : theme.name}</span>
-          </button>
-        ))}
-      </div>
-    </Section>
-  );
-}
-
 function AppearanceTab({ settings, onChange }: TabProps) {
   return (
     <>
       <Section title={t('modeSection')}>
-        <div role="radiogroup" aria-label={t('modeSection')} className="flex gap-3 px-4 py-4">
-          {THEMES.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={settings.theme === id}
-              onClick={() => onChange({ ...settings, theme: id })}
-              className={`flex flex-col items-center gap-1.5 rounded-xl p-1.5 text-12 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
-                settings.theme === id
-                  ? 'bg-[var(--settings-menu-bg-selected)] font-medium text-[var(--text-primary)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--settings-menu-bg-hover)]'
-              }`}
-            >
-              <ThemePreview theme={id} />
-              {t(label)}
-            </button>
-          ))}
-        </div>
+        <Row label={t('modeSection')}>
+          <SettingsSelect label={t('modeSection')} value={settings.theme} options={THEMES.map(({ id, label }) => ({ id, text: t(label) }))} onChange={(theme) => onChange({ ...settings, theme })} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('lightThemes')}>
+          <SettingsSelect label={t('lightThemes')} value={settings.lightTheme} options={LIGHT_THEMES.map(({ id, name }) => ({ id, text: name === 'Plain' ? t('themePlain') : name }))} onChange={(lightTheme) => onChange({ ...settings, lightTheme })} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('darkThemes')}>
+          <SettingsSelect label={t('darkThemes')} value={settings.darkTheme} options={DARK_THEMES.map(({ id, name }) => ({ id, text: name === 'Plain' ? t('themePlain') : name }))} onChange={(darkTheme) => onChange({ ...settings, darkTheme })} />
+        </Row>
       </Section>
-      <ThemeGroup title={t('lightThemes')} themes={LIGHT_THEMES} value={settings.lightTheme} onChange={(lightTheme) => onChange({ ...settings, lightTheme })} />
-      <ThemeGroup title={t('darkThemes')} themes={DARK_THEMES} value={settings.darkTheme} onChange={(darkTheme) => onChange({ ...settings, darkTheme })} />
       <Section title={t('displaySection')}>
         <Row label={t('fontSizeLabel')} hint={t('fontSizeHint')}>
           <span className="flex items-center gap-3">
@@ -249,7 +168,7 @@ function GeneralTab({ settings, onChange }: TabProps) {
     <>
       <Section title={t('languageSection')}>
         <Row label={t('languageLabel')} hint={t('languageHint')}>
-          <Chips label={t('languageLabel')} value={settings.language} options={languages} onChange={(language) => onChange({ ...settings, language })} />
+          <SettingsSelect label={t('languageLabel')} value={settings.language} options={languages} onChange={(language) => onChange({ ...settings, language })} />
         </Row>
       </Section>
       <Section title={t('windowSection')}>
@@ -296,7 +215,17 @@ function agentHint(agent: AgentStatus): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-function AgentsTab() {
+function AgentsTab({ currentProject, projects }: { currentProject: string | null; projects: string[] }) {
+  const [cwd, setCwd] = useState(currentProject ?? '');
+  const [inventories, setInventories] = useState<AgentInventory[]>([]);
+  const [resourceError, setResourceError] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    setInventories([]);
+    setResourceError(null);
+    agentResources(cwd || null).then((rows) => { if (active) setInventories(rows); }).catch((reason) => { if (active) setResourceError(String(reason)); });
+    return () => { active = false; };
+  }, [cwd]);
   // Checking takes seconds, so the last result shows at once while a new one comes in.
   const [agents, setAgents] = useState<AgentStatus[] | null>(loadAgentStatus);
   const [error, setError] = useState<string | null>(null);
@@ -338,24 +267,27 @@ function AgentsTab() {
   };
 
   return (
+    <>
     <Section title={t('agentsSection')}>
-      {agents === null ? (
-        <p className="px-4 py-4 text-13 text-[var(--text-secondary)]">{error ?? t('agentsChecking')}</p>
-      ) : (
-        agents.map((agent, index) => {
-          const jobHere = job?.command === agent.command ? job : null;
+      <Row label={t('resourceCurrentProject')} hint={t('resourceReadOnly')}>
+        <SettingsSelect label={t('resourceCurrentProject')} value={cwd} options={[{ id: '', text: t('resourceGlobalOnly') }, ...[...new Set([currentProject, ...projects].filter((path): path is string => !!path))].map((path) => ({ id: path, text: path }))]} onChange={setCwd} />
+      </Row>
+    </Section>
+      {error ? <p role="alert" className="pb-3 text-12 text-[var(--text-danger)]">{error}</p> : null}
+      {(['claude', 'codex', 'pi'] as const).map((command) => {
+          const agent = agents?.find((item) => item.command === command);
+          const jobHere = job?.command === command ? job : null;
           const link = jobHere?.lines.join('\n').match(LINK)?.[0];
           return (
-            <div key={agent.command}>
-              {index > 0 ? <div className={DIVIDER} /> : null}
+            <Section key={command} title={AGENT_NAMES[command]}>
               <div className={ROW}>
                 <span className="flex min-w-0 items-center gap-3">
                   <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-chip)] text-[var(--text-primary)]">
-                    <AgentMark agent={agent.command} size={16} />
+                    <AgentMark agent={command} size={16} />
                   </span>
                   <span className="flex min-w-0 flex-col gap-1">
-                    <span className={ROW_LABEL}>{AGENT_NAMES[agent.command]}</span>
-                    <span className={`${ROW_HINT} selectable [overflow-wrap:anywhere]`}>{agentHint(agent)}</span>
+                    <span className={ROW_LABEL}>{AGENT_NAMES[command]}</span>
+                    <span className={`${ROW_HINT} selectable [overflow-wrap:anywhere]`}>{agent ? agentHint(agent) : t('agentsChecking')}</span>
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
@@ -370,7 +302,7 @@ function AgentsTab() {
                         {t('agentStop')}
                       </SettingsButton>
                     </>
-                  ) : !agent.installed ? (
+                  ) : !agent ? null : !agent.installed ? (
                     <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)}>
                       {t('agentInstall')}
                     </SettingsButton>
@@ -389,11 +321,11 @@ function AgentsTab() {
                   {jobHere.failed ? <div className="mt-1 font-sans text-[var(--text-danger)]">{t('agentJobFailed')}</div> : null}
                 </div>
               ) : null}
-            </div>
+              <Suspense fallback={null}><AgentResources inventory={inventories.find((item) => item.agent === command) ?? null} error={resourceError} /></Suspense>
+            </Section>
           );
-        })
-      )}
-    </Section>
+        })}
+    </>
   );
 }
 
@@ -716,11 +648,12 @@ interface ProjectsProps {
 
 interface SettingsViewProps extends TabProps, ProjectsProps {
   initialTab?: TabId;
+  currentProject: string | null;
   version: string;
   onBack: () => void;
 }
 
-export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack, initialTab = 'general' }: SettingsViewProps) {
+export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack, currentProject, initialTab = 'general' }: SettingsViewProps) {
   const [tab, setTab] = useState<TabId>(initialTab);
   const active = TABS.find(({ id }) => id === tab) ?? TABS[0];
   return (
@@ -764,7 +697,7 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
           <h2 className="pb-6 text-20 font-medium leading-[1.3] text-[var(--settings-section-title)]">{t(active.label)}</h2>
           {tab === 'general' ? <GeneralTab settings={settings} onChange={onChange} /> : null}
           {tab === 'appearance' ? <AppearanceTab settings={settings} onChange={onChange} /> : null}
-          {tab === 'agents' ? <AgentsTab /> : null}
+          {tab === 'agents' ? <AgentsTab currentProject={currentProject} projects={extraProjects} /> : null}
           {tab === 'remote' ? <RemoteTab /> : null}
           {tab === 'projects' ? (
             <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} />

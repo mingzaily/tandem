@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from './api';
-import { applyTurnEvent, buildItems, groupRoot, moveProject, orderProjects, projectRoot, worktreeName, splitAttachedFiles, buildRows, projectName, turnStatus, type Item } from './items';
+import { applyTurnEvent, buildItems, flattenRows, visibleWorkItems, groupRoot, moveProject, orderProjects, projectRoot, worktreeName, splitAttachedFiles, buildRows, lastEditablePrompt, projectName, turnStatus, type Item } from './items';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Message => ({
   text: '',
@@ -10,6 +10,15 @@ const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Me
 });
 
 describe('buildItems', () => {
+  it('keeps image-only prompts before a compaction marker with their native time', () => {
+    const items = buildItems([
+      message({ id: 'image', kind: 'user', imageError: 'missing', timestamp: '2026-11-08T09:00:00Z' }),
+      message({ id: 'compaction', kind: 'compaction' }),
+      message({ id: 'answer', kind: 'assistant', text: 'Done' }),
+    ]);
+    expect(items.map(({ type }) => type)).toEqual(['user', 'compaction', 'assistant']);
+    expect(items[0]).toMatchObject({ at: Date.parse('2026-11-08T09:00:00Z'), imageErrors: ['missing'] });
+  });
   it('merges results into their tool cards and keeps order', () => {
     const items = buildItems([
       message({ id: '1', kind: 'user', text: 'hi' }),
@@ -79,7 +88,7 @@ describe('buildRows', () => {
     );
     expect(rows.map((row) => row.type)).toEqual(['user', 'group', 'assistant']);
     expect(rows[1]).toMatchObject({ durationMs: 4000 });
-    expect(rows[1].type === 'group' && rows[1].items.map((item) => item.id)).toEqual(['t', 'mid', 'a']);
+    expect(rows[1].type === 'group' && flattenRows(rows[1].items).map((item) => item.id)).toEqual(['t', 'mid', 'a']);
     expect(rows[2].id).toBe('end');
   });
 
@@ -87,16 +96,44 @@ describe('buildRows', () => {
     expect(buildRows([user('u'), answer('a')], false).map((row) => row.type)).toEqual(['user', 'assistant']);
   });
 
-  it('folds a run of work without an answer, but leaves a single row alone', () => {
-    expect(buildRows([user('u'), tool('a')], false).map((row) => row.type)).toEqual(['user', 'tool']);
+  it('folds completed work even when a turn ends before an answer', () => {
+    expect(buildRows([user('u'), tool('a')], false).map((row) => row.type)).toEqual(['user', 'group']);
     expect(buildRows([user('u'), tool('a'), tool('b')], false).map((row) => row.type)).toEqual(['user', 'group']);
   });
 
-  it('keeps the running turn flat but folds earlier turns', () => {
+  it('folds progress and trailing actions when a turn stops before its final reply', () => {
+    const rows = buildRows([user('u'), answer('progress'), tool('a'), { type: 'notice', id: 'stop', text: 'stopped' }], false);
+    expect(rows.map(({ type }) => type)).toEqual(['user', 'group', 'notice']);
+    expect(rows[1].type === 'group' && flattenRows(rows[1].items).map(({ id }) => id)).toEqual(['progress', 'a']);
+  });
+
+  it('groups running actions while keeping assistant progress visible', () => {
     const items = [user('u1'), tool('a'), answer('b'), user('u2'), tool('c'), answer('d')];
     expect(buildRows(items, true).map((row) => row.type)).toEqual([
-      'user', 'group', 'assistant', 'user', 'tool', 'assistant',
+      'user', 'group', 'assistant', 'user', 'group', 'assistant',
     ]);
+  });
+
+  it('keeps completed action segments inside the outer progress group', () => {
+    const rows = buildRows([user('u', 1000), tool('a', 2000), answer('mid', 3000), tool('b', 4000), answer('end', 255000)], false);
+    const outer = rows[1];
+    expect(rows.map((row) => row.type)).toEqual(['user', 'group', 'assistant']);
+    expect(outer).toMatchObject({ durationMs: 254000, isRunning: false });
+    expect(outer.type === 'group' && outer.items.map((item) => item.type)).toEqual(['group', 'assistant', 'group']);
+  });
+
+  it('previews five activities and reveals the full running group on request', () => {
+    const rows = buildRows([user('u'), ...Array.from({ length: 8 }, (_, i) => tool(`t${i}`))], true);
+    const group = rows[1];
+    if (group.type !== 'group') throw new Error('Expected running group');
+    expect(visibleWorkItems(group, false).map(({ id }) => id)).toEqual(['t3', 't4', 't5', 't6', 't7']);
+    expect(visibleWorkItems(group, true)).toHaveLength(8);
+    expect(visibleWorkItems({ ...group, isRunning: false }, false)).toEqual([]);
+  });
+
+  it('gives completed work an outer disclosure separate from its running preview', () => {
+    const items = [user('u'), tool('a'), answer('end')];
+    expect(buildRows(items, false)[1].id).not.toBe(buildRows(items, true)[1].id);
   });
 
   it('omits the duration when a timestamp is missing', () => {
@@ -234,5 +271,17 @@ describe('project order', () => {
     expect(moveProject(['a', 'b', 'c'], 'a', 3)).toEqual(['b', 'c', 'a']);
     expect(moveProject(['a', 'b', 'c'], 'c', 0)).toEqual(['c', 'a', 'b']);
     expect(moveProject(['a', 'b', 'c'], 'b', 1)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('editing the last prompt', () => {
+  const user = (id: string, extra: Partial<Item> = {}): Item => ({ type: 'user', id, text: 'ask', ...extra } as Item);
+  const answer: Item = { type: 'assistant', id: 'a', text: 'done' };
+  it('offers only the last plain prompt that has a turn before it', () => {
+    expect(lastEditablePrompt([user('u1'), answer, user('u2'), answer])).toBe('u2');
+    expect(lastEditablePrompt([user('u1'), answer])).toBeNull();
+    expect(lastEditablePrompt([user('u1'), answer, user('live-user-x')])).toBeNull();
+    expect(lastEditablePrompt([user('u1'), answer, user('u2', { files: [{ name: 'a.ts', path: '/a.ts' }] })])).toBeNull();
+    expect(lastEditablePrompt([user('u1'), answer, user('u2', { images: ['data:image/png;base64,AA'] })])).toBeNull();
   });
 });

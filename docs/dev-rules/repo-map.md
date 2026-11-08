@@ -10,7 +10,7 @@
 | `src/App.tsx` | 应用状态：任务列表、当前选择、运行中的轮次、通知 |
 | `src/components/Sidebar.tsx` | 侧边栏：新建、搜索、项目分组和排序、任务行 |
 | `src/components/MessageStream.tsx` | 对话区：虚拟列表、工作组、工具行、思考行。按需加载 |
-| `src/components/Markdown.tsx` | Markdown 和代码高亮。随对话区按需加载 |
+| `src/components/Markdown.tsx`、`src/lib/fileLinks.ts` | Markdown、文件块与下划线链接、本地文件菜单、代码高亮；随对话区按需加载 |
 | `src/components/Composer.tsx` | 输入框、附件、发送和停止 |
 | `src/lib/composerFocus.ts` | 输入空白与控件的焦点边界、发送后的焦点归属 |
 | `src/components/PendingQueuePanel.tsx` | 合并到输入卡片的待发送列表、悬停行操作、暂停与继续、指针和键盘排序 |
@@ -23,7 +23,11 @@
 | `src/lib/modelRows.ts`、`modelFlyoutPosition.ts` | CLI 默认模型对应关系、模型与强度组合，以及配置浮层的行锚点和视口定位 |
 | `src/components/RunningStatus.tsx` | 运行状态行和生成速度卡片 |
 | `src/components/QuestionPrompt.tsx`、`PermissionPrompt.tsx` | 提问和确认卡片 |
-| `src/components/SettingsView.tsx` | 设置页，含 Agent、项目和远程 |
+| `src/components/SettingsView.tsx`、`SettingsSelect.tsx` | 设置页，含共用主题/语言胶囊下拉、Agent、项目和远程 |
+| `src/components/AgentResources.tsx` | 按需加载的 MCP 与 Skills 只读清单、来源和错误展示，长列表虚拟化 |
+| `src/components/SidebarOptionsMenu.tsx`、`src/lib/sidebarModel.ts` | 项目内 CLI 分组、任务排序（时间、类型、优先级）、完成未读标记、项目置顶顺序与悬停二级菜单 |
+| `src/components/UserMessageEdit.tsx` | 编辑最后一条消息后重发（仅 Claude Code） |
+| `src/components/TaskHeaderActions.tsx`、`Tip.tsx` | 标题栏项目/续接快捷入口、菜单按下态和提示 |
 | `src/components/TrayPanel.tsx` | 菜单栏面板，是单独的窗口 |
 | `src/lib/api.ts` | Tauri 命令和事件的类型与调用，页面只从这里访问后端 |
 | `src/lib/items.ts` | 消息转界面行、实时事件合并、工作组折叠规则 |
@@ -33,8 +37,11 @@
 | `src-tauri/src/commands.rs` | 暴露给页面的 Tauri 命令，各 CLI 的统一入口 |
 | `src-tauri/src/sessions.rs`、`runner.rs` | Claude：读会话文件；启动 `claude`，解析流式输出，停止任务 |
 | `src-tauri/src/codex.rs` | Codex：通过 `codex app-server` 读取和运行 |
+| `src-tauri/src/codex/rollout_images.rs` | Codex App 粘贴图片的临时文件被清理后，从 rollout 取回图片 |
 | `src-tauri/src/pi.rs` | Pi：读会话文件，通过 `pi --mode rpc` 运行 |
 | `src-tauri/src/titles.rs` | 独立生成任务标题，通过 CLI 元数据接口写回原生标题 |
+| `src-tauri/src/agent_resources.rs` | 全局与项目 MCP、技能元数据、npx skills 来源的只读扫描 |
+| `src-tauri/src/local_files.rs` | 任务文件链接的本机路径规范化，打开即运行的文件改为在访达中显示 |
 | `src-tauri/src/writers.rs` | 查任务是否开在别的进程里、是否正在运行 |
 | `src-tauri/src/storage/` | `~/.tandem/` 配置与界面状态：TOML 注释保留、原子写入、窗口快照、文件观察、单实例写锁与状态隔离 |
 | `src-tauri/src/remote/` | 手机访问：加密（`crypto`）、连接中转和会话（`link`）、手机能做的操作（`ops`）、配置（`store`） |

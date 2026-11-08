@@ -1,4 +1,4 @@
-import { buildRows, type Item, type Row } from './items';
+import { buildRows, flattenRows, type Item, type Row } from './items';
 import { parseToolInput, WRITE_TOOLS } from './tools';
 
 export interface ChangedFile {
@@ -63,7 +63,7 @@ export function buildMessageRows(items: Item[], isRunning: boolean, cwd: string 
   for (const row of buildRows(items, isRunning)) {
     if (row.type === 'user') appendChanges();
     rows.push(row);
-    turn.push(...(row.type === 'group' ? row.items : [row]));
+    turn.push(...flattenRows([row]));
   }
   if (!isRunning) appendChanges();
   return rows;

@@ -1,0 +1,30 @@
+{
+  "equal": false,
+  "checks": {
+    ".claude/settings.json": true,
+    ".claude.json": false,
+    ".codex/config.toml": true,
+    ".pi/agent/settings.json": true,
+    ".pi/agent/models.json": true,
+    ".pi/agent/mcp.json": true,
+    ".agents/.skill-lock.json": true
+  },
+  "before": {
+    ".claude/settings.json": "bea1295f4283780b550195feac1b3a76d1c977b93fcf26b1eaf206d522556dd9",
+    ".claude.json": "c7584902d5cc572db7fbca3faeb87edb9f3e2bb2baa755b2af01d50fab6b5f01",
+    ".codex/config.toml": "10286419654d3be6332d0d02344828f7c65d2dbacd8784c7ea03f23d2d4f674e",
+    ".pi/agent/settings.json": "6c63d66ab9d20aae910c23738757066965b85d647b6b0199258a30fbd46e1ce2",
+    ".pi/agent/models.json": "8318276f06a6564350d852fd6b2a954126923e10a093fbc0b307649a57883e48",
+    ".pi/agent/mcp.json": null,
+    ".agents/.skill-lock.json": "8963df8175b52dadb20079c9f8dad4e7763f08612b4970b2feda6379399c29f9"
+  },
+  "after": {
+    ".claude/settings.json": "bea1295f4283780b550195feac1b3a76d1c977b93fcf26b1eaf206d522556dd9",
+    ".claude.json": "204a2173a4a78bccff5b436ef2a03b369d6f695fb93363c2161ea62d2be716d4",
+    ".codex/config.toml": "10286419654d3be6332d0d02344828f7c65d2dbacd8784c7ea03f23d2d4f674e",
+    ".pi/agent/settings.json": "6c63d66ab9d20aae910c23738757066965b85d647b6b0199258a30fbd46e1ce2",
+    ".pi/agent/models.json": "8318276f06a6564350d852fd6b2a954126923e10a093fbc0b307649a57883e48",
+    ".pi/agent/mcp.json": null,
+    ".agents/.skill-lock.json": "8963df8175b52dadb20079c9f8dad4e7763f08612b4970b2feda6379399c29f9"
+  }
+}

@@ -369,7 +369,7 @@ mod tests {
             is_error: false,
             truncated: false,
             timestamp: None,
-            image: image.map(str::to_owned),
+            image: image.map(str::to_owned), image_error: None,
         }
     }
 

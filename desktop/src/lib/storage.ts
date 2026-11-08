@@ -16,11 +16,15 @@ export interface Config {
   past_conversation_dirs: string[];
   projects: string[];
   new_task_agent: Agent;
+  sidebar_group_by_cli: boolean;
+  sidebar_sort: 'time' | 'type' | 'priority';
   agents: Record<Agent, StoredTurnPrefs>;
 }
 export interface ViewState {
   taskMeta: TaskMeta;
   projectOrder: string[];
+  pinnedProjects: string[];
+  unreadTasks: string[];
   sidebarCollapsed: boolean;
   sidebarWidth: number;
   projectsSeeded: boolean;
@@ -38,10 +42,10 @@ export const DEFAULT_SNAPSHOT: PreferencesSnapshot = {
   config: {
     theme: 'system', light_theme: 'tandem-light', dark_theme: 'tandem-dark', language: 'system', ui_font_size: 14,
     send_with_cmd_enter: false, translucent_sidebar: true, keep_in_menu_bar: true, notify_when_done: true,
-    conversation_dir: '', past_conversation_dirs: [], projects: [], new_task_agent: 'claude',
+    conversation_dir: '', past_conversation_dirs: [], projects: [], new_task_agent: 'claude', sidebar_group_by_cli: false, sidebar_sort: 'time',
     agents: { claude: prefs(), codex: prefs(), pi: prefs() },
   },
-  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false },
+  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], pinnedProjects: [], unreadTasks: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false },
   revision: 0, errors: [],
 };
 

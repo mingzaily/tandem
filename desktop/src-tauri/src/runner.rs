@@ -48,6 +48,9 @@ pub enum TurnEvent {
     },
 }
 
+/// Codex and Pi can only fork a message into a new task, which is not an edit.
+const EDIT_UNSUPPORTED: &str = "这个 CLI 不支持编辑后重发";
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TurnOptions {
@@ -63,6 +66,9 @@ pub struct TurnOptions {
     /// Internal one-shot requests use the CLI without creating a native task.
     #[serde(skip)]
     pub(crate) ephemeral: bool,
+    /// Replaces the task's last prompt, given by its message id. Claude only, and never queued.
+    #[serde(default, skip_serializing)]
+    pub edit_last: Option<String>,
 }
 
 impl TurnOptions {
@@ -75,6 +81,9 @@ impl TurnOptions {
     }
     /// Pi's models are named `provider/id`, and it has no permission modes.
     pub fn validate_pi(&self) -> Result<(), String> {
+        if self.edit_last.is_some() {
+            return Err(EDIT_UNSUPPORTED.into());
+        }
         let is_valid_model = |model: &str| {
             !model.is_empty()
                 && !model.starts_with('-')
@@ -92,6 +101,9 @@ impl TurnOptions {
 
     /// Codex has its own effort levels, and they change with its models.
     pub fn validate_codex(&self) -> Result<(), String> {
+        if self.edit_last.is_some() {
+            return Err(EDIT_UNSUPPORTED.into());
+        }
         let is_word = |effort: &str| !effort.is_empty() && effort.chars().all(|c| c.is_ascii_lowercase());
         if self.effort.as_deref().is_some_and(|effort| !is_word(effort)) {
             return Err("Invalid effort level".into());
@@ -514,20 +526,27 @@ struct Target {
     task_id: String,
     cwd: String,
     is_new: bool,
+    /// Where to truncate when the turn replaces the last prompt.
+    edit: Option<sessions::EditAnchor>,
 }
 
-fn resolve_target(task_id: Option<String>, cwd: Option<String>) -> Result<Target, String> {
+fn resolve_target(task_id: Option<String>, cwd: Option<String>, edit_last: Option<&str>) -> Result<Target, String> {
     if let Some(task_id) = task_id {
         // A task resumes only from the directory recorded in its own file.
         let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &task_id)?;
         let cwd = sessions::read_task_cwd(&path).ok_or("The task has no working directory")?;
-        return Ok(Target { task_id, cwd, is_new: false });
+        let edit = edit_last.map(|message_id| sessions::edit_anchor(&path, message_id)).transpose()?;
+        return Ok(Target { task_id, cwd, is_new: false, edit });
+    }
+    if edit_last.is_some() {
+        return Err("新任务没有可以编辑的消息".into());
     }
     let cwd = cwd.ok_or("A new task needs a working directory")?;
     Ok(Target {
         task_id: uuid::Uuid::new_v4().to_string(),
         cwd,
         is_new: true,
+        edit: None,
     })
 }
 
@@ -549,7 +568,8 @@ pub async fn send_turn(
     on_event: TurnSink,
 ) -> Result<(), String> {
     options.validate()?;
-    let target = tauri::async_runtime::spawn_blocking(move || resolve_target(task_id, cwd))
+    let edit_last = options.edit_last.clone();
+    let target = tauri::async_runtime::spawn_blocking(move || resolve_target(task_id, cwd, edit_last.as_deref()))
         .await
         .map_err(|error| error.to_string())??;
     // The page warns from what it last saw. This covers a terminal that opened since then.
@@ -746,6 +766,10 @@ fn claude_args(target: &Target, options: &TurnOptions, task_rules: &[String]) ->
     }
     args.push(if target.is_new { "--session-id" } else { "--resume" }.to_owned());
     args.push(target.task_id.clone());
+    if let Some(edit) = &target.edit {
+        // The CLI refuses the truncation when the discarded part holds more than that prompt's turn.
+        args.extend(["--resume-session-at".to_owned(), edit.assistant.clone(), "--resume-drops-turn".to_owned(), edit.prompt.clone()]);
+    }
     args
 }
 
@@ -970,7 +994,7 @@ mod tests {
 
     #[test]
     fn new_tasks_use_a_session_id_and_existing_tasks_resume() {
-        let target = |is_new| Target { task_id: "id".into(), cwd: "/".into(), is_new };
+        let target = |is_new| Target { task_id: "id".into(), cwd: "/".into(), is_new, edit: None };
         let args = |is_new| claude_args(&target(is_new), &TurnOptions::default(), &[]);
         assert!(args(true).ends_with(&["--session-id".to_owned(), "id".to_owned()]));
         assert!(args(false).ends_with(&["--resume".to_owned(), "id".to_owned()]));
@@ -978,7 +1002,7 @@ mod tests {
 
     #[test]
     fn title_requests_are_ephemeral_and_disable_tools_and_hooks() {
-        let target = Target { task_id: "title".into(), cwd: "/tmp".into(), is_new: true };
+        let target = Target { task_id: "title".into(), cwd: "/tmp".into(), is_new: true, edit: None };
         let options = TurnOptions { ephemeral: true, ..Default::default() };
         let args = claude_args(&target, &options, &[]);
         assert!(args.contains(&"--no-session-persistence".into()));
@@ -1012,7 +1036,7 @@ mod tests {
 
     #[test]
     fn options_and_task_rules_become_flags_and_the_default_mode_adds_none() {
-        let target = Target { task_id: "id".into(), cwd: "/".into(), is_new: false };
+        let target = Target { task_id: "id".into(), cwd: "/".into(), is_new: false, edit: None };
         let plain = claude_args(&target, &TurnOptions::default(), &[]);
         assert!(!plain.iter().any(|arg| arg == "--permission-mode" || arg == "--model"));
         let options = TurnOptions {
@@ -1182,10 +1206,23 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_truncates_the_resumed_task_and_only_claude_accepts_it() {
+        let edit = Some(sessions::EditAnchor { assistant: "a1".into(), prompt: "u2".into() });
+        let target = Target { task_id: "id".into(), cwd: "/".into(), is_new: false, edit };
+        let args = claude_args(&target, &TurnOptions::default(), &[]);
+        assert!(args.ends_with(&["--resume", "id", "--resume-session-at", "a1", "--resume-drops-turn", "u2"].map(str::to_owned)));
+        let options = TurnOptions { edit_last: Some("u2:0".into()), ..Default::default() };
+        assert!(options.validate_for(sessions::Agent::Codex).is_err());
+        assert!(options.validate_for(sessions::Agent::Pi).is_err());
+        assert!(options.validate_for(sessions::Agent::Claude).is_ok());
+        assert!(resolve_target(None, Some("/".into()), Some("u2:0")).is_err());
+    }
+
+    #[test]
     fn only_a_new_task_starts_a_worktree() {
         let options = TurnOptions { worktree: true, ..TurnOptions::default() };
-        let new_task = Target { task_id: "a".into(), cwd: "/x".into(), is_new: true };
-        let resumed = Target { task_id: "a".into(), cwd: "/x".into(), is_new: false };
+        let new_task = Target { task_id: "a".into(), cwd: "/x".into(), is_new: true, edit: None };
+        let resumed = Target { task_id: "a".into(), cwd: "/x".into(), is_new: false, edit: None };
         assert!(claude_args(&new_task, &options, &[]).contains(&"--worktree".to_owned()));
         assert!(!claude_args(&resumed, &options, &[]).contains(&"--worktree".to_owned()));
     }

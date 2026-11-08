@@ -19,6 +19,7 @@ qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
+serde_yaml_ng = "0.10"
 sha2 = "0.10"
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-dialog = "2"

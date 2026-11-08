@@ -13,12 +13,31 @@ use tauri::{AppHandle, DragDropEvent, Emitter, Manager};
 use uuid::Uuid;
 
 /// The API refuses larger images. A larger image file goes by path, and the CLI resizes it.
-const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
+pub(crate) const MAX_INLINE_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_HELD: usize = 20;
 /// The page reads these lines back from the task file to show file chips.
 pub const ATTACHED_FILE_PREFIX: &str = "Attached file, readable with your tools even outside the workspace: ";
 pub const DROPPED_EVENT: &str = "attachments-dropped";
 pub const DRAG_EVENT: &str = "attachment-drag";
+
+/// Only native history parsing calls this reader. The page receives image bytes, never a path-reading capability.
+pub(crate) fn read_native_image(path: &Path) -> Result<String, &'static str> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let extension = path.extension().and_then(|value| value.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if !["png", "jpg", "jpeg", "gif", "webp"].contains(&extension.as_str()) {
+        return Err("unsupported");
+    }
+    let file = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path)
+        .map_err(|error| if error.kind() == std::io::ErrorKind::NotFound { "missing" } else { "unreadable" })?;
+    let metadata = file.metadata().map_err(|_| "unreadable")?;
+    if !metadata.is_file() { return Err("unsupported"); }
+    if metadata.len() > MAX_INLINE_IMAGE_BYTES { return Err("tooLarge"); }
+    let mut bytes = Vec::new();
+    file.take(MAX_INLINE_IMAGE_BYTES + 1).read_to_end(&mut bytes).map_err(|_| "unreadable")?;
+    if bytes.len() as u64 > MAX_INLINE_IMAGE_BYTES { return Err("tooLarge"); }
+    let media_type = image_media_type(&bytes).ok_or("unsupported")?;
+    Ok(format!("data:{media_type};base64,{}", STANDARD.encode(bytes)))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -371,6 +390,26 @@ pub fn on_drag(app: &AppHandle, event: &DragDropEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_images_require_a_raster_extension_header_regular_file_and_bounded_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("image.PNG");
+        fs::write(&path, b"\x89PNG\r\n\x1a\nimage").unwrap();
+        assert!(read_native_image(&path).unwrap().starts_with("data:image/png;base64,"));
+        let text = dir.path().join("secret.png");
+        fs::write(&text, "private configuration").unwrap();
+        assert_eq!(read_native_image(&text), Err("unsupported"));
+        let svg = dir.path().join("image.svg");
+        fs::write(&svg, "<svg/>").unwrap();
+        assert_eq!(read_native_image(&svg), Err("unsupported"));
+        fs::File::create(&path).unwrap().set_len(MAX_INLINE_IMAGE_BYTES + 1).unwrap();
+        assert_eq!(read_native_image(&path), Err("tooLarge"));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(read_native_image(&path), Err("missing"));
+        fs::create_dir(&path).unwrap();
+        assert_eq!(read_native_image(&path), Err("unsupported"));
+    }
 
     const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 13, 10, 26, 10];
 

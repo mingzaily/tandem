@@ -200,7 +200,7 @@ fn clip(text: &str) -> (String, bool) {
 }
 
 fn message(id: String, kind: MessageKind, text: String, timestamp: Option<String>) -> Message {
-    Message { id, kind, text, tool_name: None, tool_use_id: None, is_error: false, truncated: false, timestamp, image: None }
+    Message { id, kind, text, tool_name: None, tool_use_id: None, is_error: false, truncated: false, timestamp, image: None, image_error: None }
 }
 
 /// Names and fields the page already knows from Claude's tools.

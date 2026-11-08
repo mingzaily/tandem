@@ -16,7 +16,7 @@
 
 - CSP 限制页面只能访问自身和 IPC。不要放宽 `img-src` 和 `connect-src`。
 - Markdown 里的远程图片只显示替代文字，否则打开任务就会发请求。
-- 链接点击后用系统浏览器打开，WebView 不跳转。
+- 网页链接点击后用系统浏览器打开，WebView 保持当前页面。本地链接使用受任务上下文约束的 `resolve_task_path` / `open_task_path`，工作目录来自原生任务，动作限于系统默认打开和访达定位，路径按独立参数传给 `open --`。链接文字来自模型输出，指向 `.app`、`.command`、`.terminal`、`.pkg`、AppleScript 这类打开即运行的文件时只在访达中显示（`local_files::runs_when_opened`）。
 
 ## 权限
 
@@ -73,3 +73,5 @@
 ## 测试入口
 
 只在调试版提供，用 `#[cfg(debug_assertions)]` 隔离。正式版不能有通过环境变量执行脚本的入口。
+
+Codex 原生历史的本机图片由后端解析器读取，限制栅格扩展名、文件头、5 MB 和普通文件，图片数据随历史返回。这个入口接收原生 CLI 的图片块，页面只持有 data URL 或错误标记。Agent 配置清单的字段与错误脱敏边界见 [Agent 配置清单](agent-configuration-inventory.md)。

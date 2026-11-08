@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, CaseSensitive, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
+import { Archive, ArchiveRestore, Sparkles, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
 import { revealTaskFolder, type Agent, type TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
 import { toggleArchived, togglePin, type TaskMeta } from '../lib/taskMeta';
@@ -29,7 +29,7 @@ export function TaskMenu({ anchor, task, meta, onMetaChange, onRename, onGenerat
   const isArchived = meta.archived.includes(id);
   const items: { label: string; icon: LucideIcon; run: () => void; disabled?: boolean }[] = [
     { label: t('taskRename'), icon: Pencil, run: () => onRename(id) },
-    { label: t(generatingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: CaseSensitive, run: () => onGenerateTitle(agent, id), disabled: generatingTitle },
+    { label: t(generatingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: Sparkles, run: () => onGenerateTitle(agent, id), disabled: generatingTitle },
     ...(isArchived
       ? []
       : [

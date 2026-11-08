@@ -9,6 +9,18 @@ export const setSystemLanguage = (language: 'zh' | 'en') => invoke<void>('set_sy
 
 export type Agent = 'claude' | 'codex' | 'pi';
 
+export interface AgentInventory {
+  agent: Agent;
+  mcpServers: { name: string; transport: string; command: string | null; scope: 'global' | 'project'; source: string }[];
+  skills: { name: string; description: string; path: string; scope: 'global' | 'project'; managed: boolean; repository: string | null }[];
+  errors: { section: 'mcp' | 'skills'; path: string; reason: string }[];
+  notes: { section: 'mcp' | 'skills'; kind: 'piMcpDisabled' | 'mcpImports'; detail: string }[];
+}
+export const agentResources = (cwd: string | null) => invoke<AgentInventory[]>('agent_resources', { cwd });
+
+export const openTaskPath = (agent: Agent, id: string, path: string, action: 'open' | 'reveal') => invoke<void>('open_task_path', { agent, id, path, action });
+export const resolveTaskPath = (agent: Agent, id: string, path: string) => invoke<string>('resolve_task_path', { agent, id, path });
+
 export interface TaskSummary {
   id: string;
   title: string;
@@ -29,6 +41,7 @@ export interface Message {
   truncated: boolean;
   timestamp?: string;
   image?: string;
+  imageError?: string;
 }
 
 export interface TaskContext {
@@ -75,6 +88,8 @@ export interface TurnOptions {
   permissionMode: string | null;
   worktree?: boolean;
   ignoreExternalWriter?: boolean;
+  /** Replaces the task's last prompt, given by its message id. Claude only. */
+  editLast?: string;
 }
 
 export interface QuestionOption {

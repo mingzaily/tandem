@@ -1,13 +1,16 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Check, ChevronDown, ChevronRight, CirclePause, FileText, Layers, Loader2, Sparkles, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CirclePause, FileText, ImageOff, Layers, Loader2, Sparkles, X } from 'lucide-react';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
-import type { Item, TextItem, ToolItem, WorkGroup } from '../lib/items';
+import type { Agent } from '../lib/api';
+import type { Item, Row, TextItem, ToolItem, WorkGroup } from '../lib/items';
+import { MAX_LIVE_ACTIVITIES, visibleWorkItems } from '../lib/items';
 import { buildMessageRows } from '../lib/fileChanges';
-import { describeTool, explorationSummary, formatDuration } from '../lib/tools';
+import { describeTool, formatDuration } from '../lib/tools';
 import { ZoomableImage } from './ImageLightbox';
-import { Markdown } from './Markdown';
+import { Markdown, TaskFileContext } from './Markdown';
 import { FileChangeSummary } from './FileChangeSummary';
+import { EditableUserMessage } from './UserMessageEdit';
 
 const BOTTOM_THRESHOLD_PX = 48;
 const ESTIMATED_ROW_PX = 40;
@@ -19,8 +22,14 @@ const CHEVRON_SLOT =
 type Toggle = (id: string) => void;
 
 interface MessageStreamProps {
+  taskId: string;
+  agent: Agent;
   items: Item[];
   isRunning: boolean;
+  /** The prompt that can be edited and sent again, if any. */
+  editableId: string | null;
+  onEditLast: (id: string, text: string) => Promise<void>;
+  sendWithCmdEnter: boolean;
   /** A long task takes a moment to read, and is not empty in the meantime. */
   isLoading: boolean;
   cwd: string | null;
@@ -28,12 +37,14 @@ interface MessageStreamProps {
   bottomPadding: number;
 }
 
-export default function MessageStream({ items, isRunning, isLoading, cwd, bottomPadding }: MessageStreamProps) {
+const expandedMemory = new Map<string, Set<string>>();
+
+export default function MessageStream({ taskId, agent, items, isRunning, editableId, onEditLast, sendWithCmdEnter, isLoading, cwd, bottomPadding }: MessageStreamProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const rows = useMemo(() => buildMessageRows(items, isRunning, cwd), [items, isRunning, cwd]);
   // Expansion lives here because rows unmount when they scroll out of view.
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<Set<string>>(() => expandedMemory.get(taskId) ?? new Set());
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -55,9 +66,10 @@ export default function MessageStream({ items, isRunning, isLoading, cwd, bottom
     setExpanded((current) => {
       const next = new Set(current);
       if (!next.delete(id)) next.add(id);
+      expandedMemory.set(taskId, next);
       return next;
     });
-  }, []);
+  }, [taskId]);
 
   if (rows.length === 0) {
     if (isLoading) return null;
@@ -69,6 +81,7 @@ export default function MessageStream({ items, isRunning, isLoading, cwd, bottom
   }
 
   return (
+    <TaskFileContext.Provider value={{ agent, id: taskId, cwd }}>
     <div
       ref={scroller}
       className="message-scroll h-full overflow-y-auto"
@@ -98,6 +111,10 @@ export default function MessageStream({ items, isRunning, isLoading, cwd, bottom
                   <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.has(row.id)} onToggle={() => toggle(row.id)} />
                 ) : row.type === 'group' ? (
                   <Group group={row} expanded={expanded} onToggle={toggle} />
+                ) : row.type === 'user' && row.id === editableId ? (
+                  <EditableUserMessage text={row.text} sendWithCmdEnter={sendWithCmdEnter} onSend={(text) => onEditLast(row.id, text)}>
+                    <ItemRow item={row} expanded={expanded} onToggle={toggle} />
+                  </EditableUserMessage>
                 ) : (
                   <ItemRow item={row} expanded={expanded} onToggle={toggle} />
                 )}
@@ -107,6 +124,7 @@ export default function MessageStream({ items, isRunning, isLoading, cwd, bottom
         })}
       </div>
     </div>
+    </TaskFileContext.Provider>
   );
 }
 
@@ -120,10 +138,17 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
     case 'user':
       return (
         <div className="flex flex-col items-end gap-2">
-          {item.images?.length || item.files?.length ? (
+          {item.images?.length || item.imageErrors?.length || item.files?.length ? (
             <div className="flex max-w-[488px] flex-wrap justify-end gap-2">
               {item.images?.map((src, index) => (
                 <ZoomableImage key={index} src={src} className="max-h-[160px] max-w-[240px] rounded-lg border border-[var(--msg-user-border)] object-contain" />
+              ))}
+              {item.imageErrors?.map((reason, index) => (
+                <span key={`image-error-${index}`} role="img" aria-label={t(reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}
+                  title={t(reason === 'tooLarge' ? 'imageTooLarge' : reason === 'unsupported' ? 'imageUnsupported' : reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}
+                  className="flex min-h-[140px] max-w-[280px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))] p-4 text-12 font-medium text-[hsl(var(--muted-foreground))]">
+                  <ImageOff size={32} aria-hidden className="text-[var(--text-tertiary)]" /><span>{t(reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}</span>
+                </span>
               ))}
               {item.files?.map((file) => (
                 <span
@@ -175,40 +200,56 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
 
 function Group({ group, expanded, onToggle }: RowProps & { group: WorkGroup }) {
   const isOpen = expanded.has(group.id);
-  const base = group.durationMs !== null
-    ? t('worked', { duration: formatDuration(group.durationMs) })
+  const canToggle = !group.isRunning || group.items.length > MAX_LIVE_ACTIVITIES;
+  const visible = visibleWorkItems(group, isOpen);
+  const base = group.isRunning ? t('workRunning') : group.durationMs !== null
+    ? t(group.isSummary ? 'processed' : 'worked', { duration: formatDuration(group.durationMs) })
     : t('workDetails');
-  const exploration = explorationSummary(group.items);
   return (
     <div className="w-full min-w-0">
       <button
         type="button"
-        aria-expanded={isOpen}
+        aria-expanded={canToggle ? isOpen : undefined}
+        disabled={!canToggle}
+        data-work-group={group.isRunning ? 'running' : 'completed'}
         onClick={() => onToggle(group.id)}
-        className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[8px] py-[2px] text-left transition-opacity duration-[var(--motion-fast)] hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[8px] py-[2px] text-left transition-opacity duration-[var(--motion-fast)] enabled:hover:opacity-80 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
       >
-        <Layers size={14} aria-hidden className="shrink-0 text-[var(--msg-tool-card-chevron)]" />
+        <span className="shrink-0 text-[var(--msg-tool-card-chevron)]">{group.isRunning ? <Loader2 size={14} aria-hidden className="animate-spin motion-reduce:animate-none" /> : <Layers size={14} aria-hidden />}</span>
         <span className="min-w-0 translate-y-[1px] truncate text-14 text-[var(--msg-tool-card-chevron)]">
-          {exploration ? `${base} · ${exploration}` : base}
+          {base}
         </span>
         <div className="flex-1" />
-        <ChevronRight
+        {canToggle ? <ChevronRight
           size={14}
           aria-hidden
           className={`shrink-0 text-[var(--msg-tool-card-chevron)] transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
             isOpen ? 'rotate-90' : ''
           }`}
-        />
+        /> : null}
       </button>
-      {isOpen ? (
+      {visible.length ? (
         <div className="mt-1 flex min-w-0 flex-col gap-0.5 border-l-2 border-[var(--agent-actions-rail)] py-[2px] pl-3">
-          {group.items.map((item) => (
-            <ItemRow key={item.id} item={item} expanded={expanded} onToggle={onToggle} />
-          ))}
+          <WorkChildren rows={visible} expanded={expanded} onToggle={onToggle} />
         </div>
       ) : null}
     </div>
   );
+}
+
+function WorkChildren({ rows, expanded, onToggle }: RowProps & { rows: Row[] }) {
+  const scroller = useRef<HTMLDivElement>(null);
+  const virtualized = rows.length > 80;
+  const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => 36, enabled: virtualized, overscan: 5, getItemKey: (index) => rows[index].id });
+  const render = (row: Row) => row.type === 'group'
+    ? <Group key={row.id} group={row} expanded={expanded} onToggle={onToggle} />
+    : <ItemRow key={row.id} item={row} expanded={expanded} onToggle={onToggle} />;
+  if (!virtualized) return <>{rows.map(render)}</>;
+  return <div ref={scroller} className="h-[420px] overflow-y-auto overscroll-contain">
+    <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
+      {virtual.getVirtualItems().map((row) => <div key={row.key} data-index={row.index} ref={virtual.measureElement} className="absolute left-0 top-0 w-full" style={{ transform: `translateY(${row.start}px)` }}>{render(rows[row.index])}</div>)}
+    </div>
+  </div>;
 }
 
 function ThinkingRow({ item, isOpen, onToggle }: { item: TextItem; isOpen: boolean; onToggle: Toggle }) {

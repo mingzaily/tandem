@@ -13,6 +13,8 @@ use std::{
 
 const MAX_TASKS: usize = 300;
 const TITLE_TAIL_BYTES: u64 = 256 * 1024;
+/// Claude records a stopped turn as a user message starting with this.
+const INTERRUPTION_PREFIX: &str = "[Request interrupted by user";
 const MAX_TEXT_BYTES: usize = 20 * 1024;
 /// A 5 MB image, the most the API takes, is about this long as base64.
 const MAX_IMAGE_DATA_BYTES: usize = 7 * 1024 * 1024;
@@ -67,6 +69,8 @@ pub struct Message {
     /// A data URL for an image the user sent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_error: Option<String>,
 }
 
 /// What the context ring needs: the tokens the last request carried, and for which model.
@@ -236,6 +240,70 @@ pub fn read_task_cwd(path: &Path) -> Option<String> {
 }
 
 pub fn read_task(path: &Path) -> Result<TaskContent, String> {
+    let (entries, parents) = read_entries(path)?;
+    let included = active_branch(&entries, &parents);
+    let mut messages = Vec::new();
+    for (index, entry) in entries.iter().enumerate() {
+        if included.contains(&index) {
+            append_messages(entry, &mut messages);
+        }
+    }
+    let context = entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(index, entry)| !entry.is_user && included.contains(index))
+        .find_map(|(_, entry)| {
+            let raw: RawUsage = serde_json::from_str(entry.message.get()).ok()?;
+            Some(TaskContext { used_tokens: context_tokens(&raw.usage?)?, model: raw.model })
+        });
+    Ok(TaskContent { messages, context })
+}
+
+/// What `--resume-session-at` needs to replace the last prompt: the assistant message that
+/// prompt followed, and the prompt itself, both on the active branch of the task's own file.
+#[derive(Debug, PartialEq)]
+pub struct EditAnchor {
+    pub assistant: String,
+    pub prompt: String,
+}
+
+pub fn edit_anchor(path: &Path, message_id: &str) -> Result<EditAnchor, String> {
+    let (entries, parents) = read_entries(path)?;
+    let included = active_branch(&entries, &parents);
+    let mut assistant: Option<&str> = None;
+    let mut last: Option<(&Entry, Option<&str>, Vec<Message>)> = None;
+    for (index, entry) in entries.iter().enumerate() {
+        if !included.contains(&index) || entry.is_meta {
+            continue;
+        }
+        if entry.is_compact_summary {
+            // Truncating to before a compaction would discard the summary as well.
+            assistant = None;
+            continue;
+        }
+        if !entry.is_user {
+            assistant = Some(&entry.uuid);
+            continue;
+        }
+        let mut messages = Vec::new();
+        append_messages(entry, &mut messages);
+        let is_prompt = messages.iter().any(|message| {
+            message.kind == MessageKind::User && !message.text.starts_with(INTERRUPTION_PREFIX)
+        });
+        if is_prompt {
+            last = Some((entry, assistant, messages));
+        }
+    }
+    let (prompt, assistant, messages) = last.ok_or("这个任务还没有可以编辑的消息")?;
+    if !messages.iter().any(|message| message.id == message_id) {
+        return Err("只能编辑最后一条消息。任务已有新内容，请等它刷新后再试".into());
+    }
+    let assistant = assistant.ok_or("第一条消息或压缩后的第一条消息不能编辑")?;
+    Ok(EditAnchor { assistant: assistant.to_owned(), prompt: prompt.uuid.clone() })
+}
+
+fn read_entries(path: &Path) -> Result<(Vec<Entry>, HashMap<String, String>), String> {
     let reader = BufReader::new(File::open(path).map_err(|error| error.to_string())?);
     let mut parents: HashMap<String, String> = HashMap::new();
     let mut entries = Vec::new();
@@ -277,23 +345,7 @@ pub fn read_task(path: &Path) -> Result<TaskContent, String> {
             });
         }
     }
-    let included = active_branch(&entries, &parents);
-    let mut messages = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
-        if included.contains(&index) {
-            append_messages(entry, &mut messages);
-        }
-    }
-    let context = entries
-        .iter()
-        .enumerate()
-        .rev()
-        .filter(|(index, entry)| !entry.is_user && included.contains(index))
-        .find_map(|(_, entry)| {
-            let raw: RawUsage = serde_json::from_str(entry.message.get()).ok()?;
-            Some(TaskContext { used_tokens: context_tokens(&raw.usage?)?, model: raw.model })
-        });
-    Ok(TaskContent { messages, context })
+    Ok((entries, parents))
 }
 
 /// Rewinding leaves abandoned branches in the file, so messages are selected from the newest leaf
@@ -457,7 +509,7 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
                     is_error: false,
                     truncated,
                     timestamp: entry.timestamp.clone(),
-                    image: None,
+                    image: None, image_error: None,
                 });
             }
             Some("tool_result") => {
@@ -478,7 +530,7 @@ fn append_messages(entry: &Entry, out: &mut Vec<Message>) {
                         .unwrap_or(false),
                     truncated,
                     timestamp: entry.timestamp.clone(),
-                    image: None,
+                    image: None, image_error: None,
                 });
             }
             _ => {}
@@ -515,7 +567,7 @@ fn text_message(entry: &Entry, block: usize, kind: MessageKind, text: &str) -> M
         is_error: false,
         truncated,
         timestamp: entry.timestamp.clone(),
-        image: None,
+        image: None, image_error: None,
     }
 }
 
@@ -788,6 +840,41 @@ mod tests {
 
     fn texts(messages: &[Message]) -> Vec<&str> {
         messages.iter().map(|message| message.text.as_str()).collect()
+    }
+
+    #[test]
+    fn editing_truncates_at_the_assistant_before_the_last_prompt_on_the_active_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = |text: &str| json!({"type": "text", "text": text});
+        let mut lines = vec![
+            user("u1", None, json!("first")),
+            assistant("a1", "u1", "m1", text("one")),
+            user("u2", Some("a1"), json!("second")),
+            assistant("a2", "u2", "m2", text("two")),
+            // A tool result and the interruption marker are part of the turn, not prompts of their own.
+            user("r2", Some("a2"), json!([{"type": "tool_result", "tool_use_id": "t", "content": "ok"}])),
+            user("i2", Some("r2"), json!("[Request interrupted by user]")),
+        ];
+        let path = write_session(dir.path(), "p", ID, &lines);
+        assert_eq!(edit_anchor(&path, "u2:0"), Ok(EditAnchor { assistant: "a1".into(), prompt: "u2".into() }));
+        assert!(edit_anchor(&path, "u1:0").unwrap_err().contains("最后一条"));
+
+        let only = write_session(dir.path(), "q", ID, &lines[..2]);
+        assert!(edit_anchor(&only, "u1:0").unwrap_err().contains("第一条"));
+
+        // An earlier edit left a branch behind; only the active one counts.
+        lines.push(user("u3", Some("a1"), json!("second, edited")));
+        let path = write_session(dir.path(), "r", ID, &lines);
+        assert_eq!(edit_anchor(&path, "u3:0"), Ok(EditAnchor { assistant: "a1".into(), prompt: "u3".into() }));
+
+        let compacted = write_session(dir.path(), "s", ID, &[
+            user("u1", None, json!("first")),
+            assistant("a1", "u1", "m1", text("one")),
+            json!({"type": "user", "uuid": "c", "parentUuid": null, "logicalParentUuid": "a1", "isCompactSummary": true,
+                   "message": {"role": "user", "content": "summary"}}),
+            user("u2", Some("c"), json!("after compaction")),
+        ]);
+        assert!(edit_anchor(&compacted, "u2:0").unwrap_err().contains("压缩"));
     }
 
     #[test]

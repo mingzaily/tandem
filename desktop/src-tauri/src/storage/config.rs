@@ -20,6 +20,10 @@ past_conversation_dirs = []
 projects = []
 new_task_agent = "claude"
 
+# 项目下按 CLI 分组；任务排序：time（最近活动）/ type（CLI 类型）/ priority（等你回答 > 完成未读 > 运行中 > 其他）。
+sidebar_group_by_cli = false
+sidebar_sort = "time"
+
 # model、effort 留空时跟随 CLI；权限选项只通过启动参数传递。
 [agents.claude]
 model = ""
@@ -79,6 +83,8 @@ pub struct Config {
     pub past_conversation_dirs: Vec<String>,
     pub projects: Vec<String>,
     pub new_task_agent: String,
+    pub sidebar_group_by_cli: bool,
+    pub sidebar_sort: String,
     pub agents: Agents,
 }
 
@@ -98,6 +104,8 @@ impl Default for Config {
             past_conversation_dirs: Vec::new(),
             projects: Vec::new(),
             new_task_agent: "claude".into(),
+            sidebar_group_by_cli: false,
+            sidebar_sort: "time".into(),
             agents: Agents::default(),
         }
     }
@@ -139,6 +147,9 @@ impl Config {
         }
         if !["claude", "codex", "pi"].contains(&self.new_task_agent.as_str()) {
             return Err("new_task_agent 使用 claude、codex 或 pi".into());
+        }
+        if !["time", "type", "priority"].contains(&self.sidebar_sort.as_str()) {
+            return Err("sidebar_sort 使用 time、type 或 priority".into());
         }
         for path in self
             .projects

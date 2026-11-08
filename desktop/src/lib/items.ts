@@ -11,7 +11,7 @@ export interface AttachedFile {
   path?: string;
 }
 export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice'; text: string };
-export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; files?: AttachedFile[] };
+export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; imageErrors?: string[]; files?: AttachedFile[] };
 export type ToolItem = Timed & {
   type: 'tool';
   name: string;
@@ -25,7 +25,7 @@ export type CompactionItem = Timed & { type: 'compaction' };
 export type Item = UserItem | TextItem | ToolItem | CompactionItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
-export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
+export type WorkGroup = { type: 'group'; id: string; items: Row[]; durationMs: number | null; isRunning: boolean; isSummary: boolean };
 export type Row = Item | WorkGroup;
 
 const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
@@ -55,20 +55,26 @@ export function buildItems(messages: Message[]): Item[] {
   const tools = new Map<string, ToolItem>();
   // A message's images come before its text. With no text, they stand as a message of their own.
   let images: string[] = [];
+  let imageErrors: string[] = [];
   let imagesId = '';
+  let imagesAt: number | undefined;
   const flushImages = () => {
-    if (images.length > 0) items.push({ type: 'user', id: imagesId, text: '', images });
+    if (images.length + imageErrors.length > 0) items.push({ type: 'user', id: imagesId, at: imagesAt, text: '', images, imageErrors });
     images = [];
+    imageErrors = [];
+    imagesAt = undefined;
   };
   for (const message of messages) {
     const at = timeOf(message.timestamp);
     if (message.kind === 'compaction') {
+      flushImages();
       items.push({ type: 'compaction', id: message.id, at });
       continue;
     }
-    if (message.kind === 'user' && message.image) {
-      if (images.length === 0) imagesId = message.id;
-      images.push(message.image);
+    if (message.kind === 'user' && (message.image || message.imageError)) {
+      if (images.length + imageErrors.length === 0) { imagesId = message.id; imagesAt = at; }
+      if (message.image) images.push(message.image);
+      if (message.imageError) imageErrors.push(message.imageError);
       continue;
     }
     if (message.kind === 'user' && !message.text.startsWith(INTERRUPTION_PREFIX)) {
@@ -76,12 +82,15 @@ export function buildItems(messages: Message[]): Item[] {
       items.push({
         type: 'user',
         id: message.id,
-        at,
+        at: at ?? imagesAt,
         text,
         ...(files.length > 0 ? { files } : {}),
         ...(images.length > 0 ? { images } : {}),
+        ...(imageErrors.length > 0 ? { imageErrors } : {}),
       });
       images = [];
+      imageErrors = [];
+      imagesAt = undefined;
       continue;
     }
     flushImages();
@@ -176,76 +185,72 @@ export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatus
   return { key: 'statusThinking' };
 }
 
-function workGroup(items: Item[], startAt: number | undefined, endAt: number | undefined): WorkGroup {
-  const durationMs =
-    startAt !== undefined && endAt !== undefined && endAt >= startAt ? endAt - startAt : null;
-  return { type: 'group', id: `group-${items[0].id}`, items, durationMs };
+function workGroup(items: Row[], startAt: number | undefined, endAt: number | undefined, isRunning = false, outer = false): WorkGroup {
+  const durationMs = startAt !== undefined && endAt !== undefined && endAt >= startAt ? endAt - startAt : null;
+  return { type: 'group', id: `${outer ? 'summary' : 'group'}-${items[0].id}`, items, durationMs, isRunning, isSummary: outer };
 }
 
 function lastTime(items: Item[]): number | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index].at !== undefined) return items[index].at;
-  }
-  return undefined;
+  return [...items].reverse().find((item) => item.at !== undefined)?.at;
 }
 
-function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined) {
-  let answerIndex = -1;
-  for (let index = turn.length - 1; index >= 0; index -= 1) {
-    if (turn[index].type === 'assistant') {
-      answerIndex = index;
-      break;
+/** Actions on either side of assistant progress keep independent disclosure state. */
+function actionGroups(items: Item[], startAt: number | undefined, isRunning: boolean): Row[] {
+  const rows: Row[] = [];
+  let actions: Item[] = [];
+  const flush = (endAt?: number) => {
+    if (actions.length) rows.push(workGroup(actions, startAt, endAt ?? lastTime(actions), isRunning));
+    actions = [];
+  };
+  for (const item of items) {
+    if (item.type === 'tool' || item.type === 'thinking') actions.push(item);
+    else {
+      flush(item.at);
+      rows.push(item);
+      startAt = item.at;
     }
   }
-  if (answerIndex < 0) {
-    // Without an answer there is nothing to fold towards, except a longer run of work.
-    if (turn.length >= 2) rows.push(workGroup(turn, startAt, lastTime(turn)));
-    else rows.push(...turn);
-    return;
-  }
-  const work = turn.slice(0, answerIndex);
-  const answer = turn[answerIndex];
-  if (work.length > 0) rows.push(workGroup(work, startAt, answer.at ?? lastTime(work)));
-  rows.push(answer);
-  rows.push(...turn.slice(answerIndex + 1));
+  flush();
+  return rows;
 }
 
-/**
- * Folds the work before each turn's final answer. While a turn runs, its rows stay flat so
- * progress is visible as it happens.
- */
+function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean) {
+  if (isRunning) { rows.push(...actionGroups(turn, startAt, true)); return; }
+  const answerIndex = turn.at(-1)?.type === 'assistant' ? turn.length - 1 : -1;
+  const work = answerIndex < 0 ? turn : turn.slice(0, answerIndex);
+  if (work.length) {
+    const hasProgress = work.some((item) => item.type === 'assistant');
+    const children = hasProgress ? actionGroups(work, startAt, false) : work;
+    rows.push(workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true));
+  }
+  if (answerIndex >= 0) rows.push(...turn.slice(answerIndex));
+}
+
+/** Running actions preview their latest five; completed progress folds toward the final answer. */
 export function buildRows(items: Item[], isRunning: boolean): Row[] {
   const rows: Row[] = [];
   let turn: Item[] = [];
   let startAt: number | undefined;
-  let liveStart = items.length;
-  if (isRunning) {
-    for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index].type === 'user') {
-        liveStart = index;
-        break;
-      }
-    }
+  for (const item of items) {
+    if (item.type === 'user' || item.type === 'compaction' || item.type === 'notice') {
+      if (turn.length) pushTurn(rows, turn, startAt, false);
+      turn = [];
+      startAt = item.at;
+      rows.push(item);
+    } else turn.push(item);
   }
-  items.slice(0, liveStart).forEach((item) => {
-    if (item.type === 'user') {
-      if (turn.length > 0) pushTurn(rows, turn, startAt);
-      turn = [];
-      startAt = item.at;
-      rows.push(item);
-    } else if (item.type === 'compaction' || item.type === 'notice') {
-      // Work on either side stays apart, so these are never folded away.
-      if (turn.length > 0) pushTurn(rows, turn, startAt);
-      turn = [];
-      startAt = item.at;
-      rows.push(item);
-    } else {
-      turn.push(item);
-    }
-  });
-  if (turn.length > 0) pushTurn(rows, turn, startAt);
-  rows.push(...items.slice(liveStart));
+  if (turn.length) pushTurn(rows, turn, startAt, isRunning);
   return rows;
+}
+
+export function flattenRows(rows: Row[]): Item[] {
+  return rows.flatMap((row) => row.type === 'group' ? flattenRows(row.items) : [row]);
+}
+
+export const MAX_LIVE_ACTIVITIES = 5;
+export function visibleWorkItems(group: WorkGroup, expanded: boolean): Row[] {
+  if (expanded) return group.items;
+  return group.isRunning ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
 }
 
 /** Saved projects keep their order. One the order has not seen yet comes first, so it gets noticed. */
@@ -287,4 +292,12 @@ export const worktreeName = (cwd: string): string | null => cwd.split(WORKTREE_F
 
 export function projectName(cwd: string): string {
   return cwd.split('/').filter(Boolean).pop() ?? cwd;
+}
+
+/** The last prompt, when it is plain text and not the task's first. Attachments are not re-sent. */
+export function lastEditablePrompt(items: Item[]): string | null {
+  const prompts = items.filter((item): item is UserItem => item.type === 'user');
+  const last = prompts.at(-1);
+  if (!last || prompts.length < 2 || !last.text.trim() || last.id.startsWith('live-')) return null;
+  return last.images?.length || last.imageErrors?.length || last.files?.length ? null : last.id;
 }

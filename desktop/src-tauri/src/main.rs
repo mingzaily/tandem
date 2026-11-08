@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agents;
+mod agent_resources;
 mod attachments;
 mod cli_info;
 mod codex;
@@ -10,6 +11,7 @@ mod conversations;
 mod harness;
 mod git_info;
 mod login_env;
+mod local_files;
 mod pi;
 mod queue;
 mod remote;
@@ -86,7 +88,10 @@ fn main() {
             commands::pick_project,
             commands::git_branch,
             commands::reveal_task_folder,
+            commands::resolve_task_path,
+            commands::open_task_path,
             commands::agent_status,
+            commands::agent_resources,
             commands::install_agent,
             commands::login_agent,
             commands::stop_agent_job,

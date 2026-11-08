@@ -64,3 +64,9 @@
 `config.toml` 中的未知字段保留在文件里、忽略其值，并在 `errors` 中列出完整字段名；已知字段继续生效。语法、类型和已知值的校验错误仍保留原文件并沿用进程内上次有效配置，设置页拒绝覆盖错误文件。
 
 `.storage.lock` 的进程级独占锁保护 Tandem 数据。第二个实例可读取配置和状态，但会明确提示另一个实例占用，禁止设置、队列、配对和发送等写操作，也不会改名状态文件。退出另一个实例后，重新打开被阻止的实例。手机任务列表的项目、别名和归档直接来自后端配置与状态。
+
+## 侧栏偏好
+
+`config.toml` 的 `sidebar_group_by_cli` 保存项目内 CLI 分组开关，`sidebar_sort` 使用 `time`、`type` 或 `priority`。`state.json` 的 `pinnedProjects` 保存置顶项目，`unreadTasks` 保存完成未读的任务（新的在前，最多 200 个，打开任务即移除）；任务置顶继续使用 `taskMeta.pins`，项目手工顺序继续使用 `projectOrder`。工作组展开记忆只保留在应用内存。
+
+CLI 配置清单按 [Agent 配置清单](agent-configuration-inventory.md) 只读提取 MCP 与技能元数据，原文件保持原样。

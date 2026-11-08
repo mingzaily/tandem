@@ -30,6 +30,9 @@ pub struct TaskMeta {
 pub struct ViewState {
     pub task_meta: TaskMeta,
     pub project_order: Vec<String>,
+    pub pinned_projects: Vec<String>,
+    /// Tasks whose turn finished while another task was open, newest first.
+    pub unread_tasks: Vec<String>,
     pub sidebar_collapsed: bool,
     pub sidebar_width: f64,
     pub projects_seeded: bool,
@@ -40,6 +43,8 @@ impl Default for ViewState {
         Self {
             task_meta: TaskMeta::default(),
             project_order: Vec::new(),
+            pinned_projects: Vec::new(),
+            unread_tasks: Vec::new(),
             sidebar_collapsed: false,
             sidebar_width: 260.,
             projects_seeded: false,

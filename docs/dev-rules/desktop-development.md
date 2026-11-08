@@ -43,6 +43,8 @@ TANDEM_DRIVE_SCRIPT=/path/to/script.js \
 
 `TANDEM_DRIVE_ATTACH=路径:路径` 按拖入窗口的方式送入附件，系统文件对话框驱动不了时用它测试。
 
+`TANDEM_DRIVE_RESOURCE_HOME=<临时目录>` 隔离 Agent 清单的共享用户资源与全局技能锁，只在调试版生效。
+
 `TANDEM_DRIVE_DATA_DIR=<临时目录>` 隔离整个 `~/.tandem/`，仅在调试版生效。`TANDEM_DRIVE_QUEUE_DIR=<临时目录>` 可单独隔离队列，完整存储验收优先使用 DATA_DIR。`TANDEM_DRIVE_REPORT=<路径>` 将页面发出的 `drive-report` 事件逐条写成 JSON 行，报告路径由启动环境指定。替身测试同时把 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 指向临时目录，结束后删除替身任务、数据和测试专用 WebKit 配置目录。
 
 替身测试的调试构建使用独立应用名称和标识：`pnpm tauri build --debug --bundles app --config '{"productName":"Tandem Audit","identifier":"com.mingzaily.tandem.audit"}'`。用 DATA_DIR 隔离文件存储；测试首次启动可直接使用空目录。正式版按上面的常规命令构建，使用仓库配置中的应用标识。

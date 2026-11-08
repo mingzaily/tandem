@@ -28,7 +28,7 @@ Tandem 的目标是**尽量复刻 Cindy 的界面**。`upstream/` 是原样复�
 | `RemoteAccessNotice.tsx` | 对照 `features/remote-device/ControlledBanner.tsx`：28px 高、12px 文字、6px 呼吸点，胶囊位于输入区上方中间；收起后在耗时和 token 入口前保留 20px 状态点。单设备显示名称并确认撤销，多设备进入远程设置逐台管理。Tandem 以已完成加密握手的手机连接为准，撤销后重新配对；收起状态按任务保存在内存，新连接到来时展开。撤销确认由页面持有，任务状态变化时保留；窄输入区让胶囊单独占一行，与运行状态和统计分开 |
 | `MessageStream.tsx` 中断提示 | `components/chat/InterruptedTurnBanner.tsx` 的 CirclePause，使用 `--status-paused`，随所属轮次保留；输入区暂停状态使用轻量 Pause 与 `--status-bar-accent` |
 | `FileChangeSummary.tsx` | `components/chat/TurnChangesCard.tsx`：变更卡片跟随每轮结果留在消息流中，12px 圆角、14px 标题、36px 文件行，默认展示 3 个文件，再展开更多。原版标题区为 64px；按用户确认压为最小 48px，水平 12px、垂直 6px 内距，28px 图标盒、16px FileDiff；有行数统计时自然增高。采用原版表面、边框与增删颜色 token；Tandem 使用只读记录，文件名优先、目录次要，长清单虚拟化，完整路径通过悬停查看，缺少完整行数时保留文件数。消息流使用对称滚动槽，与输入区共用中轴 |
-| 任务菜单的“生成标题”与标题栏 | 任务菜单使用 CaseSensitive（Aa）图标，生成期间禁用重复操作；标题栏仅保留任务标题、右侧 CLI 图标和任务菜单。CLI 图标通过悬停与可访问名称说明类型。生成和原生保存参考 pi-web 0.15.0；Sparkles 专用于思考和运行状态，自动审批使用 ShieldCheck |
+| 任务菜单的“生成标题”与标题栏 | 任务菜单使用 lucide Sparkles 图标，生成期间禁用重复操作；标题栏显示任务标题、CLI 图标、在访达中打开项目、复制终端续接命令和任务菜单；图标按钮使用底部 Tip，任务菜单打开时保留按下样式。CLI 图标通过悬停与可访问名称说明类型。生成和原生保存参考 pi-web 0.15.0；Sparkles 用于生成标题、思考和运行状态，自动审批使用 ShieldCheck |
 | `EffortSlider.tsx` | `components/ui/effort-slider.tsx`：38px 操作区、12px 轨道、21px 滑块，档位使用绝对颜色 token；指针松开提交、取消保留原值，支持方向键、Home、End；单一档位只显示文字 |
 | `ModelSelect`、`ModelPickerPanel.tsx` | `components/new-chat/ModelSelector.tsx`、`UnifiedModelPanel.tsx` 与 `components/ui/morph-popover.tsx`：输入区模型菜单向上展开，列表区域采用 428px，按上方可用空间压缩并内部滚动；移除主列表底部的常驻强度滑杆。CLI 默认模型加“默认”文字标签，标签仅作说明；当前选中项保持行高亮 |
 | `ModelConfigFlyout.tsx` | 对照 `UnifiedFlyoutHost.tsx`、`ModelConfigFlyout.tsx`、`useUnifiedRowActions.ts` 和 `effort-slider.tsx`：宽 264px、间隔 4px、内距 14px/底部 12px；指针移动预览，松手或键盘调档即应用，恢复默认即清除覆盖。关闭浮层保留已提交值；指针取消撤销手势预览。Tandem 更新单份发送偏好，调另一个模型时一同选中该模型，已入队条目保留原快照。Esc 分层关闭，不增加收藏 |
@@ -110,3 +110,15 @@ rmdir "$tandem_tray_dir"
 确认卡片提交期间保留并禁用操作。失败后显示原因、恢复操作并保留用户输入；成功或请求已结束时移除卡片。
 
 按钮、链接、可选择项和开关使用手形；文字输入使用 I 形；拖动把手使用 grab/grabbing；强度滑块使用水平调整指针；禁用控件使用普通箭头。悬停与按下沿用各组件的表面色和文字色变化，键盘操作保留可见焦点环。
+
+## 会话、侧栏和外观
+
+Markdown 对照 `MarkdownRenderer.tsx` 的 `shouldRenderCodeReferenceLabel` 和 `useFileChipContextMenu.tsx`：本地链接标签是路径、文件名或带行号的文件引用时使用文件块；说明文字使用下划线链接。左键通过系统默认程序打开，右键提供打开、在访达中显示、复制路径。网页链接继续使用浏览器。用户消息中不可用的本机图片对照 `ImageMissingPlaceholder.tsx`，使用最小 140px 高、12px 圆角的虚线占位，居中显示 32px ImageOff 和文字；文件缺失时显示“图片已不在本机”。
+
+工作过程对照 `WorkGroupBlock.tsx`：运行中的动作段默认展示最近 5 条活动，超过 5 条时组头切换到全部；5 条以内的组头保持静态。中间助手文字在运行期间持续可见，完成后与动作段一起放入默认收起的外层组，最后回复留在外面。外层标题为“已处理 <时长>”，内层动作为“已工作 <时长>”，缺少时间时为“工作过程”。外层、内层、思考与工具详情按任务独立记住展开状态，直到应用退出。长动作清单采用 420px 的虚拟滚动区域。
+
+侧栏对照 `SidebarFilterPopover.tsx`、`SessionItem.tsx`、`useSidebarFilter.ts` 和 `mainListModel.ts`：项目内可按 Claude Code / Codex / Pi 建二级组；按最近活动、CLI 类型或优先级排序：类型同档内按时间倒序；优先级为等你回答 > 完成未读 > 运行中 > 其他，同档按时间，正在看的任务保持打开时的档位，离开完成未读的任务时它排到“其他”档最前（`advanceHold`）。等你回答、完成未读用 8px 圆点代替时间（`SidebarRightStatusIndicator`），选中行用选中前景色。筛选按钮以点击打开，项目右键菜单中的分组、排序以悬停展开子菜单。置顶任务位于最前；项目列表中“对话”固定在第一位，置顶项目紧随其后，再到其余项目。任务行悬停提供 20px 的置顶、生成标题、更多按钮，图标 14px、间距 2px；菜单打开期间保持被操作行的选中样式和“…”高亮。
+
+设置主题与显示语言共用胶囊下拉，对照 `AppearanceSection.tsx` 的 `FamilyDropdown`：36px 高、320px 宽、14px 箭头，弹层 12px 圆角、8px 内距、36px 选项行。二选一的布尔设置使用切换开关。Agent 分区对照 `settingsRowClasses.ts`、`McpServersSection.tsx` 的设置行，按名称、说明、来源排布，只读展示 MCP 与 Skills。
+
+最后一条消息可编辑时，铅笔按钮挂在气泡外侧、与气泡顶部对齐（对照 `BubbleHoverToolbar` 和 `MessageActionBar` 的 24px 圆形按钮），悬停或键盘焦点进入才显示，不占列表高度。编辑框对照 `UserMessageEditBox.tsx`：整列宽的气泡，左下一行提示，右侧取消（secondary）和发送（cta）两个 28px 胶囊按钮。

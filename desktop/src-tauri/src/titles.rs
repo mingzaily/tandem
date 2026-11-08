@@ -62,7 +62,7 @@ fn message_text(message: &Message) -> String {
         .join("\n")
         .trim()
         .to_owned();
-    match (text.is_empty(), message.image.is_some()) {
+    match (text.is_empty(), message.image.is_some() || message.image_error.is_some()) {
         (true, true) => "[image]".to_owned(),
         (false, true) => format!("{text}\n[image]"),
         _ => text,
@@ -574,7 +574,7 @@ mod tests {
             is_error: false,
             truncated: false,
             timestamp: None,
-            image: None,
+            image: None, image_error: None,
         }
     }
 
@@ -600,6 +600,13 @@ mod tests {
             transcript(&messages).unwrap(),
             "User: 检查磁盘增长\n\nUser: [image]\n\nAssistant: 发现缓存持续增长"
         );
+    }
+
+    #[test]
+    fn a_missing_local_image_keeps_its_place_in_title_context() {
+        let mut image = message(MessageKind::User, "");
+        image.image_error = Some("missing".into());
+        assert_eq!(transcript(&[image]).unwrap(), "User: [image]");
     }
 
     #[test]

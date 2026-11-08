@@ -16,6 +16,7 @@
 | [dev-rules/architecture-invariants.md](dev-rules/architecture-invariants.md) | 权威 | 改模块依赖或数据流 |
 | [dev-rules/security-and-process-boundaries.md](dev-rules/security-and-process-boundaries.md) | 权威 | 新增 Tauri 命令、权限、外部进程 |
 | [dev-rules/credentials-and-local-storage.md](dev-rules/credentials-and-local-storage.md) | 权威 | 处理凭证或写文件 |
+| [dev-rules/agent-configuration-inventory.md](dev-rules/agent-configuration-inventory.md) | 权威 | 修改 Agent 设置里的 MCP、Skills 或配置来源读取 |
 | [dev-rules/native-sessions.md](dev-rules/native-sessions.md) | 权威 | 读写任务数据、接入新 CLI |
 | [dev-rules/development-workflow.md](dev-rules/development-workflow.md) | 权威 | 分批、提交、Review、汇报 |
 | [dev-rules/ci-validation.md](dev-rules/ci-validation.md) | 权威 | 本地复现 CI、检查工作流、验证容器及理解发布门禁 |
@@ -48,6 +49,7 @@
 | [measurements/2026-11-06-tool-status.md](measurements/2026-11-06-tool-status.md) | 参考 | 查看运行行工具名称、MCP 可读标签、参数悬停与展开、浅深色和窄窗口验收 |
 | [measurements/2026-11-06-unified-storage.md](measurements/2026-11-06-unified-storage.md) | 参考 | 查看统一数据目录、TOML 手改、双窗口配置同步、一次性迁移与性能验收 |
 | [measurements/2026-11-07-storage-final-review.md](measurements/2026-11-07-storage-final-review.md) | 参考 | 查看旧导入删除、坏状态隔离、未知字段、双实例写锁、旧数据清理、桌面 CI 与最终复审 |
+| [measurements/2026-11-08-session-sidebar-settings.md](measurements/2026-11-08-session-sidebar-settings.md) | 参考 | 查看原生图片、Codex 写锁、本地链接、工作组、侧栏与 Agent 资源清单的源码对照、截图和验收 |
 | [reference/](reference/README.md) | 参考 | 查 loom 的历史文档，以及本地的 Cindy、ccgui 代码 |
 
 ## 收录规则

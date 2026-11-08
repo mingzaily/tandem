@@ -1,11 +1,16 @@
-import { Archive, ChevronRight, CirclePlus, Folder, FolderOpen, GitBranch, MessagesSquare, MoreHorizontal, Plus, Search, Settings, SquareTerminal } from 'lucide-react';
+import { Archive, ChevronRight, CirclePlus, Folder, FolderOpen, GitBranch, MessagesSquare, MoreHorizontal, Pin, PinOff, Plus, SlidersHorizontal, Search, Settings, Sparkles, SquareTerminal } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import type { TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
-import { CONVERSATION_CWD, groupRoot, isUnder, moveProject, orderProjects, projectName, worktreeName } from '../lib/items';
-import { renameTask, taskTitle, type TaskMeta } from '../lib/taskMeta';
+import { CONVERSATION_CWD, groupRoot, isUnder, moveProject, projectName, worktreeName } from '../lib/items';
+import { renameTask, taskTitle, togglePin, type TaskMeta } from '../lib/taskMeta';
 import { formatAge } from '../lib/tools';
+import { advanceHold, cliTaskGroups, orderSidebarProjects, toggleProjectPin, type PriorityContext, type SidebarOptions } from '../lib/sidebarModel';
+import { AGENT_NAMES } from '../lib/modelRows';
+import { FloatingMenu } from './FloatingMenu';
+import { SidebarOptionsMenu } from './SidebarOptionsMenu';
+import { MENU_ROW } from './ComposerMenu';
 import { AgentMark } from './AgentMark';
 import type { TaskMenuAnchor } from './TaskMenu';
 
@@ -26,12 +31,21 @@ interface SidebarProps {
   selectedId: string | null;
   running: Set<string>;
   waiting: Set<string>;
+  /** Finished while another task was open. */
+  unread: Set<string>;
   /** Tasks open in another process, with whether each is working now. */
   external: Map<string, boolean>;
   meta: TaskMeta;
   extraProjects: string[];
   conversationRoots: string[];
   projectOrder: string[];
+  pinnedProjects: string[];
+  onPinnedProjectsChange: (paths: string[]) => void;
+  options: SidebarOptions;
+  onOptionsChange: (options: SidebarOptions) => void;
+  menuTaskId: string | null;
+  generatingTitles: Set<string>;
+  onGenerateTitle: (task: TaskSummary) => void;
   onProjectOrderChange: (order: string[]) => void;
   width: number;
   renamingId: string | null;
@@ -45,7 +59,7 @@ interface SidebarProps {
   onOpenSettings: () => void;
 }
 
-interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'external' | 'meta' | 'onSelect' | 'onMetaChange' | 'onRenameDone' | 'onOpenMenu'> {
+interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'unread' | 'external' | 'meta' | 'onSelect' | 'onMetaChange' | 'onRenameDone' | 'onOpenMenu' | 'menuTaskId' | 'generatingTitles' | 'onGenerateTitle'> {
   task: TaskSummary;
   indented: boolean;
   now: number;
@@ -76,11 +90,13 @@ function RenameField({ title, onDone }: { title: string; onDone: (title: string 
   );
 }
 
-function TaskRow(props: TaskRowProps) {
-  const { task, indented, now, isRenaming, selectedId, running, waiting, external, meta, onSelect, onMetaChange, onRenameDone, onOpenMenu } = props;
-  const active = task.id === selectedId;
+export function TaskRow(props: TaskRowProps) {
+  const { task, indented, now, isRenaming, selectedId, running, waiting, unread, external, meta, onSelect, onMetaChange, onRenameDone, onOpenMenu, menuTaskId, generatingTitles, onGenerateTitle } = props;
+  const menuOpen = task.id === menuTaskId;
+  const active = task.id === selectedId || menuOpen;
   const isRunning = running.has(task.id) || external.get(task.id) === true;
   const isWaiting = waiting.has(task.id);
+  const status = isWaiting ? 'waiting' : unread.has(task.id) ? 'unread' : null;
   const worktree = worktreeName(task.cwd);
   const title = taskTitle(meta, task);
   const openMenuAt = (x: number, y: number) => onOpenMenu({ id: task.id, x, y });
@@ -113,8 +129,8 @@ function TaskRow(props: TaskRowProps) {
         <button
           type="button"
           onClick={() => onSelect(task.id)}
-          aria-current={active ? 'page' : undefined}
-          className={`${PILL_ROW} ${indented ? 'pl-5' : 'pl-3'} pr-2 text-left font-medium`}
+          aria-current={task.id === selectedId ? 'page' : undefined}
+          className={`${PILL_ROW} ${indented ? 'pl-5' : 'pl-3'} pr-2 text-left font-medium ${menuOpen ? '!pr-[76px]' : 'group-hover:pr-[76px] group-focus-within:pr-[76px]'}`}
         >
           <span
             className={`flex w-[15px] shrink-0 items-center justify-center ${
@@ -135,51 +151,67 @@ function TaskRow(props: TaskRowProps) {
               <SquareTerminal size={12} strokeWidth={1.8} aria-label={t('writerBadge')} />
             </span>
           ) : null}
-          {isWaiting ? (
+          {status ? (
+            // The reference's right status: an 8px dot in place of the time, white on the selected row.
             <span
               role="img"
-              aria-label={t('waitingForYou')}
-              title={t('waitingForYou')}
-              className="size-1.5 shrink-0 rounded-full bg-[var(--card-status-awaiting)]"
-            />
-          ) : null}
-          <span
-            className={`shrink-0 text-xs font-normal group-focus-within:invisible group-hover:invisible ${
-              active ? 'text-[var(--sidebar-item-active-foreground)]' : 'text-[var(--text-tertiary)]'
-            }`}
-          >
-            {formatAge(task.updatedAtMs, now)}
-          </span>
+              aria-label={t(status === 'waiting' ? 'waitingForYou' : 'taskUnread')}
+              title={t(status === 'waiting' ? 'waitingForYou' : 'taskUnread')}
+              className={`inline-flex size-4 shrink-0 items-center justify-center group-focus-within:invisible group-hover:invisible ${menuOpen ? 'invisible' : ''}`}
+            >
+              <span
+                aria-hidden
+                className={`size-2 rounded-full ${
+                  active ? 'bg-[var(--sidebar-item-active-foreground)]' : status === 'waiting' ? 'bg-[var(--card-status-awaiting)]' : 'bg-[var(--card-status-done)]'
+                }`}
+              />
+            </span>
+          ) : (
+            <span
+              className={`shrink-0 text-xs font-normal group-focus-within:invisible group-hover:invisible ${
+                menuOpen ? 'invisible' : active ? 'text-[var(--sidebar-item-active-foreground)]' : 'text-[var(--text-tertiary)]'
+              }`}
+            >
+              {formatAge(task.updatedAtMs, now)}
+            </span>
+          )}
         </button>
       )}
       {isRenaming ? null : (
-        <button
-          type="button"
-          aria-label={t('taskMenu')}
-          title={t('taskMenu')}
-          onClick={(event) => {
-            const bounds = event.currentTarget.getBoundingClientRect();
-            openMenuAt(bounds.left, bounds.bottom + 4);
-          }}
-          className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-md opacity-0 hover:bg-[var(--surface-hover)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] group-focus-within:opacity-100 group-hover:opacity-100"
-        >
-          <MoreHorizontal size={14} aria-hidden />
-        </button>
+        <div className={`absolute right-1.5 top-1.5 flex items-center gap-0.5 ${menuOpen ? 'opacity-100' : 'pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'}`}>
+          {[
+            ...(meta.archived.includes(task.id) ? [] : [{ label: t(meta.pins.includes(task.id) ? 'taskUnpin' : 'taskPin'), icon: meta.pins.includes(task.id) ? PinOff : Pin, action: () => onMetaChange(togglePin(meta, task.id)), pressed: undefined, disabled: false }]),
+            { label: t(generatingTitles.has(task.id) ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: Sparkles, action: () => onGenerateTitle(task), pressed: undefined, disabled: generatingTitles.has(task.id) },
+            { label: t('taskMenu'), icon: MoreHorizontal, action: (button: HTMLButtonElement) => { const bounds = button.getBoundingClientRect(); openMenuAt(bounds.left, bounds.bottom + 4); }, pressed: menuOpen, disabled: false },
+          ].map(({ label, icon: Icon, action, pressed, disabled }) => <button key={label} type="button" aria-label={label} title={label} aria-pressed={pressed} disabled={disabled}
+            onClick={(event) => action(event.currentTarget)}
+            className={`flex size-5 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${active ? `relative before:absolute before:inset-0 before:rounded-md before:bg-current before:content-[''] hover:before:opacity-[0.15] ${pressed ? 'before:opacity-[0.15]' : 'before:opacity-0'}` : 'hover:bg-[hsl(var(--sidebar-item-hover))]'}`}>
+            <Icon size={14} strokeWidth={2} aria-hidden />
+          </button>)}
+        </div>
       )}
     </div>
   );
 }
 
 export function Sidebar(props: SidebarProps) {
-  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, projectOrder, onProjectOrderChange, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
+  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, projectOrder, onProjectOrderChange, pinnedProjects, onPinnedProjectsChange, options, onOptionsChange, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [projectMenu, setProjectMenu] = useState<{ cwd: string; x: number; y: number } | null>(null);
+  const [filterMenu, setFilterMenu] = useState<{ x: number; y: number } | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [query, setQuery] = useState<string | null>(null);
   const [drag, setDrag] = useState<{ cwd: string; y: number; dropAt: number } | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const nav = useRef<HTMLElement>(null);
   const now = Date.now();
+  const holdState = useRef<{ viewed: string | null }>({ viewed: null });
+  const holds = useRef({ held: new Map<string, number>(), leftAt: new Map<string, number>() });
+  const priority: PriorityContext = {
+    waiting: props.waiting, unread: props.unread, isRunning: (id) => props.running.has(id) || props.external.get(id) === true, ...holds.current,
+  };
+  advanceHold(holdState.current, selectedId, priority, now);
   const needle = query?.trim().toLowerCase() ?? '';
 
   const matches = (task: TaskSummary) =>
@@ -203,10 +235,10 @@ export function Sidebar(props: SidebarProps) {
       else byRoot.set(root, [task]);
     }
     if (!needle) {
-      for (const cwd of extraProjects) if (!byRoot.has(cwd)) byRoot.set(cwd, []);
+      for (const cwd of [...extraProjects, ...pinnedProjects]) if (!byRoot.has(cwd)) byRoot.set(cwd, []);
     }
-    return orderProjects([...byRoot.entries()], projectOrder);
-  }, [tasks, meta, needle, extraProjects, conversationRoots, projectOrder]);
+    return orderSidebarProjects([...byRoot.entries()], projectOrder, pinnedProjects);
+  }, [tasks, meta, needle, extraProjects, conversationRoots, projectOrder, pinnedProjects]);
 
   const reorderProject = (cwd: string, to: number) => {
     const shown = groups.map(([root]) => root);
@@ -363,7 +395,15 @@ export function Sidebar(props: SidebarProps) {
             {visiblePinned.map((task) => row(task, false))}
           </section>
         ) : null}
-        <h2 className={SECTION_TITLE}>{t('projects')}</h2>
+        <div className="flex items-center justify-between pr-2">
+          <h2 className={SECTION_TITLE}>{t('projects')}</h2>
+          <button type="button" aria-label={t('sidebarFilter')} title={t('sidebarFilter')} aria-expanded={!!filterMenu}
+            onMouseDown={(event) => { if (filterMenu) event.stopPropagation(); }}
+            onClick={(event) => { const bounds = event.currentTarget.getBoundingClientRect(); setFilterMenu(filterMenu ? null : { x: bounds.left, y: bounds.bottom + 4 }); }}
+            className={`flex size-5 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] hover:bg-[hsl(var(--sidebar-item-hover))] hover:text-[var(--sidebar-nav-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${filterMenu ? 'bg-[hsl(var(--sidebar-item-hover))]' : ''}`}>
+            <SlidersHorizontal size={14} strokeWidth={1.8} aria-hidden />
+          </button>
+        </div>
         {loaded && groups.length === 0 ? (
           <p className="px-3 py-2 text-13 text-[hsl(var(--sidebar-muted))]">
             {needle ? t('noMatches') : t('noTasks')}
@@ -373,9 +413,6 @@ export function Sidebar(props: SidebarProps) {
           const dragFrom = drag ? groups.findIndex(([root]) => root === drag.cwd) : -1;
           const isNoOpDrop = !drag || drag.dropAt === dragFrom || drag.dropAt === dragFrom + 1;
           const isCollapsed = collapsed.has(cwd) && !needle;
-          const selectedHidden = group.findIndex((task) => task.id === selectedId) >= PREVIEW_COUNT;
-          const showAll = expanded.has(cwd) || selectedHidden || Boolean(needle);
-          const visible = showAll ? group : group.slice(0, PREVIEW_COUNT);
           return (
             <section key={cwd} data-project className={`relative flex flex-col gap-0.5 ${drag?.cwd === cwd ? 'opacity-40' : ''}`}>
               {!isNoOpDrop && drag?.dropAt === groupIndex ? (
@@ -386,6 +423,7 @@ export function Sidebar(props: SidebarProps) {
               ) : null}
               <div
                 onPointerDown={(event) => startProjectDrag(event, cwd)}
+                onContextMenu={(event) => { event.preventDefault(); setProjectMenu({ cwd, x: event.clientX, y: event.clientY }); }}
                 className="group flex h-8 w-full items-center gap-2.5 rounded-full pl-3 pr-2 text-sm font-normal text-[var(--sidebar-list-muted)] hover:bg-[hsl(var(--sidebar-item-hover))]"
               >
                 <button
@@ -411,6 +449,7 @@ export function Sidebar(props: SidebarProps) {
                   )}
                   <span className="min-w-0 truncate">{cwd === CONVERSATION_CWD ? t('conversations') : projectName(cwd)}</span>
                 </button>
+                {pinnedProjects.includes(cwd) ? <Pin size={12} aria-label={t('projectPinned')} className="shrink-0" /> : null}
                 <button
                   type="button"
                   data-no-drag
@@ -422,16 +461,24 @@ export function Sidebar(props: SidebarProps) {
                   <Plus size={14} aria-hidden />
                 </button>
               </div>
-              {isCollapsed ? null : visible.map((task) => row(task, true))}
-              {!isCollapsed && visible.length < group.length ? (
-                <button
-                  type="button"
-                  onClick={() => toggle(setExpanded, cwd)}
-                  className={`${PILL_ROW} justify-center text-xs font-normal text-[var(--sidebar-list-muted)] hover:bg-[hsl(var(--sidebar-item-hover))]`}
-                >
-                  {t('showAll', { count: String(group.length) })}
-                </button>
-              ) : null}
+              {isCollapsed ? null : cliTaskGroups(group, options, priority).map(({ agent, tasks: cliTasks }) => {
+                const key = agent ? `${cwd}:${agent}` : cwd;
+                const selectedHidden = cliTasks.findIndex((task) => task.id === selectedId) >= PREVIEW_COUNT;
+                const showAll = expanded.has(key) || selectedHidden || Boolean(needle);
+                const visible = showAll ? cliTasks : cliTasks.slice(0, PREVIEW_COUNT);
+                const cliCollapsed = agent !== null && collapsed.has(key) && !needle;
+                return <div key={key} className="flex flex-col gap-0.5">
+                  {agent ? <button type="button" aria-expanded={!cliCollapsed} onClick={() => toggle(setCollapsed, key)}
+                    className="flex h-7 items-center gap-2 rounded-full pl-5 pr-2 text-12 text-[var(--sidebar-list-muted)] hover:bg-[hsl(var(--sidebar-item-hover))] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
+                    <ChevronRight size={12} aria-hidden className={cliCollapsed ? '' : 'rotate-90'} /><AgentMark agent={agent} size={12} />{AGENT_NAMES[agent]}
+                  </button> : null}
+                  {cliCollapsed ? null : visible.map((task) => row(task, true))}
+                  {!cliCollapsed && visible.length < cliTasks.length ? <button type="button" onClick={() => toggle(setExpanded, key)}
+                    className={`${PILL_ROW} justify-center text-xs font-normal text-[var(--sidebar-list-muted)] hover:bg-[hsl(var(--sidebar-item-hover))]`}>
+                    {t('showAll', { count: String(cliTasks.length) })}
+                  </button> : null}
+                </div>;
+              })}
             </section>
           );
         })}
@@ -467,6 +514,15 @@ export function Sidebar(props: SidebarProps) {
           <Settings size={15} strokeWidth={1.8} aria-hidden />
         </button>
       </div>
+      {filterMenu ? <FloatingMenu {...filterMenu} width={224} label={t('sidebarFilter')} onClose={() => setFilterMenu(null)}>
+        <SidebarOptionsMenu value={options} onChange={onOptionsChange} />
+      </FloatingMenu> : null}
+      {projectMenu ? <FloatingMenu x={projectMenu.x} y={projectMenu.y} width={224} label={t('projectMenu')} onClose={() => setProjectMenu(null)}>
+        {projectMenu.cwd !== CONVERSATION_CWD ? <button type="button" role="menuitem" className={MENU_ROW} onClick={() => { onPinnedProjectsChange(toggleProjectPin(pinnedProjects, projectMenu.cwd)); setProjectMenu(null); }}>
+          {pinnedProjects.includes(projectMenu.cwd) ? <PinOff size={15} aria-hidden /> : <Pin size={15} aria-hidden />}{t(pinnedProjects.includes(projectMenu.cwd) ? 'projectUnpin' : 'projectPin')}
+        </button> : null}
+        <SidebarOptionsMenu value={options} onChange={onOptionsChange} />
+      </FloatingMenu> : null}
       <div
         role="separator"
         aria-orientation="vertical"

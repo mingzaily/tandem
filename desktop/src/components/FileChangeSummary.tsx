@@ -40,7 +40,7 @@ export function FileChangeSummary({ summary, cwd, expanded, onToggle }: { summar
   const label = t('filesChanged', { count: String(files.length) });
   return (
     <section aria-labelledby={heading} className="my-1 overflow-hidden rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)]">
-      <div title={t('fileChangesHint')} className="flex min-h-12 items-center gap-2.5 px-3 py-1.5">
+      <div className="flex min-h-12 items-center gap-2.5 px-3 py-1.5">
         <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-chip)] text-[var(--text-secondary)]"><FileDiff size={16} aria-hidden /></div>
         <div className="min-w-0 flex-1">
           <div id={heading} className="truncate text-14 font-medium text-[var(--text-primary)]">{label}</div>

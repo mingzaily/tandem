@@ -33,6 +33,7 @@ fn queued_options<'de, D: serde::Deserializer<'de>>(
 ) -> Result<TurnOptions, D::Error> {
     let mut options = TurnOptions::deserialize(deserializer)?;
     options.ignore_external_writer = false;
+    options.edit_last = None;
     Ok(options)
 }
 

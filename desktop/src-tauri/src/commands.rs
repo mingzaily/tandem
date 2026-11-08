@@ -7,6 +7,15 @@ use tauri_plugin_dialog::DialogExt;
 
 pub struct StartedAt(pub Instant);
 
+#[tauri::command]
+pub async fn agent_resources(cwd: Option<String>) -> Result<Vec<crate::agent_resources::Inventory>, String> {
+    if cwd.as_ref().is_some_and(|path| !std::path::Path::new(path).is_absolute()) { return Err("项目目录使用绝对路径".into()); }
+    blocking(move || {
+        let paths = crate::agent_resources::Locations::from_environment()?;
+        Ok(crate::agent_resources::read(&paths, cwd.as_deref().map(std::path::Path::new)))
+    }).await
+}
+
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -103,6 +112,9 @@ pub async fn enqueue_turn(
 ) -> Result<queue::Snapshot, String> {
     queue::validate_task_id(&task_id)?;
     options.validate_for(agent)?;
+    if options.edit_last.is_some() {
+        return Err("编辑后的消息直接发送，不进入队列".into());
+    }
     // A new task can receive queued messages before its CLI creates the native file.
     match app.state::<queue::Store>().active_agent(&task_id)? {
         Some(active) if active != agent => return Err("排队消息的 Agent 必须与任务一致".into()),
@@ -203,22 +215,49 @@ pub async fn git_branch(cwd: String) -> Result<Option<String>, String> {
 /// Opens the folder recorded in the task's own file, never a path from the page.
 #[tauri::command]
 pub async fn reveal_task_folder(reader: State<'_, codex::Reader>, agent: Agent, id: String) -> Result<(), String> {
-    let cwd = match agent {
+    let cwd = native_task_cwd(&reader, agent, id).await?;
+    blocking(move || open_path(std::path::Path::new(&cwd), false)).await
+}
+
+async fn native_task_cwd(reader: &codex::Reader, agent: Agent, id: String) -> Result<String, String> {
+    match agent {
         Agent::Claude => {
             blocking(move || {
                 let path = sessions::find_task_file(&sessions::claude_projects_dir()?, &id)?;
                 sessions::read_task_cwd(&path).ok_or_else(|| "The task has no working directory".to_owned())
             })
-            .await?
+            .await
         }
-        Agent::Codex => reader.task_cwd(&id).await?,
-        Agent::Pi => blocking(move || pi::task_cwd(&id)).await?,
-    };
-    std::process::Command::new("open")
-        .arg(cwd)
-        .status()
-        .map_err(|error| error.to_string())?;
-    Ok(())
+        Agent::Codex => reader.task_cwd(&id).await,
+        Agent::Pi => blocking(move || pi::task_cwd(&id)).await,
+    }
+}
+
+#[tauri::command]
+pub async fn resolve_task_path(reader: State<'_, codex::Reader>, agent: Agent, id: String, path: String) -> Result<String, String> {
+    let cwd = native_task_cwd(&reader, agent, id).await?;
+    let home = conversations::home_dir()?;
+    crate::local_files::resolve(std::path::Path::new(&cwd), &home, &path).map(|path| path.to_string_lossy().into_owned())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FileAction { Open, Reveal }
+
+#[tauri::command]
+pub async fn open_task_path(reader: State<'_, codex::Reader>, agent: Agent, id: String, path: String, action: FileAction) -> Result<(), String> {
+    let resolved = resolve_task_path(reader, agent, id, path).await?;
+    blocking(move || {
+        let path = std::fs::canonicalize(&resolved).map_err(|error| format!("打开文件 {resolved} 失败：{error}"))?;
+        open_path(&path, matches!(action, FileAction::Reveal) || crate::local_files::runs_when_opened(&path))
+    }).await
+}
+
+fn open_path(path: &std::path::Path, reveal: bool) -> Result<(), String> {
+    let mut command = std::process::Command::new("open");
+    if reveal { command.arg("-R"); }
+    let status = command.arg("--").arg(path).status().map_err(|error| format!("打开 {} 失败：{error}", path.display()))?;
+    if status.success() { Ok(()) } else { Err(format!("系统打开 {} 失败：{status}", path.display())) }
 }
 
 #[tauri::command]

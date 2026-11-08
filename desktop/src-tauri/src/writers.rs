@@ -182,6 +182,9 @@ mod tests {
         assert_eq!(writers.len(), 1);
         assert_eq!(writers[0].task_id, "held");
         assert!(!writers[0].can_override);
+        assert!(!writers[0].is_busy);
+        drop(holder);
+        assert!(read_codex_writers(dir.path()).is_empty());
     }
 
     #[test]

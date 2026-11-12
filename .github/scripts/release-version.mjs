@@ -1,40 +1,59 @@
+function parseVersion(version) {
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
+  if (!match) return undefined;
+  const [, major, minor, patchText] = match;
+  if (patchText.length >= 7) {
+    const date = /^(20\d{6})(0[1-9]|[1-9]\d)$/.exec(patchText);
+    if (!date) return undefined;
+    const iso = `${date[1].slice(0, 4)}-${date[1].slice(4, 6)}-${date[1].slice(6, 8)}`;
+    const parsed = new Date(`${iso}T00:00:00Z`);
+    if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) return undefined;
+    return { version, major, minor, patch: Number(patchText), kind: 'date' };
+  }
+  return { version, major, minor, patch: Number(patchText), kind: 'sequence' };
+}
+
 export function releaseVersion(tag, prefix = 'v') {
   if (!tag.startsWith(prefix)) return undefined;
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(20\d{6})(0[1-9]|[1-9]\d)$/.exec(tag.slice(prefix.length));
-  if (!match) return undefined;
-  const [, major, minor, date, sequence] = match;
-  const iso = `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`;
-  const parsed = new Date(`${iso}T00:00:00Z`);
-  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== iso) return undefined;
-  return { version: tag.slice(prefix.length), major, minor, date, sequence: Number(sequence) };
+  return parseVersion(tag.slice(prefix.length));
 }
 
 export function compareVersions(left, right) {
-  const a = left.split('.').map(BigInt);
-  const b = right.split('.').map(BigInt);
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] > b[i] ? 1 : -1;
-  }
-  return 0;
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) throw new Error(`版本格式错误：${left}，${right}`);
+  if (a.major !== b.major) return BigInt(a.major) > BigInt(b.major) ? 1 : -1;
+  if (a.minor !== b.minor) return BigInt(a.minor) > BigInt(b.minor) ? 1 : -1;
+  if (a.kind !== b.kind) return a.kind === 'sequence' ? 1 : -1;
+  return a.patch === b.patch ? 0 : a.patch > b.patch ? 1 : -1;
 }
 
-export function nextVersion(base, tags, sha, now = new Date(), prefix = 'v') {
+export function nextVersion(base, tags, sha, prefix = 'v') {
   if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.0$/.test(base)) {
-    throw new Error('源码版本使用 major.minor.0，CI 自动生成日期发布号');
+    throw new Error('源码版本使用 major.minor.0，CI 自动生成递增发布号');
   }
   const [major, minor] = base.split('.');
   const versions = tags.map((tag) => ({ ...releaseVersion(tag.name, prefix), sha: tag.commit.sha }))
-    .filter((tag) => tag.version && tag.major === major && tag.minor === minor)
-    .sort((a, b) => compareVersions(b.version, a.version));
+    .filter((tag) => tag.version && tag.major === major && tag.minor === minor);
   const existing = versions.find((tag) => tag.sha === sha);
   if (existing) return existing.version;
-  const date = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-  }).format(now).replaceAll('-', '');
-  if (versions[0]?.date > date) throw new Error('当前北京时间早于已分配版本的日期，请核对运行器时间');
-  const sequence = Math.max(0, ...versions.filter((tag) => tag.date === date).map((tag) => tag.sequence)) + 1;
-  if (sequence > 99) throw new Error('当日发布序号已达 99，请在次日发布');
-  return `${major}.${minor}.${date}${String(sequence).padStart(2, '0')}`;
+  const patch = Math.max(0, ...versions.filter((tag) => tag.kind === 'sequence').map((tag) => tag.patch)) + 1;
+  return `${major}.${minor}.${patch}`;
+}
+
+export async function reserveTag(client, name, commit) {
+  const annotated = await client.request('/git/tags', {
+    method: 'POST',
+    json: {
+      tag: name, message: name, object: commit, type: 'commit',
+      tagger: {
+        name: 'Tandem Release', email: 'noreply@users.noreply.github.com',
+        date: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      },
+    },
+  });
+  if (!annotated?.sha) throw new Error(`附注 tag 没有返回对象：${name}`);
+  await client.request('/git/refs', { method: 'POST', json: { ref: `refs/tags/${name}`, sha: annotated.sha } });
 }
 
 export function githubClient({ repository, token, apiUrl = 'https://api.github.com', fetchImpl = fetch }) {

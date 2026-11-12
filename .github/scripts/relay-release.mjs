@@ -1,11 +1,10 @@
 import { appendFile, realpath, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { root, run } from './run.mjs';
-import { compareVersions, githubClient, nextVersion, releaseVersion } from './release-version.mjs';
+import { compareVersions, githubClient, nextVersion, releaseVersion, reserveTag } from './release-version.mjs';
 
 export function stableVersion(tag) {
-  const match = /^relay-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag);
-  return match?.slice(1).map(BigInt);
+  return releaseVersion(tag, 'relay-v');
 }
 
 export function shouldPromote(candidate, current) {
@@ -14,10 +13,7 @@ export function shouldPromote(candidate, current) {
   if (current === undefined) return true;
   const previous = stableVersion(current);
   if (!previous) throw new Error(`latest 的版本标签 ${current} 不是正式 relay-vX.Y.Z，请先核对仓库中的 latest 镜像`);
-  for (let index = 0; index < next.length; index++) {
-    if (next[index] !== previous[index]) return next[index] > previous[index];
-  }
-  return false;
+  return compareVersions(next.version, previous.version) > 0;
 }
 
 export async function registryImage({ image, reference, username, password }) {
@@ -59,10 +55,10 @@ export async function latestVersion(credentials) {
   return (await registryImage({ ...credentials, reference: 'latest' }))?.version;
 }
 
-export async function prepareRelay(client, { base, sha, now, readImage }) {
+export async function prepareRelay(client, { base, sha, readImage }) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error('发布需要完整的提交 SHA');
   const tags = await client.list('/tags');
-  const version = nextVersion(base, tags, sha, now, 'relay-v');
+  const version = nextVersion(base, tags, sha, 'relay-v');
   const tag = `relay-v${version}`;
   const newest = tags.filter((item) => releaseVersion(item.name, 'relay-v'))
     .sort((a, b) => compareVersions(b.name.slice(7), a.name.slice(7)))[0];
@@ -72,9 +68,7 @@ export async function prepareRelay(client, { base, sha, now, readImage }) {
     if (!['ahead', 'identical'].includes(comparison.status)) return { version, tag, skip: true, digest: '' };
   }
   const reserved = tags.some((item) => item.name === tag);
-  if (!reserved) {
-    await client.request('/git/refs', { method: 'POST', json: { ref: `refs/tags/${tag}`, sha } });
-  }
+  if (!reserved) await reserveTag(client, tag, sha);
   // A fresh reservation has no published image. This also allows the first
   // release to create its GHCR package before requesting pull access to it.
   const image = reserved ? await readImage(tag) : undefined;
@@ -96,7 +90,7 @@ export async function relaySource(directory = root) {
   return { version, files };
 }
 export async function stampRelay(version, directory = root) {
-  if (!releaseVersion(`relay-v${version}`, 'relay-v')) throw new Error('relay 发布版本需要日期格式');
+  if (!releaseVersion(`relay-v${version}`, 'relay-v')) throw new Error('relay 发布版本格式错误');
   const { files } = await relaySource(directory);
   for (const [index, file] of files.entries()) {
     await writeFile(file.path, file.text.replace(index ? lockVersion : cargoVersion,

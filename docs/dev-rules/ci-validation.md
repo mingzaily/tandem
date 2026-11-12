@@ -57,10 +57,10 @@ node .github/scripts/container-smoke.mjs tandem-relay:local
 | 工作流 | 触发 | 验证与产物 |
 | --- | --- | --- |
 | `.github/workflows/ci.yml` | relay / PWA / site、共享 token、相关自动化与协议改动进入 main 或指向 main 的 PR；其他工作流调用 | 共享检查和本机架构容器验收；供 relay 发布复用时容器检查由镜像任务承担 |
-| `.github/workflows/desktop.yml` | 桌面相关 PR、桌面发布工作流调用 | typecheck、前端与 Rust 测试、clippy；传入日期版本时同步版本并构建、验证和上传通用 `.dmg` |
-| `.github/workflows/desktop-release.yml` | 桌面及发布工具改动进入 main、手动选择 main 执行 | 预留日期版本 → 桌面检查及打包 → 上传完整产物后发布 GitHub Release |
+| `.github/workflows/desktop.yml` | 桌面相关 PR、桌面发布工作流调用 | typecheck、前端与 Rust 测试、clippy；传入发布版本时同步版本并分别构建、验证和上传 Apple Silicon 与 Intel 安装包 |
+| `.github/workflows/desktop-release.yml` | 桌面及发布工具改动进入 main、手动选择 main 执行 | 预留递增版本 → 桌面检查及打包 → 上传完整产物后发布 GitHub Release |
 | `.github/workflows/site-pages.yml` | site / PWA、共享 token 及 Pages 构建工具改动进入 main；手动触发 | 共享检查成功后上传组合产物并发布 Pages；浏览器检查属于发布门禁 |
-| `.github/workflows/relay-image.yml` | relay、镜像内 PWA / token 及构建工具改动进入 main；手动选择 main 执行 | 预留独立日期版本，先通过共享检查和 amd64 容器验收，再推送 amd64 / arm64 版本与 SHA 标签 |
+| `.github/workflows/relay-image.yml` | relay、镜像内 PWA / token 及构建工具改动进入 main；手动选择 main 执行 | 预留独立递增版本，先通过共享检查和 amd64 容器验收，再推送 amd64 / arm64 版本与 SHA 标签 |
 
 通用 CI 覆盖 relay、PWA、官网、共享设计 token、相关自动化、协议、测试向量和镜像许可证。桌面源码和桌面发布脚本由独立桌面工作流检查。桌面检查通过可复用工作流在 `macos-15` 上运行，包含发布脚本测试、版本一致性、typecheck、前端测试、Rust 测试与 `cargo clippy --all-targets -- -D warnings`。main 上的桌面相关 push 随发布执行桌面检查，桌面相关 PR 直接触发同一可复用工作流；relay 发布只依赖共享检查。第三方 Action 固定到 commit SHA。构建任务使用只读仓库权限；桌面版本预留与发布任务使用 `contents: write`，GHCR 写权限只授予镜像发布与版本晋升任务。桌面端窗口验收和原生互通仍按桌面开发文档执行。
 
@@ -78,16 +78,16 @@ GitHub 的 `branches` 和 `paths` 同时满足时才自动触发；一次 push �
 | 桌面构建 / 发布 workflow 和 `desktop-release*.mjs` | PR 检查；main 发布 | — | — | — |
 | Pages workflow、`build-pages.mjs`、`verify.mjs`、`automation.test.mjs` | — | main 部署 | 执行 | — |
 | 共用 `run.mjs` | PR 检查；main 发布 | main 部署 | 执行 | main 发布 |
-| 共用日期版本模块 `release-version.mjs` | PR 检查；main 发布 | — | 执行 | main 发布 |
+| 共用版本模块 `release-version.mjs` | PR 检查；main 发布 | — | 执行 | main 发布 |
 | relay 发布工具、共享 CI、`verify.mjs`、容器检查、镜像许可证 | — | 按上方 Pages 工具范围部署 | 执行 | main 发布 |
 | 协议文档、测试向量 | — | — | 执行 | — |
 | 普通内部文档 | — | — | — | — |
 
 Pages 仍执行 PWA 与 relay 的浏览器集成门禁，但仅在实际前端或构建依赖变化时部署。纯 relay 或协议修改通过共享 CI 验证；它们不改变已部署的官网 / PWA。桌面发布和 PR 检查采用同一组路径，纯官网、PWA、relay 改动保持 macOS 工作流静默。
 
-官网和 PWA 随 main 的部署提交 SHA 标识构建，不手动维护独立发布号。桌面与 relay 共用 `major.minor.YYYYMMDDNN` 日期规则，各自使用 `v<version>` 和 `relay-v<version>` tag 独立计数；同一天或同一个提交的两个产物也可以有不同版本。通信协议继续使用自身的 `v: 1`，与产品版本分别管理。
+官网和 PWA 随 main 的部署提交 SHA 标识构建，不手动维护独立发布号。桌面与 relay 各自使用 `v<version>` 和 `relay-v<version>`，在同一 `major.minor` 内按 `1`、`2`、`3` 递增；同一次提交的两个产物可以有不同序号。已经发出的 `major.minor.YYYYMMDDNN` 日期 tag 保持原样，同提交重跑继续复用，新版本按递增序号比较时新于这些日期版本。通信协议继续使用自身的 `v: 1`，与产品版本分别管理。
 
-relay 镜像包含一份 PWA 和共享 token，因此 PWA 及 token 改动也自动触发 GHCR 镜像发布，确保镜像中的手机端更新。纯 site 改动只部署 Pages。relay 相关改动进入 main 后直接分配独立日期版本，构建并推送 `ghcr.io/mingzaily/tandem-relay:relay-v<version>`、`:sha-<commit>`，验证通过后晋升 latest；无需手动推送 tag。
+relay 镜像包含一份 PWA 和共享 token，因此 PWA 及 token 改动也自动触发 GHCR 镜像发布，确保镜像中的手机端更新。纯 site 改动只部署 Pages。relay 相关改动进入 main 后直接分配独立递增版本，构建并推送 `ghcr.io/mingzaily/tandem-relay:relay-v<version>`、`:sha-<commit>`，验证通过后晋升 latest；无需手动推送 tag。
 
 ## 桌面自动发布
 
@@ -98,19 +98,23 @@ relay 镜像包含一份 PWA 和共享 token，因此 PWA 及 token 改动也自
 ### 版本规则
 
 - 源码中的 `desktop/package.json`、`desktop/src-tauri/tauri.conf.json`、`Cargo.toml` 和 `Cargo.lock` 的 Tandem 包版本保持一致，采用 `major.minor.0`，当前为 `0.1.0`。
-- CI 分配 `major.minor.YYYYMMDDNN`，例如 `0.1.2026111101`。日期采用 `Asia/Shanghai`，当日序号为 `01`–`99`；达到上限后明确失败，次日重新从 `01` 起。
-- 版本以指向源码提交 SHA 的 `v<version>` tag 预留。构建失败或中断保留这个 tag，同提交重跑复用原版本，序号允许有间隔。
-- CI 在临时工作区同步四处版本，打包产物使用日期发布号；源码提交保留产品阶段版本。流水线使用 GitHub API 创建 tag，构建阶段沿用只读权限。
+- CI 在当前 `major.minor` 内分配下一个递增序号，例如 `0.1.1`、`0.1.2`。已有日期 tag 不占用这个序号；同提交重跑复用原来的日期或递增版本。
+- 版本以指向源码提交 SHA 的附注 tag 预留，说明只有版本号，不复制提交标题。构建失败或中断保留这个 tag，序号允许有间隔。
+- CI 在临时工作区同步四处版本，打包产物使用递增发布号；源码提交保留产品阶段版本。流水线使用 GitHub API 创建 tag，构建阶段沿用只读权限。
 - 已发布的同一提交跳过重复发布；完整重跑的旧提交在已被新版本覆盖时跳过。旧任务只重跑失败 job 时也保持旧版本号，发布器按数字版本比较保护 Latest。
 - 已公开的产物保持原样；上传中断留下草稿，重跑只替换草稿内的产物，全部上传成功后才公开。
 
 ### 产物与签名
 
-CI 安装两种 Rust target，构建 `universal-apple-darwin` 通用应用，同一个 `.dmg` 支持 Apple Silicon 和 Intel。产物上传前验证 plist 的两处版本、Mach-O 的双架构与应用代码签名。
+CI 安装两种 Rust target，分别构建 `aarch64-apple-darwin` 和 `x86_64-apple-darwin`。产物上传前验证 plist 的两处版本、各自只有一种 Mach-O 架构，以及应用代码签名。
 
-`bundle.macOS.signingIdentity` 使用 `-`，即免费的 ad hoc 签名。当前发布采用该方式；它验证应用包自身一致性，用户首次打开仍可能需要在“系统设置 → 隐私与安全性”中允许。Developer ID 和 Apple 公证需要后续接入开发者证书。
+`bundle.macOS.signingIdentity` 为 `Tandem`，即 Tandem 自己的自签名代码签名证书（SHA-1 `c8a14cca…c59e0d`，有效至 2036 年）。签名要求因此是“应用标识 + 证书”，重新构建和自动更新后保持不变，macOS 记住的录屏等隐私权限不会失效；ad hoc 签名的要求是每次构建的哈希，每个新版本都要重新授权。它不是 Apple 签发的证书，用户首次打开下载的安装包仍需要在“系统设置 → 隐私与安全性”中允许。Developer ID 和 Apple 公证需要后续接入开发者证书。
 
-Release 包含 `Tandem_<version>_universal.dmg`、`Tandem.app.tar.gz`、`Tandem.app.tar.gz.sig`、`latest.json` 和 `SHA256SUMS`。更新清单为 `darwin-aarch64` 与 `darwin-x86_64` 提供同一个通用更新包，URL 指向不可变版本 tag；发布器只在全部产物上传后公开 Release。临时 Actions 产物保留 7 天，Release 按版本保存。
+证书和密码保存在 Actions Secret `TANDEM_CODESIGN_P12`（base64 编码的 `.p12`）与 `TANDEM_CODESIGN_P12_PASSWORD`。Tauri 自带的 `APPLE_CERTIFICATE` 导入只接受 Apple 签发的证书，因此构建前由工作流自己创建临时钥匙串、导入证书，并只在当次运行器上把它信任为代码签名证书。打包后校验每个架构的签名要求包含这张证书，换了证书或退回 ad hoc 都会让发布失败。
+
+发布说明先取上一版桌面 tag 之后的提交标题。三个 Actions Secret `TANDEM_RELEASE_NOTES_API_URL`、`TANDEM_RELEASE_NOTES_API_KEY`、`TANDEM_RELEASE_NOTES_MODEL` 都存在时，发布步骤向该 HTTPS 的 OpenAI 兼容接口先要英文更新说明，再译成简体中文；地址必须不带账号，每次请求超时 60 秒。正文以 `<!-- lang:zh -->` 分隔两种语言，后面各自保留安装包、自签名证书和 SHA256 核对文字。任一配置缺失、接口失败、返回为空或正文回显密钥时，对应语言改用提交标题，安装包照常发布。草稿重跑会更新正文；已公开的 Release 不改写说明。
+
+Release 包含 `Tandem_<version>_aarch64.dmg`、`Tandem_<version>_x64.dmg`、两种架构的 `Tandem_<arch>.app.tar.gz` 及签名、`latest.json` 和 `SHA256SUMS`。更新清单为 `darwin-aarch64` 与 `darwin-x86_64` 提供各自的更新包，URL 指向不可变版本 tag；发布器只在全部产物上传后公开 Release。临时 Actions 产物保留 7 天，Release 按版本保存。
 
 “设置 → 关于”提供检查、下载和安装重启入口。应用从 `https://github.com/mingzaily/tandem/releases/latest/download/latest.json` 读取清单，自动更新默认关闭；开启后由 Rust 按 1、6、12、24 小时间隔检查并下载，默认 6 小时，首次检查最早在启动 30 秒后执行。官方更新器校验签名和签名绑定版本（`requireSignedVersion`），安装与重启始终由用户确认。后台调度和下载状态独立于设置页挂载，失败等待所选间隔，已就绪更新暂停定期检查。更新签名使用 `TAURI_SIGNING_PRIVATE_KEY` Actions Secret，公钥写在 Tauri 配置中。私钥本机保存在 `~/.local/share/tandem-release/updater.key`，目录 `0700`、私钥 `0600`；它与 Apple ad hoc 签名独立。需要在新仓库配置 Secret 时从文件标准输入传给 `gh secret set`，保持密钥原值并妥善备份。
 
@@ -133,7 +137,7 @@ node .github/scripts/desktop-release.mjs check
 
 ## relay 自动发布与 latest 晋升
 
-relay 发布全流程按 `relay-release` 串行排队。`prepare` 在 `relay-v` 命名空间按北京时间分配日期版本并预留 tag；同提交重跑复用版本。Cargo.toml 和 Cargo.lock 在镜像构建工作区同步为日期版本，服务端二进制、健康检查和 hello-ack 因此返回同一个产品版本。
+relay 发布全流程按 `relay-release` 串行排队。`prepare` 在 `relay-v` 命名空间分配递增版本并预留附注 tag；同提交重跑复用版本，已有日期 tag 保持原号。Cargo.toml 和 Cargo.lock 在镜像构建工作区同步为该版本，服务端二进制、健康检查和 hello-ack 因此返回同一个产品版本。
 
 已发布版本通过 GHCR 查询确认 OCI 版本标签、源码 SHA、双架构及 digest；它们一致时重跑复用该镜像，只继续 latest 晋升。构建失败保留预留号，旧提交被新版本覆盖时跳过；旧任务只重跑失败步骤时继续用原版本，并通过 latest 比较保持单调。
 

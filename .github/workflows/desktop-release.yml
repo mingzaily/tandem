@@ -52,6 +52,8 @@ jobs:
       version: ${{ needs.prepare.outputs.version }}
     secrets:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TANDEM_CODESIGN_P12: ${{ secrets.TANDEM_CODESIGN_P12 }}
+      TANDEM_CODESIGN_P12_PASSWORD: ${{ secrets.TANDEM_CODESIGN_P12_PASSWORD }}
   publish:
     needs: [prepare, build]
     runs-on: ubuntu-latest
@@ -73,4 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DESKTOP_VERSION: ${{ needs.prepare.outputs.version }}
+          TANDEM_RELEASE_NOTES_API_URL: ${{ secrets.TANDEM_RELEASE_NOTES_API_URL }}
+          TANDEM_RELEASE_NOTES_API_KEY: ${{ secrets.TANDEM_RELEASE_NOTES_API_KEY }}
+          TANDEM_RELEASE_NOTES_MODEL: ${{ secrets.TANDEM_RELEASE_NOTES_MODEL }}
         run: node .github/scripts/desktop-release.mjs publish release-assets

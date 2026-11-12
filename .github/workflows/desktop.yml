@@ -14,21 +14,32 @@ on:
   workflow_call:
     inputs:
       version:
-        description: Date version to package; empty runs checks only
+        description: Release version to package; empty runs checks only
         type: string
         default: ''
     secrets:
       TAURI_SIGNING_PRIVATE_KEY:
         description: Private key matching the updater public key
         required: false
+      TANDEM_CODESIGN_P12:
+        description: Base64 .p12 of the self-signed code signing certificate
+        required: false
+      TANDEM_CODESIGN_P12_PASSWORD:
+        description: Password of TANDEM_CODESIGN_P12
+        required: false
 
 permissions:
   contents: read
 
+env:
+  # Must match bundle.macOS.signingIdentity; the hash pins the one certificate releases use.
+  SIGNING_IDENTITY: Tandem
+  SIGNING_CERT_SHA1: c8a14ccae787d1d9c7b58df464f8322718c59e0d
+
 jobs:
   desktop:
     runs-on: macos-15
-    timeout-minutes: 50
+    timeout-minutes: 70
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
@@ -68,33 +79,64 @@ jobs:
         working-directory: desktop/src-tauri
       - run: cargo clippy --locked --all-targets -- -D warnings
         working-directory: desktop/src-tauri
-      - name: Build universal macOS DMG and signed update
+      # The self-signed certificate keeps one code identity across builds, so macOS privacy
+      # permissions survive updates. Tauri only imports Apple-issued certificates itself, so the
+      # job adds it to a temporary keychain and trusts it for code signing on this runner only.
+      - name: Import the code signing certificate
+        if: inputs.version != ''
+        env:
+          TANDEM_CODESIGN_P12: ${{ secrets.TANDEM_CODESIGN_P12 }}
+          TANDEM_CODESIGN_P12_PASSWORD: ${{ secrets.TANDEM_CODESIGN_P12_PASSWORD }}
+        run: |
+          test -n "$TANDEM_CODESIGN_P12" || { echo 'Missing TANDEM_CODESIGN_P12 secret' >&2; exit 1; }
+          keychain="$RUNNER_TEMP/tandem-signing.keychain-db"
+          password="$(openssl rand -hex 24)"
+          security create-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          printf '%s' "$TANDEM_CODESIGN_P12" | base64 --decode > "$RUNNER_TEMP/codesign.p12"
+          security import "$RUNNER_TEMP/codesign.p12" -k "$keychain" -P "$TANDEM_CODESIGN_P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/codesign.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-certificate -c "$SIGNING_IDENTITY" -p "$keychain" > "$RUNNER_TEMP/codesign.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/codesign.pem"
+          security find-identity -v -p codesigning "$keychain" | grep -qi "$SIGNING_CERT_SHA1"
+      - name: Build Apple Silicon and Intel packages
         if: inputs.version != ''
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
         run: |
           test -n "$TAURI_SIGNING_PRIVATE_KEY" || { echo 'Missing TAURI_SIGNING_PRIVATE_KEY secret' >&2; exit 1; }
-          pnpm tauri build --target universal-apple-darwin --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          for triple in aarch64-apple-darwin x86_64-apple-darwin; do
+            pnpm tauri build --target "$triple" --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":true}}'
+          done
         working-directory: desktop
-      - name: Verify app version, architectures and ad hoc signature
+      - name: Verify each architecture and stage artifacts
         if: inputs.version != ''
         env:
           DESKTOP_VERSION: ${{ inputs.version }}
         run: |
-          app=desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos/Tandem.app
-          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$DESKTOP_VERSION"
-          test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$app/Contents/Info.plist")" = "$DESKTOP_VERSION"
-          architectures=" $(lipo -archs "$app/Contents/MacOS/tandem") "
-          [[ "$architectures" == *" arm64 "* && "$architectures" == *" x86_64 "* ]]
-          codesign --verify --deep --strict "$app"
-      - name: Stage installation and update artifacts
-        if: inputs.version != ''
-        run: |
           mkdir -p release-assets
-          bundle=desktop/src-tauri/target/universal-apple-darwin/release/bundle
-          cp "$bundle"/dmg/*.dmg release-assets/
-          cp "$bundle/macos/Tandem.app.tar.gz" "$bundle/macos/Tandem.app.tar.gz.sig" release-assets/
+          stage() {
+            local triple="$1" arch="$2" macho="$3"
+            local bundle="desktop/src-tauri/target/$triple/release/bundle"
+            local app="$bundle/macos/Tandem.app"
+            test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$DESKTOP_VERSION"
+            test "$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$app/Contents/Info.plist")" = "$DESKTOP_VERSION"
+            test "$(lipo -archs "$app/Contents/MacOS/tandem")" = "$macho"
+            codesign --verify --deep --strict "$app"
+            # The designated requirement is what macOS privacy permissions remember.
+            codesign -d -r- "$app" 2>&1 | grep -qi "certificate leaf = H\"$SIGNING_CERT_SHA1\""
+            local dmgs=("$bundle"/dmg/*.dmg)
+            test "${#dmgs[@]}" -eq 1
+            cp "${dmgs[0]}" "release-assets/Tandem_${DESKTOP_VERSION}_${arch}.dmg"
+            cp "$bundle/macos/Tandem.app.tar.gz" "release-assets/Tandem_${arch}.app.tar.gz"
+            cp "$bundle/macos/Tandem.app.tar.gz.sig" "release-assets/Tandem_${arch}.app.tar.gz.sig"
+          }
+          stage aarch64-apple-darwin aarch64 arm64
+          stage x86_64-apple-darwin x64 x86_64
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: inputs.version != ''
         with:

@@ -86,22 +86,31 @@ const nextSha = 'b'.repeat(40);
 const date = new Date('2026-11-11T01:00:00Z');
 function gitFixture(tags = [], comparison = 'ahead') {
   const calls = [];
+  let commit;
   return { calls, list: async () => tags, request: async (path, options) => {
     calls.push([path, options]);
     if (path.startsWith('/compare/')) return { status: comparison };
+    if (path === '/git/tags') {
+      assert.equal(options.json.message, options.json.tag);
+      assert.equal(options.json.message.includes('\n'), false);
+      commit = options.json.object;
+      return { sha: `annotated-${options.json.tag}` };
+    }
     assert.equal(path, '/git/refs');
-    tags.push({ name: options.json.ref.slice(10), commit: { sha: options.json.sha } });
+    const name = options.json.ref.slice('refs/tags/'.length);
+    assert.equal(options.json.sha, `annotated-${name}`);
+    tags.push({ name, commit: { sha: commit } });
   } };
 }
 const gitTag = (name, sha = nextSha) => ({ name, commit: { sha } });
 const imageDigest = 'sha256:' + 'c'.repeat(64);
 const imageRecord = { version: 'relay-v0.1.2026111101', revision: sourceSha, digest: imageDigest, platforms: ['amd64', 'arm64'] };
 
-test('桌面与 relay 使用同一日期规则，命名空间和序号独立', () => {
-  const tags = [gitTag('v0.1.2026111105'), gitTag('relay-v0.1.2026111101')];
-  assert.equal(nextVersion('0.1.0', tags, sourceSha, date), '0.1.2026111106');
-  assert.equal(nextVersion('0.1.0', tags, sourceSha, date, 'relay-v'), '0.1.2026111102');
-  assert.equal(nextVersion('0.1.0', tags, sourceSha, new Date('2026-11-11T16:00:00Z'), 'relay-v'), '0.1.2026111201');
+test('桌面与 relay 使用同一递增序号，命名空间独立，日期 tag 不占新序号', () => {
+  const tags = [gitTag('v0.1.4'), gitTag('v0.1.2026111105'), gitTag('relay-v0.1.3'), gitTag('relay-v0.1.2026111101')];
+  assert.equal(nextVersion('0.1.0', tags, sourceSha), '0.1.5');
+  assert.equal(nextVersion('0.1.0', tags, sourceSha, 'relay-v'), '0.1.4');
+  assert.equal(nextVersion('0.1.0', [gitTag('relay-v0.1.2026111101', sourceSha)], sourceSha, 'relay-v'), '0.1.2026111101');
 });
 
 test('relay 预留版本在失败重跑时保持原值', async () => {
@@ -109,7 +118,7 @@ test('relay 预留版本在失败重跑时保持原值', async () => {
   const options = { base: '0.1.0', sha: sourceSha, now: date, readImage: async () => undefined };
   const first = await prepareRelay(client, options);
   const retry = await prepareRelay(client, { ...options, now: new Date('2026-11-12T01:00:00Z') });
-  assert.deepEqual(first, { version: '0.1.2026111101', tag: 'relay-v0.1.2026111101', skip: false, digest: '' });
+  assert.deepEqual(first, { version: '0.1.1', tag: 'relay-v0.1.1', skip: false, digest: '' });
   assert.deepEqual(first, retry);
   assert.equal(client.calls.filter(([path]) => path === '/git/refs').length, 1);
 });
@@ -154,9 +163,11 @@ for (const comparison of ['behind', 'diverged']) {
   });
 }
 
-test('日期镜像版本正确晋升，旧任务重跑保留 latest', () => {
+test('递增镜像版本高于日期版本，旧任务重跑保留 latest', () => {
+  assert.equal(shouldPromote('relay-v0.1.1', 'relay-v0.1.2026111201'), true);
   assert.equal(shouldPromote('relay-v0.1.2026111102', 'relay-v0.1.2026111101'), true);
   assert.equal(shouldPromote('relay-v0.1.2026111101', 'relay-v0.1.2026111102'), false);
+  assert.equal(shouldPromote('relay-v0.1.2026111101', 'relay-v0.1.1'), false);
   assert.equal(shouldPromote('relay-v0.1.2026111101', 'relay-v0.1.2026111101'), false);
 });
 
@@ -166,10 +177,10 @@ test('relay CI 同步 Cargo 版本并保留其他依赖', async (t) => {
   await mkdir(join(directory, 'relay'));
   await writeFile(join(directory, 'relay/Cargo.toml'), '[package]\nname = "tandem-relay"\nversion = "0.1.0"\n[dependencies]\nserde = "1"\n');
   await writeFile(join(directory, 'relay/Cargo.lock'), 'version = 4\n\n[[package]]\nname = "tandem-relay"\nversion = "0.1.0"\n');
-  await stampRelay('0.1.2026111101', directory);
-  assert.equal((await relaySource(directory)).version, '0.1.2026111101');
+  await stampRelay('0.1.2', directory);
+  assert.equal((await relaySource(directory)).version, '0.1.2');
   assert.match(await readFile(join(directory, 'relay/Cargo.toml'), 'utf8'), /serde = "1"/);
-  await assert.rejects(stampRelay('0.1.1', directory), /日期格式/);
+  await assert.rejects(stampRelay('0.1.2026022901', directory), /格式错误/);
 });
 
 test('GHCR 查询带回多架构 digest、版本和源码提交', async (t) => {

@@ -8,7 +8,8 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
-  prepareRelease, publishRelease, sourceVersions, stampVersion,
+  commitChangelog, composeReleaseBody, englishCommitChangelog, englishInstallNote, installNote,
+  modelChangelog, prepareRelease, publishRelease, releaseSubjects, sourceVersions, stampVersion,
 } from './desktop-release.mjs';
 import { compareVersions, githubClient, nextVersion, releaseVersion } from './release-version.mjs';
 
@@ -24,31 +25,29 @@ async function temporary(t) {
   return directory;
 }
 
-for (const value of ['v0.1.2026111101', 'v1.12.2028022999']) {
-  test(`接受日期版本 ${value}`, () => assert.equal(releaseVersion(value).version, value.slice(1)));
+for (const value of ['v0.1.1', 'v1.12.2', 'v0.1.2026111101', 'v1.12.2028022999']) {
+  test(`接受发布版本 ${value}`, () => assert.equal(releaseVersion(value).version, value.slice(1)));
 }
-for (const value of ['relay-v0.1.2026111101', 'v0.1.0', 'v0.1.2026022901', 'v0.1.2026113101', 'v0.1.2026111100',
+for (const value of ['relay-v0.1.2026111101', 'v0.1.2026022901', 'v0.1.2026113101', 'v0.1.2026111100',
   'v0.1.20261111100', 'v00.1.2026111101', 'v0.1.2026111101-beta', 'v0.1.2026111101\n']) {
   test(`拒绝非法日期版本 ${JSON.stringify(value)}`, () => assert.equal(releaseVersion(value), undefined));
 }
 
-test('北京时间跨日、每日序号与重跑版本', () => {
-  assert.equal(nextVersion('0.1.0', [], sha, new Date('2026-11-10T16:00:00Z')), '0.1.2026111101');
-  assert.equal(nextVersion('0.1.0', [tag('v0.1.2026111101')], sha, now), '0.1.2026111102');
-  assert.equal(nextVersion('0.1.0', [tag('v0.1.2026111003')], sha, now), '0.1.2026111101');
-  assert.equal(nextVersion('0.1.0', [tag('v0.1.2026111003', sha)], sha, now), '0.1.2026111003');
-  assert.equal(nextVersion('0.2.0', [tag('v0.1.2026111199')], sha, now), '0.2.2026111101');
-  assert.throws(() => nextVersion('0.1.0', [tag('v0.1.2026111199')], sha, now), /序号已达 99/);
-  assert.throws(() => nextVersion('0.1.0', [tag('v0.1.2026111201')], sha, now), /运行器时间/);
-  assert.throws(() => nextVersion('0.1.1', [], sha, now), /major.minor.0/);
+test('递增序号独立于日期 tag，同提交复用原版本', () => {
+  assert.equal(nextVersion('0.1.0', [], sha), '0.1.1');
+  assert.equal(nextVersion('0.1.0', [tag('v0.1.4'), tag('v0.1.2026111201')], sha), '0.1.5');
+  assert.equal(nextVersion('0.1.0', [tag('v0.1.2026111003', sha)], sha), '0.1.2026111003');
+  assert.equal(nextVersion('0.2.0', [tag('v0.1.9')], sha), '0.2.1');
+  assert.throws(() => nextVersion('0.1.1', [], sha), /major.minor.0/);
 });
 
-test('版本按数字段比较，功能代际高于日期补丁', () => {
+test('同代际的递增版本新于日期版本', () => {
+  assert.equal(compareVersions('0.1.1', '0.1.2026111201'), 1);
   assert.equal(compareVersions('0.1.2026111102', '0.1.2026111101'), 1);
   assert.equal(compareVersions('0.1.2026111102', '0.1.2026111201'), -1);
   assert.equal(compareVersions('0.2.0', '0.1.2026111101'), 1);
   assert.equal(compareVersions('0.10.0', '0.9.2026111101'), 1);
-  assert.equal(compareVersions('0.1.2026111101', '0.1.2026111101'), 0);
+  assert.equal(compareVersions('0.1.4', '0.1.4'), 0);
 });
 
 async function sourceFixture(t) {
@@ -98,7 +97,7 @@ test('真实 CLI 校验与写入，发布命令拒绝其他分支', async (t) =>
 
 function githubFixture({ tags = [], releases = [], comparison = 'ahead' } = {}) {
   const state = { tags: structuredClone(tags), releases: structuredClone(releases), calls: [], uploads: [], failUpload: 0,
-    uploadOrigin: 'https://uploads.example.test' };
+    annotated: [], uploadOrigin: 'https://uploads.example.test' };
   let nextId = 100;
   const fetchImpl = async (input, options) => {
     const url = new URL(input);
@@ -114,9 +113,19 @@ function githubFixture({ tags = [], releases = [], comparison = 'ahead' } = {}) 
       return reply(values.slice(offset, offset + 100));
     }
     if (path.startsWith('/compare/')) return reply({ status: comparison });
+    if (method === 'POST' && path === '/git/tags') {
+      const data = JSON.parse(body);
+      assert.equal(data.message, data.tag);
+      assert.equal(data.message.includes('\n'), false);
+      assert.equal(data.type, 'commit');
+      const annotated = { sha: `annotated-${data.tag}`, commit: data.object };
+      state.annotated.push(annotated);
+      return reply(annotated, 201);
+    }
     if (method === 'POST' && path === '/git/refs') {
       const data = JSON.parse(body);
-      state.tags.push(tag(data.ref.slice('refs/tags/'.length), data.sha));
+      const annotated = state.annotated.find((item) => item.sha === data.sha);
+      state.tags.push(tag(data.ref.slice('refs/tags/'.length), annotated?.commit ?? data.sha));
       return reply({}, 201);
     }
     if (method === 'GET' && path.startsWith('/releases/tags/')) {
@@ -158,16 +167,17 @@ test('分配版本绑定提交，失败重跑复用 tag', async () => {
   const { client, state } = githubFixture();
   const first = await prepareRelease(client, { base: '0.1.0', sha, now });
   const retry = await prepareRelease(client, { base: '0.1.0', sha, now });
-  assert.deepEqual(first, { version: '0.1.2026111101', tag: 'v0.1.2026111101', skip: false });
+  assert.deepEqual(first, { version: '0.1.1', tag: 'v0.1.1', skip: false });
   assert.deepEqual(first, retry);
-  assert.equal(state.calls.filter(([method]) => method === 'POST').length, 1);
+  assert.equal(state.calls.filter(([method]) => method === 'POST').length, 2);
+  assert.equal(state.tags[0].commit.sha, sha);
 });
 
-test('读取超过一页的 tags，序号包含早先失败的预留版本', async () => {
+test('读取超过一页的 tags，日期 tag 不占用递增序号', async () => {
   const tags = Array.from({ length: 100 }, (_, i) => tag(`relay-v0.1.${i}`));
   tags.push(tag('v0.1.2026111108'));
   const { client } = githubFixture({ tags });
-  assert.equal((await prepareRelease(client, { base: '0.1.0', sha, now })).version, '0.1.2026111109');
+  assert.equal((await prepareRelease(client, { base: '0.1.0', sha, now })).version, '0.1.1');
 });
 
 for (const [name, tags, newest, comparison] of [
@@ -184,38 +194,41 @@ for (const [name, tags, newest, comparison] of [
   });
 }
 
-async function packageFixture(t, version = '0.1.2026111101') {
+async function packageFixture(t, version = '0.1.1') {
   const directory = await temporary(t);
-  await writeFile(join(directory, `Tandem_${version}_universal.dmg`), 'fixture-dmg');
-  await writeFile(join(directory, 'Tandem.app.tar.gz'), 'fixture-update');
-  await writeFile(join(directory, 'Tandem.app.tar.gz.sig'), 'fixture-signature');
+  for (const arch of ['aarch64', 'x64']) {
+    await writeFile(join(directory, `Tandem_${version}_${arch}.dmg`), `fixture-dmg-${arch}`);
+    await writeFile(join(directory, `Tandem_${arch}.app.tar.gz`), `fixture-update-${arch}`);
+    await writeFile(join(directory, `Tandem_${arch}.app.tar.gz.sig`), `fixture-signature-${arch}`);
+  }
   return directory;
 }
 
 test('发布完整安装包和校验值，已发布版本重跑保持原产物', async (t) => {
   const directory = await packageFixture(t);
   const { client, state } = githubFixture();
-  const options = { version: '0.1.2026111101', sha, directory };
+  const options = { version: '0.1.1', sha, directory };
   await publishRelease(client, options);
   assert.equal(state.releases[0].draft, false);
   assert.equal(state.releases[0].make_latest, 'true');
   const checksum = state.uploads.find((asset) => asset.name === 'SHA256SUMS').data.toString();
-  assert.ok(checksum.startsWith(`${createHash('sha256').update('fixture-dmg').digest('hex')}  Tandem_0.1.2026111101_universal.dmg\n`));
-  assert.equal(checksum.trim().split('\n').length, 4);
+  assert.ok(checksum.startsWith(`${createHash('sha256').update('fixture-dmg-aarch64').digest('hex')}  Tandem_0.1.1_aarch64.dmg\n`));
+  assert.equal(checksum.trim().split('\n').length, 7);
   const manifest = JSON.parse(state.uploads.find((asset) => asset.name === 'latest.json').data);
-  assert.equal(manifest.version, '0.1.2026111101');
-  assert.deepEqual(manifest.platforms['darwin-aarch64'], manifest.platforms['darwin-x86_64']);
-  assert.equal(manifest.platforms['darwin-aarch64'].signature, 'fixture-signature');
-  assert.equal(manifest.platforms['darwin-aarch64'].url, 'https://github.com/example/tandem/releases/download/v0.1.2026111101/Tandem.app.tar.gz');
+  assert.equal(manifest.version, '0.1.1');
+  assert.equal(manifest.platforms['darwin-aarch64'].signature, 'fixture-signature-aarch64');
+  assert.equal(manifest.platforms['darwin-x86_64'].signature, 'fixture-signature-x64');
+  assert.equal(manifest.platforms['darwin-aarch64'].url, 'https://github.com/example/tandem/releases/download/v0.1.1/Tandem_aarch64.app.tar.gz');
+  assert.equal(manifest.platforms['darwin-x86_64'].url, 'https://github.com/example/tandem/releases/download/v0.1.1/Tandem_x64.app.tar.gz');
   const count = state.calls.length;
   await publishRelease(client, options);
-  assert.deepEqual(state.calls.slice(count), [['GET', '/releases/tags/v0.1.2026111101']]);
+  assert.deepEqual(state.calls.slice(count), [['GET', '/releases/tags/v0.1.1']]);
 });
 
 test('上传中断保持草稿，重跑替换草稿产物后发布', async (t) => {
   const directory = await packageFixture(t);
   const { client, state } = githubFixture();
-  const options = { version: '0.1.2026111101', sha, directory };
+  const options = { version: '0.1.1', sha, directory };
   state.failUpload = 2;
   await assert.rejects(publishRelease(client, options), /HTTP 503/);
   assert.equal(state.releases[0].draft, true);
@@ -223,24 +236,31 @@ test('上传中断保持草稿，重跑替换草稿产物后发布', async (t) =
   state.failUpload = 0;
   await publishRelease(client, options);
   assert.equal(state.releases[0].draft, false);
-  assert.equal(state.releases[0].assets.length, 5);
+  assert.equal(state.releases[0].assets.length, 8);
 });
 
 test('旧任务发布不会夺取 Latest', async (t) => {
-  const directory = await packageFixture(t);
+  const directory = await packageFixture(t, '0.1.2026111101');
   const { client, state } = githubFixture({ releases: [{ tag_name: 'v0.1.2026111102' }] });
   await publishRelease(client, { version: '0.1.2026111101', sha, directory });
   assert.equal(state.releases[1].make_latest, 'false');
 });
 
+test('日期版本之后的递增版本成为 Latest', async (t) => {
+  const directory = await packageFixture(t, '0.1.1');
+  const { client, state } = githubFixture({ releases: [{ tag_name: 'v0.1.2026111201' }] });
+  await publishRelease(client, { version: '0.1.1', sha, directory });
+  assert.equal(state.releases[1].make_latest, 'true');
+});
+
 test('缺失、错误或多个安装包均阻止发布', async (t) => {
   const directory = await temporary(t);
   const { client, state } = githubFixture();
-  const options = { version: '0.1.2026111101', sha, directory };
+  const options = { version: '0.1.1', sha, directory };
   await assert.rejects(publishRelease(client, options), /只允许/);
   await writeFile(join(directory, 'wrong.dmg'), 'fixture');
   await assert.rejects(publishRelease(client, options), /只允许/);
-  await writeFile(join(directory, 'Tandem_0.1.2026111101_universal.dmg'), 'fixture');
+  await writeFile(join(directory, 'Tandem_0.1.1_aarch64.dmg'), 'fixture');
   await assert.rejects(publishRelease(client, options), /只允许/);
   assert.equal(state.calls.length, 0);
 });
@@ -248,8 +268,8 @@ test('缺失、错误或多个安装包均阻止发布', async (t) => {
 test('缺少签名更新包时阻止创建 Release', async (t) => {
   const directory = await packageFixture(t);
   const { client, state } = githubFixture();
-  await rm(join(directory, 'Tandem.app.tar.gz.sig'));
-  await assert.rejects(publishRelease(client, { version: '0.1.2026111101', sha, directory }), { code: 'ENOENT' });
+  await rm(join(directory, 'Tandem_aarch64.app.tar.gz.sig'));
+  await assert.rejects(publishRelease(client, { version: '0.1.1', sha, directory }), { code: 'ENOENT' });
   assert.equal(state.calls.length, 0);
 });
 
@@ -261,6 +281,104 @@ for (const status of [401, 403, 429, 500]) {
       (error) => error.message.includes(`HTTP ${status}`) && !error.message.includes('private-token'));
   });
 }
+
+test('发布说明取上一版之后的提交标题，跳过合并提交和 relay tag', async () => {
+  const tags = [tag('v0.1.2026111001', otherSha), tag('relay-v0.1.2026111201'), tag('v0.1.2026111101', sha)];
+  const commits = {
+    [`/compare/v0.1.2026111001...${sha}`]: {
+      commits: [
+        { commit: { message: 'Merge branch \'main\'\n\nbody' } },
+        { commit: { message: 'Show the update action\n\nDetails' } },
+      ],
+    },
+  };
+  const client = {
+    list: async () => tags,
+    request: async (path) => commits[path] ?? { commit: { message: 'missing' } },
+  };
+  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha }), ['Show the update action']);
+});
+
+test('首个版本使用当前提交标题', async () => {
+  const client = {
+    list: async () => [],
+    request: async (path) => {
+      assert.equal(path, `/commits/${sha}`);
+      return { commit: { message: 'First desktop release\n\nmore' } };
+    },
+  };
+  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha }), ['First desktop release']);
+});
+
+test('模型说明失败、缺配置或回显密钥时使用提交标题', async () => {
+  const subjects = ['Add the update page'];
+  const llm = { url: 'https://notes.example.test/v1/chat/completions', key: 'notes-secret', model: 'notes-model' };
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push([url.href, options.headers.Authorization]);
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'notes-secret' } }] }), { status: 200 });
+  };
+  assert.equal(await modelChangelog(subjects, { ...llm, fetchImpl }), undefined);
+  assert.equal(await modelChangelog(subjects, { ...llm, url: 'http://notes.example.test/v1' }), undefined);
+  assert.equal(calls.length, 1);
+  const failed = await composeReleaseBody({
+    subjects, version: '0.1.2026111101', sha, llm,
+    fetchImpl: async () => new Response('', { status: 401 }),
+  });
+  assert.equal(failed.source, 'commits');
+  assert.match(failed.body, /Add the update page/);
+  assert.match(failed.body, /self-signed certificate/);
+  assert.match(failed.body, /<!-- lang:zh -->/);
+  assert.equal(failed.body.includes('notes-secret'), false);
+  const unconfigured = await composeReleaseBody({ subjects, version: '0.1.1', sha, llm: {} });
+  assert.equal(unconfigured.source, 'commits');
+  assert.equal(unconfigured.body, `${englishCommitChangelog(subjects)}\n\n${englishInstallNote('0.1.1', sha)}\n\n<!-- lang:zh -->\n\n${commitChangelog(subjects)}\n\n${installNote('0.1.1', sha)}`);
+});
+
+test('中文翻译失败时保留已生成的英文说明', async () => {
+  let calls = 0;
+  const notes = await modelChangelog(['Add the update page'], {
+    url: 'https://notes.example.test/v1/chat/completions', key: 'notes-secret', model: 'notes-model',
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ choices: [{ message: { content: '### Features\n\n- Updates can be checked.' } }] }), { status: 200 });
+      }
+      throw new Error('translation timed out');
+    },
+  });
+  assert.equal(calls, 2);
+  assert.match(notes.english, /### Features/);
+  assert.equal(notes.chinese, undefined);
+});
+
+test('模型说明写入 Release，草稿重跑更新正文', async (t) => {
+  const directory = await packageFixture(t);
+  const { client, state } = githubFixture();
+  const notes = await composeReleaseBody({
+    subjects: ['Add the update page'], version: '0.1.1', sha,
+    llm: { url: 'https://notes.example.test/v1/chat/completions', key: 'notes-secret', model: 'notes-model' },
+    fetchImpl: async () => {
+      state.notesCalls = (state.notesCalls ?? 0) + 1;
+      const content = state.notesCalls === 1
+        ? '### Features\n\n- Updates can be checked.'
+        : '```markdown\n### 新功能\n\n- 可以检查更新。\n```';
+      return new Response(JSON.stringify({ choices: [{ message: { content } }] }), { status: 200 });
+    },
+  });
+  assert.equal(notes.source, 'model');
+  assert.match(notes.body, /### Features/);
+  assert.match(notes.body, /### 新功能/);
+  const options = { version: '0.1.1', sha, directory, body: notes.body };
+  await publishRelease(client, options);
+  assert.match(state.releases[0].body, /### Features/);
+  assert.equal(state.releases[0].generate_release_notes, false);
+  state.releases[0].draft = true;
+  const revised = `${notes.body}\n\n补充`;
+  await publishRelease(client, { ...options, body: revised });
+  assert.equal(state.releases[0].body, revised);
+  assert.equal(state.releases[0].draft, false);
+});
 
 test('真实 HTTP 贯通版本预留、二进制上传、校验值及发布', { timeout: 15000 }, async (t) => {
   const fixture = githubFixture();
@@ -286,5 +404,5 @@ test('真实 HTTP 贯通版本预留、二进制上传、校验值及发布', { 
   const directory = await packageFixture(t, plan.version);
   await publishRelease(client, { version: plan.version, sha, directory });
   assert.equal(fixture.state.releases[0].draft, false);
-  assert.equal(fixture.state.uploads[0].data.toString(), 'fixture-dmg');
+  assert.equal(fixture.state.uploads[0].data.toString(), 'fixture-dmg-aarch64');
 });

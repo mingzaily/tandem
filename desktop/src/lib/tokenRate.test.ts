@@ -1,40 +1,51 @@
 import { describe, expect, it } from 'vitest';
-import { averageRate, currentRate, emptyRateHistory, formatRate, RATE_FRESH_MS, recordActivity } from './tokenRate';
+import type { GenerationSpeed } from './api';
+import { averageRate, currentRate, emptyRateHistory, formatRate, RATE_FRESH_MS, recordSpeed } from './tokenRate';
 
-describe('recordActivity', () => {
-  it('measures speed over the time spent generating', () => {
-    let history = emptyRateHistory(0);
-    history = recordActivity(history, 1000, 50);
-    expect(history.samples[0].rate).toBe(50);
-    history = recordActivity(history, 2000, 150);
-    expect(history.peak).toBe(100);
-    expect(averageRate(history)).toBe(75);
-  });
-
-  it('leaves out a long silence such as a running tool', () => {
-    let history = emptyRateHistory(0);
-    history = recordActivity(history, 1000, 100);
-    history = recordActivity(history, 61_000, 100);
-    history = recordActivity(history, 62_000, 200);
-    expect(history.generatingMs).toBe(2000);
-    expect(history.samples.at(-1)?.rate).toBe(100);
-  });
-
-  it('waits for tokens and for enough time to divide by', () => {
-    let history = emptyRateHistory(0);
-    history = recordActivity(history, 50, 500);
-    expect(history.samples).toHaveLength(0);
-    history = recordActivity(history, 1000, 0);
-    expect(history.samples).toHaveLength(0);
-    expect(averageRate(history)).toBeNull();
-  });
+const speed = (overrides: Partial<GenerationSpeed> = {}): GenerationSpeed => ({
+  rate: 50, average: 50, peak: 50, generationMs: 2_000, measuredTokens: 100, streaming: false, ...overrides,
 });
 
-describe('currentRate', () => {
-  it('goes blank once tokens stop arriving', () => {
-    const history = recordActivity(emptyRateHistory(0), 1000, 50);
-    expect(currentRate(history, 1500)).toBe(50);
-    expect(currentRate(history, 1000 + RATE_FRESH_MS)).toBeNull();
+describe('host measured token speed', () => {
+  it('uses the host clock and paired usage even when whole requests arrive in the same UI tick', () => {
+    let history = recordSpeed(emptyRateHistory(), speed(), 10);
+    history = recordSpeed(history, speed({ rate: 100, average: 75, peak: 100, generationMs: 4_000, measuredTokens: 300 }), 10);
+    expect(history.samples.map((sample) => sample.rate)).toEqual([50, 100]);
+    expect(averageRate(history)).toBe(75);
+    expect(history.peak).toBe(100);
+  });
+
+  it('phase changes retain the previous measured sample without creating a new peak', () => {
+    const measured = recordSpeed(emptyRateHistory(), speed(), 1_000);
+    const streaming = recordSpeed(measured, speed({ streaming: true }), 1_500);
+    expect(streaming.samples).toBe(measured.samples);
+    expect(currentRate(streaming, 1_500)).toBe(50);
+    const waiting = recordSpeed(streaming, speed(), 2_000);
+    expect(currentRate(waiting, 2_000)).toBeNull();
+    expect(waiting.latestRate).toBe(50);
+    expect(waiting.peak).toBe(50);
+  });
+
+  it('leaves unmeasured usage blank instead of dividing it by UI event spacing', () => {
+    const history = recordSpeed(emptyRateHistory(), speed({ rate: null, average: null, peak: null, generationMs: 0, measuredTokens: 0 }), 200);
+    expect(history.samples).toEqual([]);
+    expect(averageRate(history)).toBeNull();
+    expect(currentRate(history, 200)).toBeNull();
+    expect(history.peak).toBeNull();
+  });
+
+  it('expires the current reading without replacing the last sample with zero', () => {
+    const history = recordSpeed(emptyRateHistory(), speed({ streaming: true }), 1_000);
+    expect(currentRate(history, 1_000 + RATE_FRESH_MS)).toBeNull();
+    expect(history.latestRate).toBe(50);
+  });
+
+  it('keeps a bounded curve while retaining the host turn average and peak', () => {
+    let history = emptyRateHistory();
+    for (let count = 1; count <= 100; count++) history = recordSpeed(history, speed({ generationMs: count * 1_000, measuredTokens: count * 50 }), count * 1_000);
+    expect(history.samples).toHaveLength(60);
+    expect(history.generatingMs).toBe(100_000);
+    expect(averageRate(history)).toBe(50);
   });
 });
 

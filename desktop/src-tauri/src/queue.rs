@@ -11,7 +11,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
@@ -51,9 +51,15 @@ pub struct Entry {
 #[serde(rename_all = "camelCase")]
 pub struct EntryView {
     id: String,
-    prompt: String,
+    pub prompt: String,
     attachments: Vec<Attachment>,
     options: TurnOptions,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SteeredEntry {
+    pub queue: Snapshot,
+    pub entry: EntryView,
 }
 
 impl Entry {
@@ -119,6 +125,13 @@ struct TaskQueue {
     paused: bool,
     error: Option<String>,
     revision: u64,
+    /// Paused only because Tandem started again with messages waiting; not saved.
+    #[serde(skip)]
+    after_restart: bool,
+    /// A message sent while the task is idle goes out at once, ahead of messages held by a pause,
+    /// which stay paused. Not saved: after a restart it waits like the rest.
+    #[serde(skip)]
+    send_now: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +141,8 @@ pub struct Snapshot {
     agent: Agent,
     entries: Vec<EntryView>,
     paused: bool,
+    /// Why it is paused, so the page can say so: the task stopped, or Tandem restarted.
+    paused_after_restart: bool,
     error: Option<String>,
     revision: u64,
 }
@@ -150,14 +165,20 @@ impl TaskQueue {
                 .map(|entry| entry.view(&self.task_id))
                 .collect(),
             paused: self.paused,
+            paused_after_restart: self.paused && self.after_restart,
             error: self.error.clone(),
             revision: self.revision,
         }
     }
 }
 
+enum ActiveKind { Turn, Metadata(Arc<AtomicBool>) }
+
+enum Reservation { Ready(Option<Snapshot>), MetadataPending(Arc<AtomicBool>) }
+
 struct Active {
     agent: Agent,
+    kind: ActiveKind,
     stopped: bool,
     resume_requested: bool,
 }
@@ -176,6 +197,7 @@ struct State {
 pub struct Store {
     root: PathBuf,
     state: Mutex<State>,
+    metadata_changed: tokio::sync::Notify,
 }
 
 impl Store {
@@ -183,6 +205,7 @@ impl Store {
         Self {
             root,
             state: Mutex::default(),
+            metadata_changed: tokio::sync::Notify::new(),
         }
     }
 
@@ -257,6 +280,7 @@ impl Store {
                     queue.error = Some(UNCERTAIN_DELIVERY.into());
                 }
                 // Pending messages need an explicit resume after restart. Empty queues stay ready.
+                queue.after_restart = !queue.entries.is_empty() && !recovering && queue.error.is_none();
                 queue.paused |= !queue.entries.is_empty();
                 queue.revision += 1;
                 let empty = queue.entries.is_empty() && queue.in_flight.is_none();
@@ -471,6 +495,8 @@ impl Store {
             paused: state.active.get(id).is_some_and(|active| active.stopped),
             error: None,
             revision: 0,
+            after_restart: false,
+            send_now: None,
         });
         if queue.agent != agent {
             return Err("排队消息的 Agent 必须与任务一致".into());
@@ -478,7 +504,15 @@ impl Store {
         // With no pending messages or process left, Send starts a fresh conversation turn.
         if queue.entries.is_empty() && !state.active.contains_key(id) {
             queue.paused = false;
+            queue.after_restart = false;
             queue.error = None;
+        }
+        let idle = !state.active.contains_key(id) && queue.in_flight.is_none();
+        if idle && queue.paused && !queue.entries.is_empty() {
+            // Typed while nothing runs: it is the next turn, not one more message behind a pause.
+            queue.send_now = Some(entry.id.clone());
+            queue.entries.insert(0, entry);
+            return self.commit(&mut state, queue);
         }
         if state.active.contains_key(id) || !queue.entries.is_empty() || queue.paused {
             entry.options.ignore_external_writer = false;
@@ -509,15 +543,35 @@ impl Store {
         self.commit(&mut state, queue)
     }
 
-    pub fn edit(&self, id: &str, entry_id: &str, prompt: String) -> Result<Snapshot, String> {
+    pub fn edit(
+        &self, id: &str, entry_id: &str, prompt: String,
+        keep_attachment_ids: &[String], additions: Vec<SavedAttachment>,
+    ) -> Result<Snapshot, String> {
         self.change(id, |queue| {
             let entry = queue
                 .entries
                 .iter_mut()
                 .find(|entry| entry.id == entry_id)
                 .ok_or("这条消息已发送或已删除")?;
-            validate_content(&prompt, entry.attachments.len())?;
+            let existing: HashMap<_, _> = entry.attachments.iter().map(|attachment| (attachment.id(), attachment)).collect();
+            let mut seen = HashSet::new();
+            let mut attachments = Vec::new();
+            for id in keep_attachment_ids {
+                if !seen.insert(id.as_str()) {
+                    return Err("消息中的附件 ID 重复".into());
+                }
+                let attachment = existing.get(id.as_str()).ok_or("保留的附件必须属于这条待发送消息")?;
+                attachments.push((*attachment).clone());
+            }
+            for attachment in &additions {
+                if existing.contains_key(attachment.id()) || !seen.insert(attachment.id()) {
+                    return Err("新增附件必须使用独立的附件 ID".into());
+                }
+            }
+            attachments.extend(additions);
+            validate_content(&prompt, attachments.len())?;
             entry.prompt = prompt;
+            entry.attachments = attachments;
             Ok(())
         })
     }
@@ -532,6 +586,21 @@ impl Store {
             queue.entries.remove(index);
             Ok(())
         })
+    }
+
+    /// A queued message ready to hand to the running turn, read without removing it: the caller
+    /// removes it once the turn has taken it, so a refusal leaves it queued as it was.
+    /// The returned view owns its image previews after the queue files are reclaimed.
+    pub fn peek(&self, id: &str, entry_id: &str) -> Result<(Agent, EntryView, Prepared), String> {
+        validate_task_id(id)?;
+        let state = self.state()?;
+        let queue = state.queues.get(id).ok_or("任务没有待发送队列")?;
+        if state.locks.get(id).is_some_and(|locks| locks.values().any(|entry| entry.as_deref() == Some(entry_id))) {
+            return Err("这条消息正在编辑".into());
+        }
+        let entry = queue.entries.iter().find(|entry| entry.id == entry_id).ok_or("这条消息已发送或已删除")?;
+        let (prepared, view) = entry.prepare(&self.image_dir(id))?;
+        Ok((queue.agent, view, prepared))
     }
 
     /// The target is the final zero-based index, after removing the moved entry.
@@ -556,6 +625,7 @@ impl Store {
         let mut state = self.state()?;
         let mut queue = state.queues.get(id).cloned().ok_or("任务没有待发送队列")?;
         queue.paused = false;
+        queue.after_restart = false;
         queue.error = None;
         for entry in &mut queue.entries {
             entry.options.ignore_external_writer = false;
@@ -573,11 +643,16 @@ impl Store {
         if let Some(active) = state.active.get_mut(id) {
             active.stopped = true;
             active.resume_requested = false;
+            if let ActiveKind::Metadata(stopped) = &active.kind {
+                stopped.store(true, Ordering::SeqCst);
+                self.metadata_changed.notify_waiters();
+            }
         }
         let Some(mut queue) = state.queues.get(id).cloned() else {
             return Ok(None);
         };
         queue.paused = true;
+        queue.after_restart = false;
         self.commit(&mut state, queue).map(Some)
     }
 
@@ -614,11 +689,15 @@ impl Store {
         Ok(())
     }
 
-    fn reserve(&self, id: &str, agent: Agent) -> Result<Option<Snapshot>, String> {
+    fn try_reserve(&self, id: &str, agent: Agent, stopped: Option<&AtomicBool>) -> Result<Reservation, String> {
         validate_task_id(id)?;
         let mut state = self.state()?;
-        if state.active.contains_key(id) {
-            return Err("任务正在运行".into());
+        if stopped.is_some_and(|stopped| stopped.load(Ordering::SeqCst)) { return Err("等待标题保存期间已停止发送，消息保留在草稿中".into()); }
+        if let Some(active) = state.active.get(id) {
+            return match &active.kind {
+                ActiveKind::Metadata(stopped) => Ok(Reservation::MetadataPending(stopped.clone())),
+                ActiveKind::Turn => Err("任务正在运行".into()),
+            };
         }
         if state
             .queues
@@ -629,6 +708,7 @@ impl Store {
         }
         let snapshot = if let Some(mut queue) = state.queues.get(id).cloned() {
             queue.paused = false;
+            queue.after_restart = false;
             queue.error = None;
             Some(self.commit(&mut state, queue)?)
         } else {
@@ -638,17 +718,27 @@ impl Store {
             id.to_owned(),
             Active {
                 agent,
+                kind: ActiveKind::Turn,
                 stopped: false,
                 resume_requested: false,
             },
         );
-        Ok(snapshot)
+        Ok(Reservation::Ready(snapshot))
+    }
+
+    #[cfg(test)]
+    fn reserve(&self, id: &str, agent: Agent) -> Result<Option<Snapshot>, String> {
+        match self.try_reserve(id, agent, None)? {
+            Reservation::Ready(snapshot) => Ok(snapshot),
+            Reservation::MetadataPending(_) => Err("任务正在保存标题".into()),
+        }
     }
 
     fn started(&self, id: &str, agent: Agent) -> Result<bool, String> {
         let mut state = self.state.lock().map_err(|error| error.to_string())?;
         let active = state.active.entry(id.to_owned()).or_insert(Active {
             agent,
+            kind: ActiveKind::Turn,
             stopped: false,
             resume_requested: false,
         });
@@ -666,6 +756,7 @@ impl Store {
             id.to_owned(),
             Active {
                 agent,
+                kind: ActiveKind::Metadata(Arc::new(AtomicBool::new(false))),
                 stopped: false,
                 resume_requested: false,
             },
@@ -675,6 +766,7 @@ impl Store {
 
     pub fn release_metadata(&self, id: &str) -> Result<(), String> {
         self.state()?.active.remove(id);
+        self.metadata_changed.notify_waiters();
         Ok(())
     }
 
@@ -686,10 +778,13 @@ impl Store {
         let Some(mut queue) = state.queues.get(id).cloned() else {
             return Ok(None);
         };
-        if queue.paused || queue.entries.is_empty() || queue.in_flight.is_some() {
+        if queue.entries.is_empty() || queue.in_flight.is_some() {
             return Ok(None);
         }
         let head = &queue.entries[0].id;
+        if queue.paused && queue.send_now.as_ref() != Some(head) {
+            return Ok(None);
+        }
         if state.locks.get(id).is_some_and(|locks| {
             locks
                 .values()
@@ -698,6 +793,7 @@ impl Store {
             return Ok(None);
         }
         let entry = queue.entries.remove(0);
+        queue.send_now = None;
         queue.in_flight = Some(entry.clone());
         let agent = queue.agent;
         let snapshot = self.commit(&mut state, queue)?;
@@ -705,6 +801,7 @@ impl Store {
             id.to_owned(),
             Active {
                 agent,
+                kind: ActiveKind::Turn,
                 stopped: false,
                 resume_requested: false,
             },
@@ -718,6 +815,8 @@ impl Store {
             return Ok(None);
         };
         if queue.in_flight.take().is_some() {
+            // A new accepted turn supersedes the prior failure; held messages stay paused.
+            queue.error = None;
             return self.commit(&mut state, queue).map(Some);
         }
         Ok(None)
@@ -746,9 +845,10 @@ impl Store {
             queue.entries.insert(0, entry);
         }
         let continue_sending = success || (cancelled && resumed);
+        queue.error = error;
         if !continue_sending || (stopped && !resumed) {
             queue.paused = true;
-            queue.error = error;
+            queue.after_restart = false;
         }
         match self.commit(&mut state, queue.clone()) {
             Ok(snapshot) => Ok(Some(snapshot)),
@@ -839,15 +939,52 @@ pub async fn dispatch(
     request: codex::TurnRequest,
     sink: TurnSink,
 ) -> Result<(), String> {
+    let _activity = crate::updater::activity()?;
     // All new tasks obey the single-writer lock before creating a queue.
     { let storage = app.state::<crate::storage::Store>(); storage.ensure_writable()?; }
     if let Some(id) = request.task_id.clone() {
-        if let Some(snapshot) = access(app, move |store| store.reserve(&id, agent)).await? {
-            announce(app, &snapshot);
+        let queues = app.state::<Store>();
+        let mut stopped: Option<Arc<AtomicBool>> = None;
+        loop {
+            let available = queues.metadata_changed.notified();
+            tokio::pin!(available);
+            available.as_mut().enable();
+            let target = id.clone();
+            let check_stopped = stopped.clone();
+            match access(app, move |store| store.try_reserve(&target, agent, check_stopped.as_deref())).await? {
+                Reservation::Ready(snapshot) => {
+                    if let Some(snapshot) = snapshot { announce(app, &snapshot); }
+                    break;
+                }
+                Reservation::MetadataPending(flag) => { stopped = Some(flag); available.await; },
+            }
         }
     }
+    let started = std::time::Instant::now();
+    crate::diagnostics::debug("turn", || {
+        let options = &request.options;
+        format!(
+            "{agent:?} {} cwd={} model={} effort={} permission={} worktree={} edit={}",
+            request.task_id.as_deref().map_or("new task".to_owned(), |id| format!("task {id}")),
+            request.cwd.as_deref().unwrap_or("(from task)"),
+            options.model.as_deref().unwrap_or("default"),
+            options.effort.as_deref().unwrap_or("default"),
+            options.permission_mode.as_deref().unwrap_or("default"),
+            options.worktree,
+            options.edit_last.is_some(),
+        )
+    });
     let (result, observed) =
         run_reserved(app, agent, request, sink).await?;
+    let task = observed.task_id.as_deref().unwrap_or("(not started)");
+    let failure = result.as_ref().err().or_else(|| (!observed.success && !observed.cancelled).then_some(observed.error.as_ref()).flatten());
+    match failure {
+        Some(error) => crate::diagnostics::error("turn", format!("{agent:?} task {task} failed after {:.1}s: {error}", started.elapsed().as_secs_f64())),
+        None => crate::diagnostics::debug("turn", || format!(
+            "{agent:?} task {task} ended after {:.1}s, accepted={} cancelled={}",
+            started.elapsed().as_secs_f64(), observed.accepted, observed.cancelled,
+        )),
+    }
     if let Some(id) = observed.task_id {
         let next = id.clone();
         let success = observed.success && result.is_ok();
@@ -899,6 +1036,7 @@ async fn run_reserved(
         }
         Ok(())
     });
+    let sink = sink.with_token_speed();
     let runs = app.state::<Runs>();
     let result = match agent {
         Agent::Claude => {
@@ -960,6 +1098,7 @@ pub fn kick(app: AppHandle, id: String) {
 }
 
 async fn drain(app: &AppHandle, id: &str) -> Result<(), String> {
+    let _activity = crate::updater::activity()?;
     loop {
         let target = id.to_owned();
         let Some((agent, entry, snapshot)) = access(app, move |store| store.claim(&target)).await?
@@ -986,7 +1125,7 @@ async fn drain(app: &AppHandle, id: &str) -> Result<(), String> {
             })).map_err(|error| error.to_string())
         });
         let remote = app.state::<Remote>();
-        let (run_id, sink) = remote.track(agent, page_sink.clone());
+        let (run_id, sink) = remote.track(agent, Some(id.to_owned()), entry.prompt.clone(), page_sink.clone());
         let (result, observed) = match prepared {
             Ok(prepared) => {
                 run_reserved(
@@ -1138,6 +1277,88 @@ mod tests {
     }
 
     #[test]
+    fn a_queued_message_is_read_for_steering_without_leaving_the_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.reserve(&task, Agent::Claude).unwrap();
+        let snapshot = queue.enqueue(&task, Agent::Claude, entry("add this now")).unwrap();
+        let entry_id = snapshot.entries[0].id.clone();
+        let (agent, entry, _) = queue.peek(&task, &entry_id).unwrap();
+        assert_eq!((agent, entry.prompt.as_str()), (Agent::Claude, "add this now"));
+        assert_eq!(queue.list().unwrap()[0].entries.len(), 1, "it stays until the turn takes it");
+        assert!(queue.peek(&task, "missing").is_err());
+    }
+
+    #[test]
+    fn a_message_sent_while_idle_goes_out_ahead_of_a_paused_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.enqueue(&task, Agent::Claude, entry("held by the pause")).unwrap();
+        queue.pause(&task).unwrap();
+        assert!(queue.claim(&task).unwrap().is_none());
+        // Such as after a usage limit stopped the task: "continue" is the next turn, sent now.
+        let snapshot = queue.enqueue(&task, Agent::Claude, entry("continue")).unwrap();
+        assert!(snapshot.paused);
+        let (_, sent, after) = queue.claim(&task).unwrap().unwrap();
+        assert_eq!(sent.prompt, "continue");
+        assert!(after.paused);
+        assert_eq!(after.entries.iter().map(|entry| entry.prompt.as_str()).collect::<Vec<_>>(), ["held by the pause"]);
+        queue.complete(&task, true, false, None, None).unwrap();
+        assert!(queue.claim(&task).unwrap().is_none(), "the held message still waits for Resume");
+    }
+
+    #[test]
+    fn a_new_receipt_clears_the_previous_error_without_resuming_the_held_queue() {
+        for agent in [Agent::Claude, Agent::Codex, Agent::Pi] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            queue.reserve(&task, agent).unwrap();
+            queue.enqueue(&task, agent, entry("still waiting")).unwrap();
+            queue.complete(&task, false, false, Some("old stream error".into()), None).unwrap();
+            queue.enqueue(&task, agent, entry("a separate follow-up")).unwrap();
+            let (_, sent, pending) = queue.claim(&task).unwrap().unwrap();
+            assert_eq!(sent.prompt, "a separate follow-up");
+            assert_eq!(pending.error.as_deref(), Some("old stream error"));
+
+            let accepted = queue.accepted(&task).unwrap().unwrap();
+            assert!(accepted.error.is_none(), "{agent:?}: a new receipt supersedes the old failure");
+            assert!(accepted.paused);
+            assert_eq!(accepted.entries.iter().map(|entry| entry.prompt.as_str()).collect::<Vec<_>>(), ["still waiting"]);
+            let finished = queue.complete(&task, true, false, None, None).unwrap().unwrap();
+            assert!(finished.error.is_none() && finished.paused);
+            assert!(queue.claim(&task).unwrap().is_none());
+
+            let restarted = Store::new(queue.root.clone());
+            let snapshot = restarted.list().unwrap().remove(0);
+            assert!(snapshot.error.is_none(), "the cleared error stays cleared after restart");
+            assert!(snapshot.paused);
+            assert_eq!(snapshot.entries[0].prompt, "still waiting");
+        }
+    }
+
+    #[test]
+    fn a_successful_turn_clears_a_persisted_pause_error_while_a_new_failure_replaces_it() {
+        for (success, error) in [(true, None), (false, Some("new provider error".to_owned()))] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            queue.reserve(&task, Agent::Pi).unwrap();
+            queue.enqueue(&task, Agent::Pi, entry("still waiting")).unwrap();
+            queue.complete(&task, false, false, Some("old stream error".into()), None).unwrap();
+            queue.enqueue(&task, Agent::Pi, entry("a separate follow-up")).unwrap();
+            queue.claim(&task).unwrap().unwrap();
+            let snapshot = queue.complete(&task, success, false, error.clone(), None).unwrap().unwrap();
+            assert_eq!(snapshot.error, error);
+            assert!(snapshot.paused);
+            assert!(queue.claim(&task).unwrap().is_none());
+            assert_eq!(snapshot.entries[0].prompt, "still waiting");
+        }
+    }
+
+    #[test]
     fn empty_queue_files_are_deleted_after_removal_and_receipt() {
         let dir = tempfile::tempdir().unwrap();
         let queue = store(&dir);
@@ -1185,6 +1406,8 @@ mod tests {
                 paused: true,
                 error: Some("old".into()),
                 revision: 2,
+                after_restart: false,
+                send_now: None,
             })
             .unwrap(),
         )
@@ -1240,7 +1463,7 @@ mod tests {
         for invalid in ["/../secret", &format!("/{task}/../secret"), &format!("/{task}/%2Fsecret")] {
             assert!(queue.image(invalid).is_err());
         }
-        queue.edit(&task, &entry_id, "edited".into()).unwrap();
+        queue.edit(&task, &entry_id, "edited".into(), std::slice::from_ref(&attachment_id), Vec::new()).unwrap();
         assert_eq!(
             fs::metadata(&image_path).unwrap().modified().unwrap(),
             modified
@@ -1274,6 +1497,36 @@ mod tests {
         assert!(!queue.image_dir(&task).exists());
         let preview = serde_json::to_value(&view.attachments[0]).unwrap();
         assert_eq!(preview["preview"], format!("data:image/png;base64,{}", STANDARD.encode(bytes)));
+    }
+
+    #[test]
+    fn a_steered_image_preview_survives_removing_its_queue_entry() {
+        for agent in [Agent::Claude, Agent::Codex, Agent::Pi] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            queue.reserve(&task, agent).unwrap();
+            let attachments = Attachments::default();
+            let bytes = [0x89, b'P', b'N', b'G', 13, 10, 26, 10];
+            let image = serde_json::to_value(attachments.add_pasted_image(&STANDARD.encode(bytes)).unwrap()).unwrap();
+            let image_id = image["id"].as_str().unwrap().to_owned();
+            let snapshot = queue.enqueue(&task, agent, Entry::new(
+                "steer with image".into(), attachments.capture(std::slice::from_ref(&image_id)).unwrap(), TurnOptions::default(),
+            ).unwrap()).unwrap();
+            let entry_id = snapshot.entries[0].id.clone();
+            queue.enqueue(&task, agent, entry("keep waiting")).unwrap();
+            let (actual_agent, entry, _prepared) = queue.peek(&task, &entry_id).unwrap();
+            assert_eq!(actual_agent, agent);
+            let image_path = queue.image_dir(&task).join(&image_id);
+            assert!(image_path.exists(), "reading for a steer retains the queued payload until receipt");
+            let queue_after_receipt = queue.remove(&task, &entry_id).unwrap();
+            assert!(!image_path.exists(), "the acknowledged queue payload is reclaimed");
+            let response = serde_json::to_value(SteeredEntry { queue: queue_after_receipt, entry }).unwrap();
+            assert_eq!(response["entry"]["prompt"], "steer with image");
+            assert_eq!(response["entry"]["attachments"][0]["id"], image_id);
+            assert_eq!(response["entry"]["attachments"][0]["preview"], format!("data:image/png;base64,{}", STANDARD.encode(bytes)));
+            assert_eq!(response["queue"]["entries"][0]["prompt"], "keep waiting");
+        }
     }
 
     #[test]
@@ -1356,10 +1609,11 @@ mod tests {
         let mut edit_ms = Vec::new();
         let mut reorder_ms = Vec::new();
         let head_id = queue.list().unwrap()[0].entries[0].id.clone();
+        let keep_ids: Vec<_> = queue.state().unwrap().queues[&task].entries[0].attachments.iter().map(|attachment| attachment.id().to_owned()).collect();
         for index in 0..3 {
             let start = std::time::Instant::now();
             queue
-                .edit(&task, &head_id, format!("changed {index}"))
+                .edit(&task, &head_id, format!("changed {index}"), &keep_ids, Vec::new())
                 .unwrap();
             edit_ms.push(start.elapsed().as_secs_f64() * 1000.0);
             let start = std::time::Instant::now();
@@ -1727,7 +1981,7 @@ mod tests {
         let mut snapshots = restored.list().unwrap();
         snapshots.sort_by(|a, b| a.task_id.cmp(&b.task_id));
         assert_eq!(snapshots.len(), 2);
-        assert!(snapshots.iter().all(|queue| queue.paused));
+        assert!(snapshots.iter().all(|queue| queue.paused && queue.paused_after_restart));
         assert!(restored.claim(&first).unwrap().is_none());
         restored.resume(&first).unwrap();
         let (agent, sent, _) = restored.claim(&first).unwrap().unwrap();
@@ -1829,9 +2083,10 @@ mod tests {
         queue.pause(&task).unwrap();
         queue.complete(&task, true, false, None, None).unwrap();
         assert!(queue.claim(&task).unwrap().is_none());
-        queue
-            .enqueue(&task, Agent::Claude, entry("also wait"))
-            .unwrap();
+        // A message typed after the stop is a new turn of its own; the earlier one keeps waiting.
+        queue.enqueue(&task, Agent::Claude, entry("typed after stop")).unwrap();
+        assert_eq!(queue.claim(&task).unwrap().unwrap().1.prompt, "typed after stop");
+        queue.complete(&task, true, false, None, None).unwrap();
         assert!(queue.claim(&task).unwrap().is_none());
         queue.resume(&task).unwrap();
         assert_eq!(queue.claim(&task).unwrap().unwrap().1.prompt, "wait");
@@ -1912,11 +2167,11 @@ mod tests {
         queue.enqueue(&task, Agent::Claude, second).unwrap();
         queue.enqueue(&task, Agent::Claude, entry("third")).unwrap();
         queue.reorder(&task, &first_id, 2).unwrap();
-        let edited = queue.edit(&task, &first_id, "updated".into()).unwrap();
+        let edited = queue.edit(&task, &first_id, "updated".into(), &[], Vec::new()).unwrap();
         assert_eq!(edited.entries[2].options.model.as_deref(), Some("opus"));
         assert_eq!(edited.entries[2].options.effort.as_deref(), Some("max"));
         assert!(queue.reorder(&task, &first_id, 3).is_err());
-        assert!(queue.edit(&task, &first_id, " ".into()).is_err());
+        assert!(queue.edit(&task, &first_id, " ".into(), &[], Vec::new()).is_err());
         queue.remove(&task, &second_id).unwrap();
         let snapshot = queue.list().unwrap().remove(0);
         assert_eq!(
@@ -1928,8 +2183,100 @@ mod tests {
             ["third", "updated"]
         );
         let (_, claimed, _) = queue.claim(&task).unwrap().unwrap();
-        assert!(queue.edit(&task, &claimed.id, "too late".into()).is_err());
+        assert!(queue.edit(&task, &claimed.id, "too late".into(), &[], Vec::new()).is_err());
         assert!(queue.remove(&task, &claimed.id).is_err());
+    }
+
+    fn saved_image(attachments: &Attachments, tag: u8) -> SavedAttachment {
+        let image = serde_json::to_value(attachments.add_pasted_image(&STANDARD.encode([0x89, b'P', b'N', b'G', 13, 10, 26, 10, tag])).unwrap()).unwrap();
+        attachments.capture(&[image["id"].as_str().unwrap().to_owned()]).unwrap().remove(0)
+    }
+
+    #[test]
+    fn queue_edits_keep_add_and_remove_images_without_changing_other_rows_or_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        let drafts = Attachments::default();
+        let first_image = saved_image(&drafts, 1);
+        let first_image_id = first_image.id().to_owned();
+        let mut first = Entry::new("first".into(), vec![first_image], TurnOptions::default()).unwrap();
+        first.options.model = Some("opus".into());
+        first.options.effort = Some("max".into());
+        let first_id = first.id.clone();
+        queue.enqueue(&task, Agent::Claude, first).unwrap();
+        queue.enqueue(&task, Agent::Claude, entry("second")).unwrap();
+        let original_path = queue.image_dir(&task).join(&first_image_id);
+        let original_modified = fs::metadata(&original_path).unwrap().modified().unwrap();
+        let added = saved_image(&drafts, 2);
+        let added_id = added.id().to_owned();
+        let snapshot = queue.edit(&task, &first_id, "with two images".into(), std::slice::from_ref(&first_image_id), vec![added]).unwrap();
+        assert_eq!(snapshot.entries[0].attachments.len(), 2);
+        assert_eq!(snapshot.entries[0].options.model.as_deref(), Some("opus"));
+        assert_eq!(snapshot.entries[0].options.effort.as_deref(), Some("max"));
+        assert_eq!(snapshot.entries[1].prompt, "second");
+        assert_eq!(fs::metadata(&original_path).unwrap().modified().unwrap(), original_modified);
+        assert!(queue.image_dir(&task).join(&added_id).is_file());
+        let snapshot = queue.edit(&task, &first_id, "".into(), std::slice::from_ref(&added_id), Vec::new()).unwrap();
+        assert_eq!(snapshot.entries[0].attachments.len(), 1);
+        assert!(!original_path.exists());
+        let restored = store(&dir).list().unwrap().remove(0);
+        assert_eq!(restored.entries[0].prompt, "");
+        assert_eq!(restored.entries[0].attachments.len(), 1);
+        assert!(queue.edit(&task, &first_id, " ".into(), &[], Vec::new()).is_err());
+        queue.edit(&task, &first_id, "text only".into(), &[], Vec::new()).unwrap();
+        assert!(!queue.image_dir(&task).join(&added_id).exists());
+    }
+
+    #[test]
+    fn queue_edits_reject_foreign_and_duplicate_attachment_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        let drafts = Attachments::default();
+        let original = saved_image(&drafts, 1);
+        let original_id = original.id().to_owned();
+        let first = Entry::new("first".into(), vec![original.clone()], TurnOptions::default()).unwrap();
+        let first_id = first.id.clone();
+        queue.enqueue(&task, Agent::Claude, first).unwrap();
+        let foreign = saved_image(&drafts, 2);
+        let foreign_id = foreign.id().to_owned();
+        queue.enqueue(&task, Agent::Claude, Entry::new("second".into(), vec![foreign], TurnOptions::default()).unwrap()).unwrap();
+        assert!(queue.edit(&task, &first_id, "bad".into(), &[foreign_id], Vec::new()).is_err());
+        assert!(queue.edit(&task, &first_id, "bad".into(), &[original_id.clone(), original_id], Vec::new()).is_err());
+        assert!(queue.edit(&task, &first_id, "bad".into(), &[], vec![original]).is_err());
+        let fresh = saved_image(&drafts, 3);
+        assert!(queue.edit(&task, &first_id, "bad".into(), &[], vec![fresh.clone(), fresh]).is_err());
+        assert_eq!(queue.list().unwrap()[0].entries[0].prompt, "first");
+        assert_eq!(queue.list().unwrap()[0].entries[0].attachments.len(), 1);
+    }
+
+    #[test]
+    fn failed_queue_edit_preserves_original_images_and_keeps_additions_available_for_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        let drafts = Attachments::default();
+        let original = saved_image(&drafts, 1);
+        let original_id = original.id().to_owned();
+        let first = Entry::new("original".into(), vec![original], TurnOptions::default()).unwrap();
+        let first_id = first.id.clone();
+        queue.enqueue(&task, Agent::Claude, first).unwrap();
+        let manifest = queue.root.join(format!("{task}.json"));
+        let before = fs::read(&manifest).unwrap();
+        let added = saved_image(&drafts, 2);
+        let added_id = added.id().to_owned();
+        let blocked = queue.root.join(format!("{task}.tmp"));
+        fs::create_dir(&blocked).unwrap();
+        assert!(queue.edit(&task, &first_id, "updated".into(), &[], vec![added]).is_err());
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        assert_eq!(queue.list().unwrap()[0].entries[0].prompt, "original");
+        assert!(queue.image_dir(&task).join(&original_id).is_file());
+        let retry = drafts.capture(std::slice::from_ref(&added_id)).unwrap();
+        fs::remove_dir(&blocked).unwrap();
+        queue.edit(&task, &first_id, "updated".into(), &[], retry).unwrap();
+        assert!(!queue.image_dir(&task).join(original_id).exists());
+        assert!(queue.image_dir(&task).join(added_id).is_file());
     }
 
     #[test]
@@ -1983,6 +2330,35 @@ mod tests {
         assert!(queue.claim(&task).unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn a_direct_send_waits_for_metadata_without_becoming_a_second_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.reserve_metadata(&task, Agent::Claude).unwrap();
+        let changed = queue.metadata_changed.notified();
+        tokio::pin!(changed);
+        changed.as_mut().enable();
+        assert!(matches!(queue.try_reserve(&task, Agent::Claude, None).unwrap(), Reservation::MetadataPending(_)));
+        queue.release_metadata(&task).unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(100), changed).await.unwrap();
+        assert!(matches!(queue.try_reserve(&task, Agent::Claude, None).unwrap(), Reservation::Ready(_)));
+        assert!(queue.try_reserve(&task, Agent::Claude, None).is_err());
+    }
+
+    #[test]
+    fn stopping_while_a_send_waits_for_title_metadata_keeps_it_from_starting_after_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.reserve_metadata(&task, Agent::Claude).unwrap();
+        let Reservation::MetadataPending(stopped) = queue.try_reserve(&task, Agent::Claude, None).unwrap() else { panic!("Expected metadata wait"); };
+        queue.pause(&task).unwrap();
+        queue.release_metadata(&task).unwrap();
+        assert!(queue.try_reserve(&task, Agent::Claude, Some(&stopped)).is_err());
+        assert!(matches!(queue.try_reserve(&task, Agent::Claude, None).unwrap(), Reservation::Ready(_)));
+    }
+
     #[test]
     fn title_metadata_writes_hold_dispatch_and_keep_a_paused_queue_paused() {
         let dir = tempfile::tempdir().unwrap();
@@ -2032,18 +2408,21 @@ mod tests {
 
     #[test]
     fn a_completion_write_failure_keeps_the_remaining_queue_paused_in_memory() {
-        let dir = tempfile::tempdir().unwrap();
-        let queue = store(&dir);
-        let task = id();
-        queue.reserve(&task, Agent::Claude).unwrap();
-        queue.enqueue(&task, Agent::Claude, entry("keep")).unwrap();
-        fs::rename(&queue.root, dir.path().join("saved")).unwrap();
-        fs::write(&queue.root, "directory blocked").unwrap();
-        assert!(queue
-            .complete(&task, false, false, Some("CLI failed".into()), None)
-            .is_err());
-        assert!(queue.list().unwrap()[0].paused);
-        assert!(queue.claim(&task).unwrap().is_none());
+        for success in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            queue.reserve(&task, Agent::Claude).unwrap();
+            queue.enqueue(&task, Agent::Claude, entry("keep")).unwrap();
+            fs::rename(&queue.root, dir.path().join("saved")).unwrap();
+            fs::write(&queue.root, "directory blocked").unwrap();
+            let error = queue.complete(&task, success, false, (!success).then(|| "CLI failed".into()), None).unwrap_err();
+            let snapshot = &queue.list().unwrap()[0];
+            assert!(snapshot.paused);
+            assert_eq!(snapshot.error.as_deref(), Some(error.as_str()));
+            assert_eq!(snapshot.entries[0].prompt, "keep");
+            assert!(queue.claim(&task).unwrap().is_none());
+        }
     }
 
     #[test]

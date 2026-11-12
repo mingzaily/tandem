@@ -1,6 +1,7 @@
 import { Pencil } from 'lucide-react';
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { t } from '../lib/i18n';
+import { isImeKey } from '../lib/ime';
 
 const BUTTON = 'inline-flex h-7 shrink-0 items-center justify-center rounded-full border px-3 text-13 font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-not-allowed disabled:opacity-60';
 const SECONDARY = `${BUTTON} border-[var(--border-default)] bg-[var(--surface-elevated)] text-[var(--text-primary)] enabled:hover:bg-[var(--button-secondary-hover)] enabled:active:bg-[var(--button-secondary-pressed)]`;
@@ -19,7 +20,7 @@ export function EditableUserMessage({ text, sendWithCmdEnter, onSend, children }
   return <div className="group/message relative ml-auto w-fit max-w-full">
     {children}
     <div data-edit-actions className="absolute right-full top-0 mr-1 flex opacity-0 transition-opacity duration-[var(--motion-enter)] ease-[var(--motion-ease-out)] focus-within:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none [@media(hover:none)]:opacity-100">
-      <button type="button" aria-label={t('messageEdit')} title={t('messageEdit')} onClick={() => setEditing(true)}
+      <button type="button" aria-label={t('messageEdit')} data-tooltip={t('messageEdit')} onClick={() => setEditing(true)}
         className="group inline-flex size-6 items-center justify-center rounded-full transition-colors hover:bg-[var(--cmd-palette-item-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
         <Pencil size={14} strokeWidth={2} aria-hidden className="text-[var(--cmd-palette-item-meta)] transition-colors group-hover:text-[var(--msg-assistant-text)]" />
       </button>
@@ -80,7 +81,7 @@ function EditBox({ text: original, sendWithCmdEnter, onCancel, onSend }: {
           if (!sending) onCancel();
           return;
         }
-        if (event.key !== 'Enter' || event.nativeEvent.isComposing) return;
+        if (event.key !== 'Enter' || isImeKey(event)) return;
         const wantsSend = sendWithCmdEnter ? event.metaKey : !event.shiftKey;
         if (wantsSend) {
           event.preventDefault();
@@ -90,7 +91,7 @@ function EditBox({ text: original, sendWithCmdEnter, onCancel, onSend }: {
       className="selectable block max-h-[40vh] w-full resize-none overflow-y-auto border-none bg-transparent p-0 text-15 font-normal leading-[1.6] text-[var(--msg-user-text)] outline-none disabled:opacity-60"
     />
     <div className="mt-2 flex items-center justify-end gap-2">
-      <span role={error ? 'alert' : undefined} className={`min-w-0 flex-1 truncate text-left text-11 ${error ? 'text-[var(--text-danger)]' : 'text-[var(--text-tertiary)]'}`} title={error ?? undefined}>
+      <span role={error ? 'alert' : undefined} className={`min-w-0 flex-1 truncate text-left text-11 ${error ? 'text-[var(--text-danger)]' : 'text-[var(--text-tertiary)]'}`} data-tooltip={error ?? undefined}>
         {error ?? t('messageEditFilesKept')}
       </span>
       <button type="button" disabled={sending} onClick={onCancel} className={SECONDARY}>{t('messageEditCancel')}</button>

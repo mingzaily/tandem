@@ -19,7 +19,7 @@ function ChangedFileList({ files, cwd, label, id }: { files: ChangedFile[]; cwd:
           const file = files[row.index];
           const { name, directory } = fileChangeLabel(file.path, cwd);
           return (
-            <div key={file.path} role="listitem" title={file.path} className="absolute left-0 top-0 flex w-full items-center gap-2 rounded-lg px-2" style={{ height: row.size, transform: `translateY(${row.start}px)` }}>
+            <div key={file.path} role="listitem" data-tooltip={file.path} className="absolute left-0 top-0 flex w-full items-center gap-2 rounded-lg px-2" style={{ height: row.size, transform: `translateY(${row.start}px)` }}>
               <FileText size={15} aria-hidden className="shrink-0 text-[var(--text-secondary)]" />
               <span className="selectable min-w-0 flex-1 truncate text-13 text-[var(--text-primary)]">{name}{directory ? <span className="ml-2 text-12 text-[var(--text-tertiary)]">{directory}</span> : null}</span>
               {file.stats ? <span className="flex shrink-0 gap-1.5 whitespace-nowrap font-mono text-12 tabular-nums"><span className="text-[var(--diff-add-fg)]">+{file.stats.added}</span><span className="text-[var(--diff-del-fg)]">−{file.stats.removed}</span></span> : null}

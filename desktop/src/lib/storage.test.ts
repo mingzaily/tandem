@@ -22,6 +22,22 @@ describe('backend-owned preferences', () => {
     expect(loadSettings()).toMatchObject({ theme: 'dark', uiFontSize: 16 });
   });
 
+  it('saves automatic update and debug log settings through the normal backend configuration patch', async () => {
+    const initial = snapshot();
+    vi.stubGlobal('window', { __TANDEM_PREFERENCES__: initial });
+    const write = vi.fn(async (_target: string, patch: object) => ({ ...initial, revision: 1, config: { ...initial.config, ...patch } }));
+    vi.doMock('./api', () => ({ updatePreferences: write }));
+    vi.resetModules();
+    const { loadSettings, saveSettings } = await import('./settings');
+    expect(loadSettings()).toMatchObject({ autoUpdate: false, updateCheckIntervalHours: 6 });
+    saveSettings({ ...loadSettings(), autoUpdate: true, updateCheckIntervalHours: 12 });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledWith('config', { auto_update: true, update_check_interval_hours: 12 }));
+    expect(loadSettings()).toMatchObject({ autoUpdate: true, updateCheckIntervalHours: 12, debugLog: false });
+    saveSettings({ ...loadSettings(), debugLog: true });
+    await vi.waitFor(() => expect(write).toHaveBeenLastCalledWith('config', { debug_log: true }));
+    expect(loadSettings()).toMatchObject({ debugLog: true });
+  });
+
   it('removes a local alias while preserving other aliases and shared state', () => {
     const before = { taskMeta: { pins: ['a'], archived: [], titles: { a: 'old', b: 'keep' } }, sidebarWidth: 260 };
     const after = { ...before, taskMeta: { ...before.taskMeta, titles: { b: 'keep' } } };

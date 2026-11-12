@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { TaskSummary } from './api';
 import { CONVERSATION_CWD } from './items';
-import { advanceHold, cliTaskGroups, markUnread, orderSidebarProjects, PRIORITY, priorityRank, sortSidebarTasks, toggleProjectPin, UNREAD_LIMIT, type PriorityContext } from './sidebarModel';
+import { advanceHold, cliTaskGroups, markUnread, moveSidebarProject, orderSidebarProjects, PRIORITY, priorityRank, projectMoveRange, sortSidebarTasks, toggleProjectPin, UNREAD_LIMIT, type PriorityContext } from './sidebarModel';
 
 const task = (id: string, agent: TaskSummary['agent'], time: number): TaskSummary => ({ id, agent, updatedAtMs: time, cwd: '/a', title: id });
 const tasks = [task('p', 'pi', 3), task('c-old', 'codex', 1), task('a', 'claude', 2), task('c-new', 'codex', 4)];
@@ -22,6 +22,31 @@ describe('sidebar grouping and order', () => {
     expect(orderSidebarProjects([['a', 1], [CONVERSATION_CWD, 0], ['b', 2]], ['a', CONVERSATION_CWD, 'b'], ['b']).map(([cwd]) => cwd)).toEqual([CONVERSATION_CWD, 'b', 'a']);
     expect(toggleProjectPin(['a'], 'b')).toEqual(['b', 'a']);
     expect(toggleProjectPin(['a', 'b'], 'a')).toEqual(['b']);
+  });
+});
+
+describe('manual project moves', () => {
+  const ids = [CONVERSATION_CWD, '/pin-a', '/pin-b', '/a', '/b', '/c'];
+  const pinned = ['/pin-a', '/pin-b'];
+  it('keeps the conversation group fixed and moves projects inside their visible pin tier', () => {
+    expect(projectMoveRange(ids, pinned, CONVERSATION_CWD)).toBeNull();
+    expect(projectMoveRange(ids, pinned, '/pin-a')).toEqual({ min: 1, max: 2 });
+    expect(projectMoveRange(ids, pinned, '/b')).toEqual({ min: 3, max: 5 });
+    expect(moveSidebarProject(ids, ids, pinned, '/pin-a', 5)).toEqual([CONVERSATION_CWD, '/pin-b', '/pin-a', '/a', '/b', '/c']);
+    expect(moveSidebarProject(ids, ids, pinned, '/c', 0)).toEqual([CONVERSATION_CWD, '/pin-a', '/pin-b', '/c', '/a', '/b']);
+  });
+  it('preserves saved hidden projects and agrees with the displayed order after saving', () => {
+    const saved = [...ids, '/hidden'];
+    const next = moveSidebarProject(ids, saved, pinned, '/a', 5)!;
+    expect(next).toEqual([CONVERSATION_CWD, '/pin-a', '/pin-b', '/b', '/c', '/a', '/hidden']);
+    expect(orderSidebarProjects(ids.map((id) => [id, id]), next, pinned).map(([id]) => id)).toEqual(next.slice(0, -1));
+    expect(saved).toEqual([...ids, '/hidden']);
+  });
+  it('does not save a fixed, missing or unchanged position', () => {
+    expect(moveSidebarProject(ids, ids, pinned, CONVERSATION_CWD, 3)).toBeNull();
+    expect(moveSidebarProject(ids, ids, pinned, '/missing', 3)).toBeNull();
+    expect(moveSidebarProject(ids, ids, pinned, '/pin-b', 5)).toBeNull();
+    expect(moveSidebarProject(ids, ids, pinned, '/a', 0)).toBeNull();
   });
 });
 

@@ -149,6 +149,7 @@ impl Link {
             let hashes: Vec<String> = self.inner.lock_config().clients.iter().map(|client| client.token_hash.clone()).collect();
             self.outbox.push(json!({"t": "allow-sync", "tokenHashes": hashes}));
             self.restoring = false;
+            crate::diagnostics::debug("remote", || "relay connection online".to_owned());
             self.inner.set_status(LinkStatus::Online, None);
         }
     }
@@ -519,6 +520,14 @@ fn ask_user(inner: Arc<Inner>, conn: String, name: String, code: String) {
     });
 }
 
+fn relay_version(frame: &Value) -> Option<String> {
+    let version = frame.get("relayVersion")?.as_str()?;
+    let parts: Vec<_> = version.split('.').collect();
+    (version.len() <= 64 && parts.len() == 3
+        && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+        .then(|| version.to_owned())
+}
+
 async fn connect_once(inner: &Arc<Inner>, receiver: &mut mpsc::UnboundedReceiver<Outgoing>) -> Result<(), (String, bool)> {
     let config = inner.lock_config().clone();
     let plain = |error: String| (error, false);
@@ -529,14 +538,12 @@ async fn connect_once(inner: &Arc<Inner>, receiver: &mut mpsc::UnboundedReceiver
     let hello = json!({"t": "host-hello", "v": 1, "room": config.room, "token": config.host_token});
     socket.send(Message::text(hello.to_string())).await.map_err(|error| plain(error.to_string()))?;
     let ack = tokio::time::timeout(HELLO_TIMEOUT, socket.next()).await.map_err(|_| plain("The relay did not answer".to_owned()))?;
-    let is_ack = match ack {
-        Some(Ok(Message::Text(text))) => serde_json::from_str::<Value>(&text)
-            .is_ok_and(|frame| frame.get("t").and_then(Value::as_str) == Some("hello-ack")),
-        _ => false,
-    };
-    if !is_ack {
-        return Err(plain("The relay refused this token".to_owned()));
-    }
+    let frame = match ack {
+        Some(Ok(Message::Text(text))) => serde_json::from_str::<Value>(&text).ok(),
+        _ => None,
+    }.filter(|frame| frame.get("t").and_then(Value::as_str) == Some("hello-ack"))
+        .ok_or_else(|| plain("The relay refused this token".to_owned()))?;
+    if let Ok(mut status) = inner.status.lock() { status.relay_version = relay_version(&frame); }
     // What was queued while offline was meant for connections that no longer exist.
     while receiver.try_recv().is_ok() {}
 
@@ -593,11 +600,25 @@ pub(super) async fn run(inner: Arc<Inner>, mut receiver: mpsc::UnboundedReceiver
                 if let Ok(mut online) = inner.online.lock() {
                     online.clear();
                 }
+                crate::diagnostics::error("remote", format!("relay connection failed: {error}"));
                 inner.set_status(LinkStatus::Failed, Some(error));
                 if replaced { REPLACED_WAIT } else { backoff }
             }
         };
         tokio::time::sleep(wait).await;
         backoff = if started.elapsed() > MAX_BACKOFF { Duration::from_secs(1) } else { (backoff * 2).min(MAX_BACKOFF) };
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    #[test]
+    fn reads_relay_version_and_accepts_an_ack_from_an_older_relay() {
+        assert_eq!(relay_version(&json!({"t":"hello-ack","relayVersion":"0.1.2026111102"})), Some("0.1.2026111102".into()));
+        for frame in [json!({"t":"hello-ack"}), json!({"relayVersion":""}), json!({"relayVersion":"1.2"}),
+            json!({"relayVersion":"1.2.3\n"}), json!({"relayVersion":12}), json!({"relayVersion":"<script>"})] {
+            assert_eq!(relay_version(&frame), None);
+        }
     }
 }

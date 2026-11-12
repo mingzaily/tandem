@@ -5,7 +5,7 @@ use crate::{codex, login_env, pi, sessions, writers};
 use crate::cli_info::{self, UsageWindows};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::{HashMap, VecDeque}, path::Path, process::Stdio, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, VecDeque}, path::Path, process::Stdio, sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc, Mutex}, time::Duration};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
@@ -38,9 +38,12 @@ pub enum TurnEvent {
     Question { request_id: String, questions: Value },
     RequestSettled { request_id: String },
     OutputTokens { total: u64 },
+    GenerationSpeed { speed: crate::token_speed::Snapshot },
     ContextUsage { used_tokens: u64, model: Option<String> },
     ContextWindow { model: String, tokens: u64 },
     RateLimits { windows: UsageWindows },
+    /// A message added to the running turn that the CLI refused; the page queues it instead.
+    SteerRefused { prompt: String },
     Finished {
         is_error: bool,
         cancelled: bool,
@@ -139,7 +142,7 @@ pub enum Decision {
     Allow,
     AllowForTask,
     Deny,
-    Answer { answers: serde_json::Map<String, Value> },
+    Answer { answers: serde_json::Map<String, Value>, #[serde(default)] custom: bool },
 }
 
 /// Where a turn's events go. The page, phones or both, so the turn itself does not care.
@@ -147,17 +150,105 @@ pub enum Decision {
 pub struct TurnSink {
     send: Arc<dyn Fn(TurnEvent) -> Result<(), String> + Send + Sync>,
     acceptance: Option<Arc<Mutex<Option<AcceptanceHandler>>>>,
+    speed: Option<Arc<Mutex<crate::token_speed::Meter>>>,
 }
 
 type AcceptanceHandler = Box<dyn FnOnce(String) -> Result<(), String> + Send>;
 
 impl TurnSink {
     pub fn new(send: impl Fn(TurnEvent) -> Result<(), String> + Send + Sync + 'static) -> Self {
-        Self { send: Arc::new(send), acceptance: None }
+        Self { send: Arc::new(send), acceptance: None, speed: None }
     }
 
     pub fn send(&self, event: TurnEvent) -> Result<(), String> {
-        (self.send)(event)
+        let snapshot = match &self.speed {
+            Some(speed) => {
+                let mut meter = speed.lock().map_err(|error| error.to_string())?;
+                let now = meter.now();
+                match &event {
+                    TurnEvent::TextDelta { text } => meter.delta(text, now),
+                    TurnEvent::ThinkingDelta { text } => meter.thinking_delta(text, now),
+                    TurnEvent::ToolUse { .. } | TurnEvent::PermissionRequest { .. } | TurnEvent::Question { .. } | TurnEvent::Finished { .. } => meter.pause(now),
+                    TurnEvent::OutputTokens { total } => Some(meter.settle(*total, now)),
+                    _ => None,
+                }
+            }
+            None => None,
+        };
+        // A terminal frame closes the UI's event consumer, so publish its pause first.
+        if matches!(event, TurnEvent::Finished { .. }) {
+            if let Some(speed) = snapshot { (self.send)(TurnEvent::GenerationSpeed { speed })?; }
+            return (self.send)(event);
+        }
+        (self.send)(event)?;
+        if let Some(speed) = snapshot { (self.send)(TurnEvent::GenerationSpeed { speed })?; }
+        Ok(())
+    }
+
+    pub fn with_token_speed(mut self) -> Self {
+        self.speed = Some(Arc::new(Mutex::new(crate::token_speed::Meter::default())));
+        self
+    }
+
+    pub fn generation_tool_delta(&self, text: &str) -> Result<(), String> {
+        let snapshot = match &self.speed {
+            Some(speed) => {
+                let mut meter = speed.lock().map_err(|error| error.to_string())?;
+                let now = meter.now();
+                meter.tool_delta(text, now)
+            }
+            None => None,
+        };
+        if let Some(speed) = snapshot { (self.send)(TurnEvent::GenerationSpeed { speed })?; }
+        Ok(())
+    }
+
+    pub fn generation_reasoning_output(&self, tokens: Option<u64>) -> Result<(), String> {
+        if let Some(speed) = &self.speed {
+            speed.lock().map_err(|error| error.to_string())?.reasoning_output(tokens);
+        }
+        Ok(())
+    }
+
+    pub fn generation_tool_input(&self, input: &str) -> Result<(), String> {
+        if let Some(speed) = &self.speed {
+            speed.lock().map_err(|error| error.to_string())?.unstreamed_tool(input);
+        }
+        Ok(())
+    }
+
+    pub fn generation_request(&self) -> Result<(), String> {
+        let snapshot = match &self.speed {
+            Some(speed) => {
+                let mut meter = speed.lock().map_err(|error| error.to_string())?;
+                let now = meter.now();
+                meter.begin_request(now)
+            }
+            None => None,
+        };
+        if let Some(speed) = snapshot { (self.send)(TurnEvent::GenerationSpeed { speed })?; }
+        Ok(())
+    }
+
+    pub fn generation_start(&self) -> Result<(), String> {
+        self.generation_phase(true)
+    }
+
+    pub fn generation_pause(&self) -> Result<(), String> {
+        self.generation_phase(false)
+    }
+
+    fn generation_phase(&self, generating: bool) -> Result<(), String> {
+        let snapshot = match &self.speed {
+            Some(speed) => {
+                let mut meter = speed.lock().map_err(|error| error.to_string())?;
+                let now = meter.now();
+                if generating { meter.start(now) } else { meter.pause(now) }
+            }
+            None => None,
+        };
+        if let Some(speed) = snapshot { (self.send)(TurnEvent::GenerationSpeed { speed })?; }
+        Ok(())
     }
 
     pub fn with_acceptance(mut self, accepted: impl FnOnce(String) -> Result<(), String> + Send + 'static) -> Self {
@@ -179,7 +270,7 @@ impl TurnSink {
     }
 }
 
-const EXTERNAL_WRITER_ERROR: &str = "This task is open in another process";
+pub(crate) const EXTERNAL_WRITER_ERROR: &str = "This task is open in another process";
 
 /// A request the CLI is waiting on. The input stays here, so the page answers a request and
 /// cannot change what the tool will run.
@@ -209,11 +300,32 @@ struct Run {
     input: mpsc::UnboundedSender<String>,
     pending: HashMap<String, PendingRequest>,
     operations: HashMap<String, oneshot::Sender<Result<(), String>>>,
+    steer: Steer,
 }
+
+/// Messages added to the running turn. The runner closes it once the turn can no longer take
+/// one, and Claude counts the ones it has not yet echoed back so the turn waits for them.
+#[derive(Clone, Default)]
+pub struct Steer {
+    pub open: Arc<AtomicBool>,
+    pub unconfirmed: Arc<AtomicUsize>,
+}
+
+impl Steer {
+    pub fn close(&self) { self.open.store(false, Ordering::SeqCst); }
+    pub fn confirm_one(&self) {
+        let _ = self.unconfirmed.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| count.checked_sub(1));
+    }
+    pub fn has_unconfirmed(&self) -> bool { self.unconfirmed.load(Ordering::SeqCst) > 0 }
+}
+
+/// What the page sends when a running turn cannot take its message any more.
+pub const NO_ACTIVE_TURN: &str = "No active turn to add a message to";
 
 pub struct RunChannels {
     pub cancel: oneshot::Receiver<()>,
     pub input: mpsc::UnboundedReceiver<String>,
+    pub steer: Steer,
 }
 
 #[derive(Default)]
@@ -222,6 +334,19 @@ pub struct Runs {
     /// Rules granted for a task. Each turn is a new process that forgets session permissions, so
     /// they are passed again on the next turn. Kept in memory, never in the user's CLI settings.
     task_rules: Mutex<HashMap<String, Vec<String>>>,
+    /// Short-lived native metadata processes are owned by Tandem, separate from conversation turns.
+    metadata_writers: Mutex<std::collections::HashSet<u32>>,
+}
+
+pub struct MetadataWriter<'a> {
+    runs: &'a Runs,
+    pid: u32,
+}
+
+impl Drop for MetadataWriter<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut owned) = self.runs.metadata_writers.lock() { owned.remove(&self.pid); }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -245,15 +370,41 @@ impl Runs {
         }
         let (cancel_sender, cancel) = oneshot::channel();
         let (input_sender, input) = mpsc::unbounded_channel();
+        let steer = Steer { open: Arc::new(AtomicBool::new(true)), unconfirmed: Arc::default() };
         runs.insert(
             task_id.to_owned(),
-            Run { cancel: cancel_sender, input: input_sender, pending: HashMap::new(), operations: HashMap::new() },
+            Run { cancel: cancel_sender, input: input_sender, pending: HashMap::new(), operations: HashMap::new(), steer: steer.clone() },
         );
-        Ok(RunChannels { cancel, input })
+        Ok(RunChannels { cancel, input, steer })
+    }
+
+    /// Hands a message to the running turn: a line the runner turns into the CLI's own steering call.
+    pub fn steer(&self, task_id: &str, line: String) -> Result<(), String> {
+        let runs = self.runs.lock().map_err(|error| error.to_string())?;
+        let run = runs.get(task_id).filter(|run| run.steer.open.load(Ordering::SeqCst)).ok_or(NO_ACTIVE_TURN)?;
+        run.steer.unconfirmed.fetch_add(1, Ordering::SeqCst);
+        run.input.send(line).map_err(|_| {
+            run.steer.confirm_one();
+            NO_ACTIVE_TURN.to_owned()
+        })
+    }
+
+    /// Whether the running turn still takes added messages, checked before attachments are taken.
+    pub fn can_steer(&self, task_id: &str) -> bool {
+        self.runs.lock().is_ok_and(|runs| runs.get(task_id).is_some_and(|run| run.steer.open.load(Ordering::SeqCst)))
     }
 
     pub fn is_running(&self, task_id: &str) -> bool {
         self.runs.lock().is_ok_and(|runs| runs.contains_key(task_id))
+    }
+
+    pub fn own_metadata_writer(&self, pid: u32) -> Result<MetadataWriter<'_>, String> {
+        self.metadata_writers.lock().map_err(|error| error.to_string())?.insert(pid);
+        Ok(MetadataWriter { runs: self, pid })
+    }
+
+    pub fn owns_writer(&self, writer: &writers::ExternalWriter) -> bool {
+        self.is_running(&writer.task_id) || self.metadata_writers.lock().is_ok_and(|owned| owned.contains(&(writer.pid as u32)))
     }
 
     pub fn metadata_request(&self, task_id: &str, request_id: String, line: String) -> Result<Option<oneshot::Receiver<Result<(), String>>>, String> {
@@ -386,7 +537,7 @@ fn decision_response(request: &PendingRequest, decision: &Decision) -> Result<Va
                 "destination": "session",
             }],
         })),
-        Decision::Answer { answers } if is_question => {
+        Decision::Answer { answers, .. } if is_question => {
             let mut input = request.input.clone();
             let object = input.as_object_mut().ok_or("The question has no input")?;
             object.insert("answers".to_owned(), Value::Object(answers.clone()));
@@ -555,6 +706,7 @@ pub fn external_writers() -> Result<Vec<writers::ExternalWriter>, String> {
     let sessions_dir = projects.parent().ok_or("The CLI config folder was not found")?.join("sessions");
     let mut writers = writers::read_writers(&sessions_dir);
     writers.extend(writers::read_codex_writers(&codex::codex_home()?.join("thread-writer-locks")));
+    writers.extend(writers::read_pi_writers(&pi::sessions_dir()?));
     Ok(writers)
 }
 
@@ -604,15 +756,17 @@ async fn run_claude(
     sink: &TurnSink,
 ) -> Result<(), String> {
     let emit = |event| sink.send(event);
-    let RunChannels { mut cancel, mut input } = channels;
+    let RunChannels { mut cancel, mut input, steer } = channels;
     if !Path::new(&target.cwd).is_dir() {
         return Err(format!("Working directory not found: {}", target.cwd));
     }
     let env = login_env::login_env().await;
     let program = login_env::find_in_path("claude", env.get("PATH"))
         .ok_or("claude was not found in the login shell PATH")?;
-    let mut child = Command::new(program)
-        .args(claude_args(target, options, &runs.rules_for(&target.task_id)))
+    let args = claude_args(target, options, &runs.rules_for(&target.task_id));
+    crate::diagnostics::debug("claude", || format!("starting {} {}", program.display(), crate::diagnostics::flag_names(&args)));
+    let mut child = Command::new(&program)
+        .args(&args)
         .current_dir(&target.cwd)
         .env_clear()
         .envs(env)
@@ -622,6 +776,7 @@ async fn run_claude(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("Failed to start claude: {error}"))?;
+    crate::diagnostics::debug("claude", || format!("pid {}", child.id().unwrap_or_default()));
 
     let mut stdin = child.stdin.take().ok_or("claude has no stdin")?;
     stdin
@@ -649,17 +804,25 @@ async fn run_claude(
     let stdout = child.stdout.take().ok_or("claude has no stdout")?;
     let mut lines = BufReader::new(stdout).lines();
     let mut finished = false;
+    let mut accepted = false;
+    // A result that arrived while an added message was still unread: Claude runs that message
+    // as a further turn and reports again, or exits, which then ends the turn with this one.
+    let mut deferred: Option<TurnEvent> = None;
     let mut meter = TokenMeter::default();
     loop {
         tokio::select! {
             line = lines.next_line() => {
                 let line = line.map_err(|error| error.to_string())?;
                 let Some(line) = line else { break };
-                let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
+                let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                    crate::diagnostics::debug("claude", || format!("skipped a non-JSON output line ({} bytes)", line.len()));
+                    continue;
+                };
                 if value.get("type").and_then(Value::as_str) == Some("user")
                     && value.get("isReplay").and_then(Value::as_bool) == Some(true)
                     && value.get("parent_tool_use_id").is_none_or(Value::is_null)
                 {
+                    if accepted { steer.confirm_one(); } else { accepted = true; }
                     sink.accepted(&target.task_id).await?;
                     continue;
                 }
@@ -679,13 +842,42 @@ async fn run_claude(
                     }
                     None => {}
                 }
+                if value.get("type").and_then(Value::as_str) == Some("stream_event")
+                    && value.get("parent_tool_use_id").is_none_or(Value::is_null)
+                {
+                    match value.pointer("/event/type").and_then(Value::as_str) {
+                        Some("message_start") => sink.generation_request()?,
+                        Some("content_block_start") => sink.generation_start()?,
+                        Some("content_block_delta") => {
+                            if let Some(input) = value.pointer("/event/delta/partial_json").and_then(Value::as_str) {
+                                sink.generation_tool_delta(input)?;
+                            }
+                        }
+                        Some("message_delta") => sink.generation_reasoning_output(value.pointer("/event/usage/reasoning_tokens").and_then(Value::as_u64))?,
+                        Some("message_stop") => sink.generation_pause()?,
+                        _ => {}
+                    }
+                }
+                if value.get("type").and_then(Value::as_str) == Some("assistant")
+                    && value.get("parent_tool_use_id").is_none_or(Value::is_null)
+                {
+                    for block in content_blocks(&value).iter().filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use")) {
+                        if let Some(input) = block.get("input") { sink.generation_tool_input(&input.to_string())?; }
+                    }
+                }
                 if let Some(event) = meter.observe(&value) {
                     emit(event)?;
                 }
                 for event in parse_stream_value(&value) {
-                    if matches!(event, TurnEvent::Finished { .. }) {
-                        finished = true;
+                    if let TurnEvent::Finished { is_error, .. } = &event {
                         stdin = None;
+                        steer.close();
+                        if !*is_error && steer.has_unconfirmed() {
+                            deferred = Some(event);
+                            continue;
+                        }
+                        finished = true;
+                        deferred = None;
                     }
                     emit(event)?;
                 }
@@ -702,13 +894,20 @@ async fn run_claude(
         }
     }
     let status = child.wait().await.map_err(|error| error.to_string())?;
-    if finished {
-        return Ok(());
-    }
     let tail = stderr_tail
         .lock()
         .map(|tail| tail.iter().cloned().collect::<Vec<_>>().join("\n"))
         .unwrap_or_default();
+    crate::diagnostics::debug("claude", || match (status.success(), tail.is_empty()) {
+        (false, false) => format!("exited ({status}), stderr:\n{tail}"),
+        _ => format!("exited ({status})"),
+    });
+    if finished {
+        return Ok(());
+    }
+    if let Some(event) = deferred {
+        return emit(event);
+    }
     Err(if tail.is_empty() {
         format!("claude exited without a result ({status})")
     } else {
@@ -773,7 +972,7 @@ fn claude_args(target: &Target, options: &TurnOptions, task_rules: &[String]) ->
     args
 }
 
-fn user_input_line(prompt: &str, attachments: &Prepared) -> String {
+pub(crate) fn user_input_line(prompt: &str, attachments: &Prepared) -> String {
     json!({
         "type": "user",
         "message": {"role": "user", "content": attachments.content(prompt)},
@@ -936,6 +1135,22 @@ mod tests {
     const BASH_REQUEST: &str = r#"{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"ls"},"description":"List","permission_suggestions":[{"type":"addRules","rules":[{"toolName":"Bash","ruleContent":"ls:*"}],"behavior":"allow","destination":"localSettings"},{"type":"setMode","mode":"acceptEdits","destination":"session"}]}"#;
     const QUESTION_REQUEST: &str = r#"{"subtype":"can_use_tool","tool_name":"AskUserQuestion","input":{"questions":[{"question":"Color?","options":[]}]}}"#;
 
+    #[test]
+    fn added_messages_reach_a_running_turn_until_it_closes() {
+        let runs = Runs::default();
+        assert_eq!(runs.steer("a", "x".into()), Err(NO_ACTIVE_TURN.to_owned()));
+        let mut channels = runs.begin("a").unwrap();
+        assert!(runs.can_steer("a"));
+        runs.steer("a", "added".into()).unwrap();
+        assert_eq!(channels.input.try_recv().unwrap(), "added");
+        assert!(channels.steer.has_unconfirmed());
+        channels.steer.confirm_one();
+        assert!(!channels.steer.has_unconfirmed());
+        channels.steer.close();
+        assert!(!runs.can_steer("a"));
+        assert_eq!(runs.steer("a", "late".into()), Err(NO_ACTIVE_TURN.to_owned()));
+    }
+
     fn begin_with(runs: &Runs, body: &str) -> RunChannels {
         let channels = runs.begin("a").unwrap();
         let Some(ControlAction::Ask { request_id, request, .. }) = parse_control(&ask(body)) else {
@@ -998,6 +1213,32 @@ mod tests {
         let args = |is_new| claude_args(&target(is_new), &TurnOptions::default(), &[]);
         assert!(args(true).ends_with(&["--session-id".to_owned(), "id".to_owned()]));
         assert!(args(false).ends_with(&["--resume".to_owned(), "id".to_owned()]));
+    }
+
+    #[test]
+    fn metadata_writer_ownership_hides_only_our_process_without_marking_the_task_running() {
+        let runs = Runs::default();
+        let writer = |pid| writers::ExternalWriter { task_id: "task".into(), pid, is_busy: false, from_terminal: false, can_override: true };
+        let guard = runs.own_metadata_writer(100).unwrap();
+        assert!(runs.owns_writer(&writer(100)));
+        assert!(!runs.owns_writer(&writer(200)));
+        assert!(!runs.is_running("task"));
+        drop(guard);
+        assert!(!runs.owns_writer(&writer(100)));
+    }
+
+    #[test]
+    fn speed_pause_reaches_the_page_before_the_terminal_event_closes_its_consumer() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let output = events.clone();
+        let sink = TurnSink::new(move |event| { output.lock().unwrap().push(event); Ok(()) }).with_token_speed();
+        sink.send(TurnEvent::Started { task_id: "task".into() }).unwrap();
+        sink.send(TurnEvent::TextDelta { text: "first output".into() }).unwrap();
+        sink.send(TurnEvent::Finished { is_error: false, cancelled: true, message: None }).unwrap();
+        let events = events.lock().unwrap();
+        assert!(matches!(events[2], TurnEvent::GenerationSpeed { ref speed } if speed.streaming));
+        assert!(matches!(events[3], TurnEvent::GenerationSpeed { ref speed } if !speed.streaming));
+        assert!(matches!(events[4], TurnEvent::Finished { .. }));
     }
 
     #[test]
@@ -1140,11 +1381,25 @@ mod tests {
         let mut channels = begin_with(&runs, QUESTION_REQUEST);
         assert!(runs.answer("a", "r1", Decision::Allow).is_err());
         let answers = json!({"Color?": "Red"}).as_object().unwrap().clone();
-        runs.answer("a", "r1", Decision::Answer { answers }).unwrap();
+        runs.answer("a", "r1", Decision::Answer { answers, custom: false }).unwrap();
         let sent = sent_line(&mut channels);
         let input = &sent["response"]["response"]["updatedInput"];
         assert_eq!(input["answers"]["Color?"], "Red");
         assert_eq!(input["questions"][0]["question"], "Color?");
+    }
+
+    #[test]
+    fn a_claude_question_keeps_its_options_and_returns_a_custom_answer_as_text() {
+        let body = serde_json::json!({"subtype": "can_use_tool", "tool_name": "AskUserQuestion", "input": {"questions": [{"question": "Pick", "options": [{"label": "A"}, {"label": "B"}]}]}}).to_string();
+        let Some(ControlAction::Ask { event: TurnEvent::Question { questions, .. }, .. }) = parse_control(&ask(&body)) else { panic!("Expected Claude question"); };
+        assert_eq!(questions[0]["options"].as_array().unwrap().len(), 2);
+        let runs = Runs::default();
+        let mut channels = begin_with(&runs, &body);
+        let answers = json!({"Pick": "Use my own approach"}).as_object().unwrap().clone();
+        runs.answer("a", "r1", Decision::Answer { answers, custom: true }).unwrap();
+        let sent = sent_line(&mut channels);
+        assert_eq!(sent["response"]["response"]["updatedInput"]["answers"]["Pick"], "Use my own approach");
+        assert_eq!(sent["response"]["response"]["updatedInput"]["questions"][0]["options"].as_array().unwrap().len(), 2);
     }
 
     #[test]

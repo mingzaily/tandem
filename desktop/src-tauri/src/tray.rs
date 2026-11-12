@@ -27,6 +27,8 @@ const REOPEN_GUARD: Duration = Duration::from_millis(250);
 pub const OPEN_TASK_EVENT: &str = "tray-open-task";
 const OPEN_SETTINGS_EVENT: &str = "tray-open-settings";
 const REFRESH_EVENT: &str = "tray-refresh";
+/// Lets the main page read usage again when what it has is old.
+const PANEL_OPENED_EVENT: &str = "tray-panel-opened";
 const SUMMARY_EVENT: &str = "tray-summary";
 
 #[derive(Debug, Clone, Deserialize)]
@@ -116,6 +118,7 @@ fn toggle_panel(app: &AppHandle, icon: &Rect) -> tauri::Result<()> {
     }
     panel.set_position(panel_position(app, &panel, icon)?)?;
     panel.show()?;
+    let _ = app.emit_to("main", PANEL_OPENED_EVENT, ());
     panel.set_focus()
 }
 
@@ -141,7 +144,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<TrayIcon<Wry>> {
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click { rect, button_state: MouseButtonState::Up, .. } = event {
                 if let Err(error) = toggle_panel(tray.app_handle(), &rect) {
-                    eprintln!("menu bar panel failed: {error}");
+                    crate::diagnostics::error("tray", format!("menu bar panel failed: {error}"));
                 }
             }
         })

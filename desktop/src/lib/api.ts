@@ -7,11 +7,21 @@ export const updatePreferences = (target: 'config' | 'state', patch: Record<stri
 export const onPreferencesChanged = (handler: (snapshot: PreferencesSnapshot) => void) => listen<PreferencesSnapshot>('preferences-changed', ({ payload }) => handler(payload));
 export const setSystemLanguage = (language: 'zh' | 'en') => invoke<void>('set_system_language', { language });
 
+import type { UpdateState } from './appUpdate';
+
+export interface AppUpdate { version: string; notes: string | null }
+export interface UpdateProgress { downloaded: number; total: number | null }
+export const readAppUpdate = () => invoke<UpdateState>('update_state');
+export const onAppUpdateChanged = (handler: (value: UpdateState) => void) => listen<UpdateState>('app-update-changed', ({ payload }) => handler(payload));
+export const checkAppUpdate = () => invoke<UpdateState>('check_update');
+export const downloadAppUpdate = () => invoke<UpdateState>('download_update');
+export const installAppUpdate = () => invoke<UpdateState>('install_update');
+
 export type Agent = 'claude' | 'codex' | 'pi';
 
 export interface AgentInventory {
   agent: Agent;
-  mcpServers: { name: string; transport: string; command: string | null; scope: 'global' | 'project'; source: string }[];
+  mcpServers: { name: string; transport: string; command: string | null; scope: 'global' | 'project'; source: string; importedFrom?: string; provider?: string }[];
   skills: { name: string; description: string; path: string; scope: 'global' | 'project'; managed: boolean; repository: string | null }[];
   errors: { section: 'mcp' | 'skills'; path: string; reason: string }[];
   notes: { section: 'mcp' | 'skills'; kind: 'piMcpDisabled' | 'mcpImports'; detail: string }[];
@@ -49,9 +59,18 @@ export interface TaskContext {
   model?: string | null;
 }
 
+export interface TaskModel {
+  model: string;
+  effort: string | null;
+}
+
 export interface TaskContent {
   messages: Message[];
   context: TaskContext | null;
+  /** The task's native model and thinking level, independent of new-task defaults. */
+  modelSelection?: TaskModel | null;
+  /** The mode the CLI last ran the task in, as Claude records it. */
+  permissionMode?: string;
 }
 
 export interface UsageWindow {
@@ -98,17 +117,33 @@ export interface QuestionOption {
 }
 
 export interface Question {
+  /** Original native text; also the key used when submitting an answer. */
   question: string;
+  /** Main question and background, separated for presentation. */
+  displayQuestion?: string;
+  context?: string;
   header?: string;
   options?: QuestionOption[];
   multiSelect?: boolean;
+  /** Normalized native capability for the localized free-text entry. */
+  allowCustom?: boolean;
 }
 
 export type Decision =
   | { kind: 'allow' }
   | { kind: 'allowForTask' }
   | { kind: 'deny' }
-  | { kind: 'answer'; answers: Record<string, string> };
+  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean };
+
+export interface GenerationSpeed {
+  /** Latest complete request, paired with real CLI usage. */
+  rate: number | null;
+  average: number | null;
+  peak: number | null;
+  generationMs: number;
+  measuredTokens: number;
+  streaming: boolean;
+}
 
 export type TurnEvent =
   | { type: 'started'; taskId: string }
@@ -127,9 +162,11 @@ export type TurnEvent =
   | { type: 'question'; requestId: string; questions: Question[] }
   | { type: 'requestSettled'; requestId: string }
   | { type: 'outputTokens'; total: number }
+  | { type: 'generationSpeed'; speed: GenerationSpeed }
   | { type: 'contextUsage'; usedTokens: number; model: string | null }
   | { type: 'contextWindow'; model: string; tokens: number }
   | { type: 'rateLimits'; windows: UsageWindows }
+  | { type: 'steerRefused'; prompt: string }
   | { type: 'finished'; isError: boolean; cancelled: boolean; message: string | null };
 
 export type PendingRequest = Extract<TurnEvent, { type: 'permissionRequest' | 'question' }>;
@@ -160,6 +197,9 @@ export const answerRequest = (taskId: string, requestId: string, decision: Decis
   invoke<void>('answer_request', { taskId, requestId, decision });
 export const readCliInfo = () => invoke<CliInfo>('cli_info');
 export const openExternal = (url: string) => invoke<void>('open_external', { url });
+export const openLogFolder = () => invoke<void>('open_log_folder');
+export const clearLogs = () => invoke<void>('clear_logs');
+export const logPageError = (message: string) => invoke<void>('log_page_error', { message });
 export const appReady = () => invoke<void>('app_ready');
 
 export interface Attachment {
@@ -229,6 +269,7 @@ export const resizeTrayPanel = (height: number) => invoke<void>('resize_tray_pan
 export const trayPanelAction = (action: 'open' | 'settings' | 'quit' | 'task' | 'refresh', taskId?: string) =>
   invoke<void>('tray_panel_action', { action, taskId: taskId ?? null });
 export const onTrayRefresh = (handler: () => void) => listen('tray-refresh', handler);
+export const onTrayPanelOpened = (handler: () => void) => listen('tray-panel-opened', () => handler());
 export const completeTrayRefresh = (error: string | null) => emitTo('tray-panel', 'tray-refreshed', error);
 export async function refreshTray(): Promise<void> {
   let finish!: (error: string | null) => void;
@@ -246,6 +287,14 @@ export const onTraySummary = (handler: (summary: TraySummary) => void) =>
   listen<TraySummary>('tray-summary', (event) => handler(event.payload));
 export const onTrayOpenSettings = (handler: () => void) => listen('tray-open-settings', () => handler());
 export const notifyUser = (title: string, body: string) => invoke<void>('notify_user', { title, body });
+export interface NotificationStatus {
+  authorization: 'notDetermined' | 'denied' | 'authorized' | 'unsupported';
+  badgeEnabled: boolean;
+}
+export const notificationStatus = () => invoke<NotificationStatus>('notification_status');
+export const requestNotificationPermission = () => invoke<NotificationStatus>('request_notification_permission');
+export const openNotificationSettings = () => invoke<void>('open_notification_settings');
+export const updateAppBadge = (count: number) => invoke<void>('update_app_badge', { count });
 export type RemoteLinkStatus = 'off' | 'connecting' | 'online' | 'failed';
 export interface RemoteClient {
   clientId: string;
@@ -257,6 +306,7 @@ export interface RemoteState {
   enabled: boolean;
   relayUrl: string;
   hasHostToken: boolean;
+  relayVersion: string | null;
   status: RemoteLinkStatus;
   error: string | null;
   pairing: { text: string; qr: string; expiresAtMs: number } | null;
@@ -304,6 +354,8 @@ export interface TaskQueue {
   agent: Agent;
   entries: QueuedMessage[];
   paused: boolean;
+  /** Paused because Tandem started again with these waiting, not because the task stopped. */
+  pausedAfterRestart: boolean;
   error: string | null;
   revision: number;
 }
@@ -315,14 +367,24 @@ export interface QueuedTurn {
   event: TurnEvent;
 }
 export const listQueues = () => invoke<TaskQueue[]>('list_queues');
+/** The backend's answer when the running turn can no longer take a message. */
+export const NO_ACTIVE_TURN = 'No active turn to add a message to';
+export const steerTurn = (agent: Agent, taskId: string, prompt: string, attachments: Attachment[]) =>
+  invoke<void>('steer_turn', { agent, taskId, prompt, attachmentIds: attachments.map(({ id }) => id) });
 export const enqueueTurn = (agent: Agent, taskId: string, prompt: string, attachments: Attachment[], options: TurnOptions) =>
   invoke<TaskQueue>('enqueue_turn', { agent, taskId, prompt, attachmentIds: attachments.map(({ id }) => id), options });
-export const editQueuedTurn = (taskId: string, entryId: string, prompt: string) =>
-  invoke<TaskQueue>('edit_queued_turn', { taskId, entryId, prompt });
+export const editQueuedTurn = (taskId: string, entryId: string, prompt: string, keepAttachmentIds: string[], attachmentIds: string[]) =>
+  invoke<TaskQueue>('edit_queued_turn', { taskId, entryId, prompt, keepAttachmentIds, attachmentIds });
 export const removeQueuedTurn = (taskId: string, entryId: string) =>
   invoke<TaskQueue>('remove_queued_turn', { taskId, entryId });
 export const reorderQueuedTurn = (taskId: string, entryId: string, targetIndex: number) =>
   invoke<TaskQueue>('reorder_queued_turn', { taskId, entryId, targetIndex });
+export interface SteeredQueuedTurn {
+  queue: TaskQueue;
+  /** Accepted message with image previews independent of the removed queue files. */
+  entry: QueuedMessage;
+}
+export const steerQueuedTurn = (taskId: string, entryId: string) => invoke<SteeredQueuedTurn>('steer_queued_turn', { taskId, entryId });
 export const resumeQueue = (taskId: string) => invoke<TaskQueue>('resume_queue', { taskId });
 export const setQueueLock = (taskId: string, owner: string, entryId: string | null, locked: boolean) =>
   invoke<void>('set_queue_lock', { taskId, owner, entryId, locked });

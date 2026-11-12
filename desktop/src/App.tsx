@@ -13,7 +13,7 @@ import { RunningStatus } from './components/RunningStatus';
 import { QueuePauseStatus } from './components/QueuePauseStatus';
 import { ComposerStatusRow } from './components/ComposerStatusRow';
 import { RemoteAccessIndicator, RemoteAccessNotice, RemoteRevokeDialog } from './components/RemoteAccessNotice';
-import { SettingsView } from './components/SettingsView';
+import { SettingsView, type ArchivedGroup } from './components/SettingsView';
 import { Sidebar } from './components/Sidebar';
 import { TaskMenu, type TaskMenuAnchor } from './components/TaskMenu';
 import { TaskHeaderActions } from './components/TaskHeaderActions';
@@ -34,8 +34,10 @@ import {
   listCodexTasks,
   listPiTasks,
   notifyUser,
+  updateAppBadge,
   onTrayOpenSettings,
   onTrayOpenTask,
+  onTrayPanelOpened,
   onTrayRefresh,
   listTasks,
   pickProject,
@@ -47,6 +49,11 @@ import {
   remoteRevoke,
   sendTurn,
   enqueueTurn,
+  NO_ACTIVE_TURN,
+  steerTurn,
+  steerQueuedTurn,
+  reorderQueuedTurn,
+  resumeQueue,
   editQueuedTurn,
   listQueues,
   onQueueChanged,
@@ -63,6 +70,7 @@ import {
   type PendingRequest,
   type RemoteClient,
   type TaskContext,
+  type TaskModel,
   type TaskSummary,
   type TraySource,
   type TrayWindow,
@@ -72,11 +80,14 @@ import {
   type TaskQueue,
   type QueuedMessage,
 } from './lib/api';
-import { describeUsage, titleOptions, turnOptions, type TurnPrefs } from './lib/composerStatus';
+import { describeUsage, selectedModel, sessionPermissionMode, taskPreferences, usageExpired, titleOptions, turnOptions, type PermissionMode, type TurnPrefs } from './lib/composerStatus';
 import type { ModelReadState } from './lib/modelEffort';
 import { t } from './lib/i18n';
-import { emptyRateHistory, recordActivity, type RateHistory } from './lib/tokenRate';
-import { applyTurnEvent, buildItems, CONVERSATION_CWD, groupRoot, isUnder, lastEditablePrompt, projectName, turnStatus, type Item } from './lib/items';
+import { clearTaskPreviews, taskListWithPreviews, type TaskPreviews } from './lib/taskList';
+import { attentionTaskCount, shouldMarkUnread } from './lib/notifications';
+import { emptyRateHistory, recordSpeed, type RateHistory } from './lib/tokenRate';
+import { deriveInputHistory } from './lib/recallInput';
+import { applyTurnEvent, buildItems, CONVERSATION_CWD, historyBeforeLiveTurn, groupRoot, isUnder, lastEditablePrompt, projectName, turnStatus, withTurnFailures, type TurnFailure, type Item } from './lib/items';
 import { canGoBack, canGoForward, currentEntry, goBack, goForward, pushEntry, replaceEntry, startHistory } from './lib/navHistory';
 import {
   areProjectsSeeded,
@@ -103,7 +114,7 @@ import {
 
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
 import { preferencesSnapshot, saveConfig, saveViewState, subscribePreferences } from './lib/storage';
-import { acceptNativeTitle, taskTitle, type TaskMeta } from './lib/taskMeta';
+import { acceptNativeTitle, taskTitle, unarchive, type TaskMeta } from './lib/taskMeta';
 import { mergeQueue } from './lib/pendingQueue';
 import { requestAnswerFailure } from './lib/requestAnswer';
 import { useRemotePresence } from './lib/remotePresence';
@@ -113,6 +124,11 @@ const CODEX_LIST_MIN_INTERVAL_MS = 30_000;
 
 /** Only reads a few small files, so this is cheap enough to do while the window is in use. */
 const WRITER_POLL_MS = 5000;
+/**
+ * Plan usage moves with work done elsewhere too. A finished turn and an opened panel read it again
+ * when the last reading is older than this, as the reference throttles its own (3 minutes).
+ */
+const USAGE_STALE_MS = 3 * 60_000;
 const COMPACT_COMMAND = '/compact';
 const HIDDEN_POLL_EVERY = 6;
 /** A task that takes a while to read reloads less often, so following it stays cheap. */
@@ -128,23 +144,34 @@ type Notice = { text: string; isError: boolean };
 type TurnProgress = { startedAt: number; outputTokens: number; activity: number; rate: RateHistory };
 type QueueEdit = { taskId: string; entry: QueuedMessage; owner: string };
 
-function finishedNotice(event: Extract<TurnEvent, { type: 'finished' }>): Notice | null {
-  // A stopped turn is marked in the conversation, where it happened.
-  if (event.cancelled) return null;
-  if (event.isError) return { text: t('turnFailed', { error: event.message ?? '' }), isError: true };
-  return null;
-}
-
 export function App() {
   const [claudeTasks, setClaudeTasks] = useState<TaskSummary[] | null>(null);
   const [codexTasks, setCodexTasks] = useState<TaskSummary[]>([]);
   const [piTasks, setPiTasks] = useState<TaskSummary[]>([]);
+  const [taskPreviews, setTaskPreviews] = useState<TaskPreviews>({});
   const lastCodexList = useRef(0);
+  // A CLI the user drives elsewhere can stay out of the lists; its login, MCP and skills still show.
+  const [sessionModes, setSessionModes] = useState<Record<string, PermissionMode>>({});
+  const [chosenPrefs, setChosenPrefs] = useState<Record<string, TurnPrefs>>({});
+  const [nativeModels, setNativeModels] = useState<Record<string, TaskModel | null>>({});
+  const [hiddenAgents, setHiddenAgents] = useState<Agent[]>(() => preferencesSnapshot().config.hidden_task_agents ?? []);
+  const hiddenAgentsRef = useRef(hiddenAgents);
+  hiddenAgentsRef.current = hiddenAgents;
   const tasks = useMemo(
     () =>
-      claudeTasks && [...claudeTasks, ...codexTasks, ...piTasks].sort((first, second) => second.updatedAtMs - first.updatedAtMs),
-    [claudeTasks, codexTasks, piTasks],
+      claudeTasks && [...claudeTasks, ...codexTasks, ...piTasks]
+        .filter((task) => !hiddenAgents.includes(task.agent))
+        .sort((first, second) => second.updatedAtMs - first.updatedAtMs),
+    [claudeTasks, codexTasks, piTasks, hiddenAgents],
   );
+  const sidebarTasks = useMemo(
+    () => taskListWithPreviews(tasks ?? [], taskPreviews).filter((task) => !hiddenAgents.includes(task.agent)),
+    [tasks, taskPreviews, hiddenAgents],
+  );
+  const pendingTaskIds = useMemo(() => new Set(Object.keys(taskPreviews)), [taskPreviews]);
+  useEffect(() => {
+    if (tasks) setTaskPreviews((current) => clearTaskPreviews(current, tasks.map(({ id }) => id)));
+  }, [tasks, taskPreviews]);
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
   const [nav, setNav] = useState(() => startHistory<Selection>({ kind: 'new', cwd: null }));
@@ -184,9 +211,12 @@ export function App() {
   const [writers, setWriters] = useState<ExternalWriter[]>([]);
   const [overriddenWriters, setOverriddenWriters] = useState<Set<string>>(new Set());
   const [history, setHistory] = useState<Item[]>([]);
+  const historyRef = useRef(history);
+  historyRef.current = history;
   const [live, setLive] = useState<Record<string, Item[]>>({});
   const [stoppedTasks, setStoppedTasks] = useState<Set<string>>(new Set());
   const [notices, setNotices] = useState<Record<string, Notice>>({});
+  const [turnFailures, setTurnFailures] = useState<Record<string, TurnFailure[]>>({});
   const [pending, setPending] = useState<Record<string, PendingRequest[]>>({});
   const answering = useRef(new Set<string>());
   const [answeringRequests, setAnsweringRequests] = useState(new Set<string>());
@@ -202,6 +232,8 @@ export function App() {
     claude: { loading: false, error: null }, codex: { loading: false, error: null }, pi: { loading: false, error: null },
   });
   const infoJobs = useRef(new Map<Agent, Promise<string | null>>());
+  /** When usage was last asked for or reported, which also spaces out retries after a failure. */
+  const usageReadAt = useRef<Record<Agent, number>>({ claude: 0, codex: 0, pi: 0 });
   const [allPrefs, setAllPrefs] = useState<Record<Agent, TurnPrefs>>(() => ({
     claude: loadPrefsFor('claude'),
     codex: loadPrefsFor('codex'),
@@ -220,8 +252,12 @@ export function App() {
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
   const queueEditRef = useRef<QueueEdit | null>(null);
   const turnGenerations = useRef(new Map<string, string>());
+  /** Adds a message sent into a running turn to that turn's own view of itself. */
+  const turnAppenders = useRef(new Map<string, (item: Item) => void>());
+  /** Queues a message a running turn refused, set once the queue helpers exist. */
+  const steerFallback = useRef<(agent: Agent, taskId: string, prompt: string) => void>(() => undefined);
   const updateQueue = useCallback((queue: TaskQueue) => setQueues((current) => mergeQueue(current, queue)), []);
-  // A new task joins the list only after its first response. Until then its prompt names it.
+  // A new task has a prompt preview until the native list takes over its stored metadata.
   const [draftTitles, setDraftTitles] = useState<Record<string, string>>({});
   const draftTitlesRef = useRef(draftTitles);
   draftTitlesRef.current = draftTitles;
@@ -236,6 +272,10 @@ export function App() {
   const codexListJob = useRef<Promise<string | null> | null>(null);
   const refreshCodexTasks = useCallback((force: boolean): Promise<string | null> => {
     if (codexListJob.current) return codexListJob.current;
+    if (hiddenAgentsRef.current.includes('codex')) {
+      setCodexTasks([]);
+      return Promise.resolve(null);
+    }
     if (!scanRoots.current || (!force && Date.now() - lastCodexList.current < CODEX_LIST_MIN_INTERVAL_MS)) return Promise.resolve(null);
     lastCodexList.current = Date.now();
     const { projects, conversations } = scanRoots.current;
@@ -256,8 +296,9 @@ export function App() {
       if (!scanRoots.current) return [];
       const { projects, conversations } = scanRoots.current;
       // Each list paints as it arrives; callers can await the complete refresh.
+      const hidden = hiddenAgentsRef.current;
       const errors = await Promise.all([
-        listTasks([...projects, ...conversations]).then((next) => {
+        hidden.includes('claude') ? Promise.resolve(setClaudeTasks([])).then(() => null) : listTasks([...projects, ...conversations]).then((next) => {
           setClaudeTasks(next);
           return null;
         }).catch((error) => {
@@ -265,7 +306,7 @@ export function App() {
           console.error(error);
           return `Claude Code: ${error}`;
         }),
-        listPiTasks(projects, conversations).then((next) => {
+        hidden.includes('pi') ? Promise.resolve(setPiTasks([])).then(() => null) : listPiTasks(projects, conversations).then((next) => {
           setPiTasks(next);
           return null;
         }).catch((error) => {
@@ -281,8 +322,11 @@ export function App() {
 
   const loadHistory = useCallback(async (agent: Agent, id: string, currentTurn: () => boolean = () => true) => {
     try {
-      const { messages, context } = await readTask(agent, id);
+      const { messages, context, permissionMode, modelSelection } = await readTask(agent, id);
       if (!currentTurn()) return;
+      setNativeModels((current) => ({ ...current, [id]: modelSelection ?? null }));
+      const mode = sessionPermissionMode(permissionMode);
+      if (mode) setSessionModes((current) => current[id] === mode ? current : { ...current, [id]: mode });
       if (selectedIdRef.current === id) setHistory(buildItems(messages));
       if (context) setContexts((current) => ({ ...current, [id]: context }));
     } catch (error) {
@@ -351,6 +395,7 @@ export function App() {
   const refreshInfo = useCallback((agent: Agent) => {
     const current = infoJobs.current.get(agent);
     if (current) return current;
+    usageReadAt.current[agent] = Date.now();
     setInfoStates((current) => ({ ...current, [agent]: { loading: true, error: null } }));
     const read = { claude: readCliInfo, codex: readCodexInfo, pi: readPiInfo }[agent];
     const job = read().then((info) => {
@@ -372,11 +417,18 @@ export function App() {
     if (tasksLoaded) for (const agent of ['claude', 'codex', 'pi'] as const) refreshInfo(agent);
   }, [tasksLoaded, refreshInfo]);
 
+  // A CLI whose tasks are hidden is not offered for new ones; the saved choice returns with it.
+  const startAgent: Agent = hiddenAgents.includes(newTaskAgent)
+    ? ((['claude', 'codex', 'pi'] as const).find((agent) => !hiddenAgents.includes(agent)) ?? newTaskAgent)
+    : newTaskAgent;
   const selectedTaskAgent = tasks?.find((task) => task.id === selectedId)?.agent;
   const selectedAgent: Agent = selectedId
     ? (selectedTaskAgent ?? newTaskAgents[selectedId] ?? queues[selectedId]?.agent ?? 'claude')
-    : newTaskAgent;
-  const prefs = allPrefs[selectedAgent];
+    : startAgent;
+  // A task continues in the permission mode it last ran in, wherever that was, until it is changed here.
+  const prefs = selectedId
+    ? taskPreferences(allPrefs[selectedAgent], nativeModels[selectedId], chosenPrefs[selectedId], sessionModes[selectedId])
+    : allPrefs[selectedAgent];
   const info = infos[selectedAgent];
 
   useEffect(() => {
@@ -439,9 +491,21 @@ export function App() {
     }
   };
 
-  const saveQueueEdit = async (prompt: string) => {
-    if (!queueEdit) return;
-    updateQueue(await editQueuedTurn(queueEdit.taskId, queueEdit.entry.id, prompt));
+  const saveQueueEdit = async (prompt: string, attachments: Attachment[]) => {
+    const edit = queueEditRef.current;
+    if (!edit) return;
+    const existingIds = new Set(edit.entry.attachments.map(({ id }) => id));
+    const keepIds = attachments.filter(({ id }) => existingIds.has(id)).map(({ id }) => id);
+    const addedIds = attachments.filter(({ id }) => !existingIds.has(id)).map(({ id }) => id);
+    const snapshot = await editQueuedTurn(edit.taskId, edit.entry.id, prompt, keepIds, addedIds);
+    updateQueue(snapshot);
+    if (queueEditRef.current !== edit) return;
+    const entry = snapshot.entries.find(({ id }) => id === edit.entry.id);
+    if (entry) {
+      const saved = { ...edit, entry };
+      queueEditRef.current = saved;
+      setQueueEdit(saved);
+    }
     cancelQueueEdit();
   };
 
@@ -472,7 +536,7 @@ export function App() {
   }, []);
 
   const createTurnHandler = useCallback(
-    ({ agent, taskId: knownId, newCwd, prompt, userItem, selectOnStart }: TurnSource) => {
+    ({ agent, taskId: knownId, newCwd, prompt, userItem, selectOnStart, initialPrefs }: TurnSource) => {
       let taskId = knownId;
       const isNew = knownId === null;
       let ended = false;
@@ -492,25 +556,46 @@ export function App() {
             next.delete(id);
             return next;
           });
+          const startedAt = Date.now();
           setProgress((current) => ({
             ...current,
-            [id]: { startedAt: Date.now(), outputTokens: 0, activity: 0, rate: emptyRateHistory(Date.now()) },
+            [id]: { startedAt, outputTokens: 0, activity: 0, rate: emptyRateHistory() },
           }));
           // A turn sent from a phone reaches this window at its first event.
           setLive((current) => ({ ...current, [id]: [userItem] }));
+          turnAppenders.current.set(id, (item) => {
+            streamed = [...streamed, item];
+            setLive((current) => ({ ...current, [id]: streamed }));
+          });
           setNotices(({ [id]: _removed, ...rest }) => rest);
           if (isNew) {
+            if (initialPrefs) {
+              setNativeModels((current) => ({ ...current, [id]: initialPrefs.model ? { model: initialPrefs.model, effort: initialPrefs.effort } : null }));
+              setSessionModes((current) => ({ ...current, [id]: initialPrefs.permissionMode }));
+            }
             unwrittenTasks.current.add(id);
             setNewTaskCwds((current) => ({ ...current, [id]: newCwd as string }));
             setNewTaskAgents((current) => ({ ...current, [id]: agent }));
             const firstLine = prompt.split('\n').find((line) => line.trim())?.trim();
-            setDraftTitles((current) => ({ ...current, [id]: firstLine ?? t('attachmentsOnly') }));
+            const title = firstLine ?? t('attachmentsOnly');
+            setDraftTitles((current) => ({ ...current, [id]: title }));
+            setTaskPreviews((current) => ({ ...current, [id]: { id, agent, cwd: newCwd as string, title, updatedAtMs: startedAt } }));
             if (selectOnStart) setSelection({ kind: 'task', id });
           }
           return;
         }
         const id = taskId;
         if (!id) return;
+        if (event.type === 'steerRefused') {
+          // The CLI would not take it into this turn: it leaves the turn's view and joins the queue.
+          const at = streamed.map((item) => item.type === 'user' && item.text === event.prompt).lastIndexOf(true);
+          if (at > 0) {
+            streamed = streamed.filter((_, index) => index !== at);
+            setLive((current) => ({ ...current, [id]: streamed }));
+          }
+          steerFallback.current(agent, id, event.prompt);
+          return;
+        }
         if (event.type === 'permissionRequest' || event.type === 'question') {
           setPending((current) => ({ ...current, [id]: [...(current[id] ?? []), event] }));
           notifyIfAway(t('notifyWaiting'), id);
@@ -522,7 +607,7 @@ export function App() {
         }
         if (event.type === 'contextUsage') {
           setContexts((current) => ({ ...current, [id]: { usedTokens: event.usedTokens, model: event.model } }));
-          // The first response means the task file exists, so the task can join the list.
+          // Native metadata can now replace the already-visible prompt preview.
           if (!isListed) {
             isListed = true;
             void refreshTasks(agent === 'codex');
@@ -538,10 +623,18 @@ export function App() {
           return;
         }
         if (event.type === 'rateLimits') {
+          usageReadAt.current[agent] = Date.now();
           setInfos((current) => {
             const next = { ...current[agent], usage: event.windows };
             saveInfoFor(agent, next);
             return { ...current, [agent]: next };
+          });
+          return;
+        }
+        if (event.type === 'generationSpeed') {
+          setProgress((current) => {
+            const turn = current[id];
+            return turn ? { ...current, [id]: { ...turn, rate: recordSpeed(turn.rate, event.speed, Date.now()) } } : current;
           });
           return;
         }
@@ -555,7 +648,6 @@ export function App() {
                 ...turn,
                 activity: turn.activity + 1,
                 outputTokens: event.type === 'outputTokens' ? event.total : turn.outputTokens,
-                rate: recordActivity(turn.rate, Date.now(), event.type === 'outputTokens' ? event.total : turn.outputTokens),
               },
             };
           });
@@ -563,16 +655,27 @@ export function App() {
         if (event.type === 'outputTokens') return;
         if (event.type === 'finished') {
           ended = true;
+          turnAppenders.current.delete(id);
+          if (Date.now() - usageReadAt.current[agent] >= USAGE_STALE_MS) void refreshInfo(agent);
           unwrittenTasks.current.delete(id);
           clearTurn(id);
+          if (event.isError || event.cancelled) setTaskPreviews((current) => clearTaskPreviews(current, [id]));
           if (event.cancelled) setStoppedTasks((current) => new Set(current).add(id));
-          const notice = finishedNotice(event);
-          if (notice) setNotices((current) => ({ ...current, [id]: notice }));
+          streamed = applyTurnEvent(streamed, event);
+          const error = streamed.at(-1);
+          if (error?.type === 'error') {
+            const source = [...streamed].reverse().find((item) => item.type === 'user');
+            if (source?.type === 'user') {
+              const before = selectedIdRef.current === id ? historyBeforeLiveTurn(historyRef.current, streamed) : null;
+              const occurrence = before ? [...before, ...streamed].filter((item) => item.type === 'user' && item.text === source.text).length - 1 : undefined;
+              setTurnFailures((current) => ({ ...current, [id]: [...(current[id] ?? []), { prompt: source.text, sentAt: source.at, endedAt: Date.now(), occurrence, error: { ...error, type: 'error' } }] }));
+            }
+          }
           if (!event.cancelled) notifyIfAway(event.isError ? t('notifyFailed') : t('notifyDone'), id);
-          if (!event.cancelled && selectedIdRef.current !== id) changeUnread((current) => markUnread(current, id));
+          if (shouldMarkUnread(Boolean(event.cancelled), id, selectedIdRef.current, document.hasFocus())) changeUnread((current) => markUnread(current, id));
           // Preserve the completed stream until the native file replaces it. A following queued
           // turn can start while that read is in flight, and owns its own live content.
-          if (selectedIdRef.current === id) setHistory((current) => [...current, ...streamed]);
+          if (selectedIdRef.current === id) setHistory((current) => [...historyBeforeLiveTurn(current, streamed), ...streamed]);
           setLive(({ [id]: _removed, ...rest }) => rest);
           void (async () => {
             if (selectedIdRef.current === id) await loadHistory(agent, id, () => turnGenerations.current.get(id) === generation);
@@ -585,7 +688,7 @@ export function App() {
       };
       return { onEvent, taskId: () => taskId };
     },
-    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn, changeUnread],
+    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn, changeUnread, refreshInfo],
   );
 
   // Turns started from a phone show here too, each with its own handler until it finishes.
@@ -599,6 +702,7 @@ export function App() {
       if (!turn && entry) {
         turn = latestCreateTurnHandler.current({ agent, taskId, newCwd: null, prompt: entry.prompt,
           userItem: userItemFor(entry.prompt, entry.attachments, `live-user-${entryId}`), selectOnStart: false });
+        setNativeModels((current) => entry.options.model ? { ...current, [taskId]: { model: entry.options.model, effort: entry.options.effort } } : current);
         turns.set(entryId, turn);
       }
       if (turn) turn.onEvent(event);
@@ -636,6 +740,7 @@ export function App() {
       setPinnedProjects(preferencesSnapshot().state.pinnedProjects);
       setUnreadTasks(preferencesSnapshot().state.unreadTasks);
       setSidebarOptions({ groupByCli: preferencesSnapshot().config.sidebar_group_by_cli, sort: preferencesSnapshot().config.sidebar_sort });
+      setHiddenAgents(preferencesSnapshot().config.hidden_task_agents ?? []);
       setSidebarCollapsed(loadSidebarCollapsed());
       setSidebarWidth(loadSidebarWidth());
       setAllPrefs({ claude: loadPrefsFor('claude'), codex: loadPrefsFor('codex'), pi: loadPrefsFor('pi') });
@@ -657,17 +762,13 @@ export function App() {
         ...(agent === 'pi' ? { permissionMode: null } : {}),
         worktree: agent === 'claude' && useWorktree,
       };
-      const turn = createTurnHandler({ agent, taskId: null, newCwd, prompt, userItem, selectOnStart: true });
+      const model = selectedModel(prefs, info.models);
+      const initialPrefs = { ...prefs, model: prefs.model ?? (model?.resolvedModel || null), effort: prefs.effort ?? model?.defaultEffort ?? null };
+      const turn = createTurnHandler({ agent, taskId: null, newCwd, prompt, userItem, selectOnStart: true, initialPrefs });
       void sendTurn(agent, { cwd: newCwd }, prompt, attachments, options, turn.onEvent).catch((error) => {
         const id = turn.taskId();
         if (id) {
-          setNotices((current) => ({
-            ...current,
-            [id]: { text: t('turnFailed', { error: String(error) }), isError: true },
-          }));
-          setLive(({ [id]: _removed, ...rest }) => rest);
-          unwrittenTasks.current.delete(id);
-          clearTurn(id);
+          turn.onEvent({ type: 'finished', isError: true, cancelled: false, message: String(error) });
         } else {
           // Codex can fail before it has a thread, and then there is no task to show this on.
           setNewTaskError(t('turnFailed', { error: String(error) }));
@@ -677,10 +778,43 @@ export function App() {
     [selectedAgent, prefs, info.models, useWorktree, createTurnHandler, clearTurn],
   );
 
+  const changeHiddenAgents = useCallback((next: Agent[]) => {
+    hiddenAgentsRef.current = next;
+    setHiddenAgents(next);
+    saveConfig({ hidden_task_agents: next });
+  }, []);
+  // Also follows an edit to config.toml: a CLI turned back on is scanned again.
+  useEffect(() => { void refreshTasks(true); }, [hiddenAgents, refreshTasks]);
+  const changeSidebarOptions = useCallback((options: SidebarOptions) => {
+    setSidebarOptions(options);
+    saveConfig({ sidebar_group_by_cli: options.groupByCli, sidebar_sort: options.sort });
+  }, []);
+  const unarchiveTask = useCallback((id: string) => {
+    setTaskMeta((current) => {
+      const next = unarchive(current, id);
+      if (next !== current) saveTaskMeta(next);
+      return next;
+    });
+  }, []);
+
   const send = useCallback(
-    async (prompt: string, attachments: Attachment[]) => {
+    async (prompt: string, attachments: Attachment[], alternate = false) => {
       if (selection.kind === 'settings') return;
       if (selection.kind === 'task') {
+        // While a turn runs, the send key queues the message and the other shortcut adds it to the
+        // running turn, as in the reference and Codex App.
+        const appendToTurn = turnAppenders.current.get(selection.id);
+        if (appendToTurn && alternate) {
+          try {
+            await steerTurn(selectedAgent, selection.id, prompt, attachments);
+            const added = userItemFor(prompt, attachments, `live-user-${crypto.randomUUID()}`);
+            appendToTurn(added.type === 'user' ? { ...added, steered: true } : added);
+            return;
+          } catch (error) {
+            // The turn ended in the meantime: the message waits in the queue like any other.
+            if (String(error) !== NO_ACTIVE_TURN) throw error;
+          }
+        }
         const options = {
           ...turnOptions(prefs, info.models),
           ...(selectedAgent === 'pi' ? { permissionMode: null } : {}),
@@ -702,6 +836,31 @@ export function App() {
     },
     [selection, settings.conversationDir, startNewTurn, prefs, info.models, selectedAgent, overriddenWriters, updateQueue],
   );
+  /** A queued message moved into the running turn, or, with none running, sent first and resumed. */
+  const steerQueued = async (taskId: string, entry: QueuedMessage) => {
+    const appendToTurn = turnAppenders.current.get(taskId);
+    if (appendToTurn) {
+      try {
+        const accepted = await steerQueuedTurn(taskId, entry.id);
+        updateQueue(accepted.queue);
+        const added = userItemFor(accepted.entry.prompt, accepted.entry.attachments, `live-user-${crypto.randomUUID()}`);
+        appendToTurn(added.type === 'user' ? { ...added, steered: true } : added);
+        return;
+      } catch (error) {
+        if (String(error) !== NO_ACTIVE_TURN) throw error;
+      }
+    }
+    updateQueue(await reorderQueuedTurn(taskId, entry.id, 0));
+    updateQueue(await resumeQueue(taskId));
+  };
+  steerFallback.current = (agent, taskId, prompt) => {
+    enqueueTurn(agent, taskId, prompt, [], turnOptions(taskPreferences(allPrefs[agent], nativeModels[taskId], chosenPrefs[taskId], sessionModes[taskId]), infos[agent].models))
+      .then((queue) => {
+        updateQueue(queue);
+        setNotices((current) => ({ ...current, [taskId]: { text: t('steerQueued'), isError: false } }));
+      })
+      .catch((error) => setNotices((current) => ({ ...current, [taskId]: { text: t('queueFailed', { error: String(error) }), isError: true } })));
+  };
 
   const answer = useCallback(
     (taskId: string, requestId: string, decision: Decision) => {
@@ -730,8 +889,11 @@ export function App() {
     setAllPrefs((current) => ({ ...current, [agent]: next }));
     savePrefsFor(agent, next);
   }, []);
-  const changePrefs = (next: TurnPrefs) => changePrefsFor(selectedAgent, next);
-  const otherAgents = (['claude', 'codex', 'pi'] as const).filter((agent) => agent !== newTaskAgent);
+  const changePrefs = (next: TurnPrefs) => {
+    if (selectedId) setChosenPrefs((current) => ({ ...current, [selectedId]: next }));
+    else changePrefsFor(selectedAgent, next);
+  };
+  const otherAgents = (['claude', 'codex', 'pi'] as const).filter((agent) => agent !== startAgent && !hiddenAgents.includes(agent));
 
   const running = useMemo(() => new Set(Object.keys(live)), [live]);
   const external = useMemo(() => new Map(writers.map((writer) => [writer.taskId, writer.isBusy])), [writers]);
@@ -740,21 +902,34 @@ export function App() {
     [pending],
   );
   const selectedTask = tasks?.find((task) => task.id === selectedId);
-  // Opening a task reads it.
+  // A selected task is read only while the user can actually see the window.
   useEffect(() => {
-    if (selectedId) changeUnread((current) => current.includes(selectedId) ? current.filter((id) => id !== selectedId) : current);
+    const read = () => {
+      if (selectedId && document.hasFocus()) changeUnread((current) => current.includes(selectedId) ? current.filter((id) => id !== selectedId) : current);
+    };
+    read();
+    window.addEventListener('focus', read);
+    return () => window.removeEventListener('focus', read);
   }, [selectedId, changeUnread]);
   const unread = useMemo(() => new Set(unreadTasks), [unreadTasks]);
+  const badgeCount = useMemo(() => {
+    const visible = (tasks ?? []).filter((task) => !hiddenAgents.includes(task.agent)).map(({ id }) => id);
+    return attentionTaskCount(unreadTasks, waiting, [...visible, ...Object.keys(live)], taskMeta.archived);
+  }, [tasks, hiddenAgents, unreadTasks, waiting, live, taskMeta.archived]);
+  useEffect(() => { void updateAppBadge(badgeCount).catch(console.error); }, [badgeCount]);
   const menuTask = menuAnchor ? tasks?.find((task) => task.id === menuAnchor.id) : undefined;
   const items = useMemo(() => {
     if (!selectedId) return [];
-    const all: Item[] = [...history, ...(live[selectedId] ?? [])];
+    const all = withTurnFailures([...historyBeforeLiveTurn(history, live[selectedId]), ...(live[selectedId] ?? [])], turnFailures[selectedId] ?? []);
     // Claude records a stop in its file. The others do not, so this window remembers it.
     if (stoppedTasks.has(selectedId) && all.at(-1)?.type !== 'notice') {
       all.push({ type: 'notice', id: `stopped-${selectedId}`, text: t('interrupted') });
     }
     return all;
-  }, [history, live, selectedId, stoppedTasks]);
+  }, [history, live, selectedId, stoppedTasks, turnFailures]);
+  const composerInputHistory = useRef<readonly string[]>([]);
+  const inputHistoryItems = loadedId === selectedId ? items : selectedId ? live[selectedId] ?? [] : [];
+  composerInputHistory.current = deriveInputHistory(inputHistoryItems, composerInputHistory.current);
   const selectedQueue = selectedId ? queues[selectedId] : undefined;
   const editingEntry = queueEdit?.taskId === selectedId ? queueEdit.entry : undefined;
   const composerPrefs: TurnPrefs = editingEntry ? {
@@ -762,7 +937,8 @@ export function App() {
     effort: editingEntry.options.effort,
     permissionMode: (editingEntry.options.permissionMode ?? 'ask') as TurnPrefs['permissionMode'],
   } : prefs;
-  const notice = selectedId ? notices[selectedId] ?? (selectedQueue?.error ? { text: selectedQueue.error, isError: true } : undefined) : undefined;
+  const queuedErrorInTimeline = selectedQueue?.error && items.some((item) => item.type === 'error' && item.text === selectedQueue.error);
+  const notice = selectedId ? notices[selectedId] ?? (selectedQueue?.error && !queuedErrorInTimeline ? { text: selectedQueue.error, isError: true } : undefined) : undefined;
   const isRunning = selectedId ? running.has(selectedId) : false;
   const selectedPending = selectedId ? pending[selectedId]?.[0] : undefined;
   const taskCwd = selectedTask?.cwd ?? (selectedId ? newTaskCwds[selectedId] : null) ?? null;
@@ -791,6 +967,27 @@ export function App() {
       ? CONVERSATION_CWD
       : groupRoot(selectedTask.cwd, extraProjects)
     : null;
+
+  // An archived task leaves the sidebar, so the page it was on gives way to a new task there.
+  const isSelectedArchived = selectedId !== null && taskMeta.archived.includes(selectedId);
+  useEffect(() => {
+    if (isSelectedArchived) setSelection({ kind: 'new', cwd: homeOfSelected ?? newTaskCwd ?? null });
+  }, [isSelectedArchived]);
+
+  const archivedGroups = useMemo((): ArchivedGroup[] => {
+    const groups = new Map<string, ArchivedGroup>();
+    const byId = new Map((tasks ?? []).map((task) => [task.id, task]));
+    for (const id of taskMeta.archived) {
+      const task = byId.get(id);
+      if (!task) continue;
+      const name = isConversationCwd(task.cwd) ? t('conversations') : projectName(groupRoot(task.cwd, extraProjects));
+      const group = groups.get(name) ?? { name, tasks: [] };
+      group.tasks.push({ id, title: taskTitle(taskMeta, task), agent: task.agent, updatedAtMs: task.updatedAtMs });
+      groups.set(name, group);
+    }
+    for (const group of groups.values()) group.tasks.sort((a, b) => b.updatedAtMs - a.updatedAtMs);
+    return [...groups.values()];
+  }, [tasks, taskMeta, isConversationCwd, extraProjects]);
 
   useEffect(() => {
     if (selection.kind === 'new' && !selection.cwd && newTaskCwd) {
@@ -842,6 +1039,7 @@ export function App() {
 
   // When another process stops working on the open task, show what it wrote.
   const selectedWriter = selectedId ? writers.find((writer) => writer.taskId === selectedId) : undefined;
+  const isTaskRunning = isRunning || Boolean(selectedWriter?.isBusy);
   const isHeldByWriter = Boolean(
     selectedId && selectedWriter && !(selectedWriter.canOverride && overriddenWriters.has(selectedId)),
   );
@@ -868,9 +1066,7 @@ export function App() {
       turn.onEvent(event);
     }).catch((error) => {
       if (!started) { reject(error); return; }
-      setNotices((current) => ({ ...current, [id]: { text: t('turnFailed', { error: String(error) }), isError: true } }));
-      setLive(({ [id]: _removed, ...rest }) => rest);
-      clearTurn(id);
+      turn.onEvent({ type: 'finished', isError: true, cancelled: false, message: String(error) });
     });
   }), [selectedId, prefs, info.models, createTurnHandler, clearTurn]);
   const wasBusyElsewhere = useRef<{ id: string | null; isBusy: boolean; isOpen: boolean }>({ id: null, isBusy: false, isOpen: false });
@@ -948,6 +1144,25 @@ export function App() {
     updateTray(summaryForTray).catch(console.error);
   }, [summaryForTray]);
 
+  // A window that has reset starts from a new figure, which only the CLI knows.
+  useEffect(() => {
+    for (const agent of ['claude', 'codex', 'pi'] as const) {
+      if (usageExpired(infos[agent].usage, usageClock) && usageClock - usageReadAt.current[agent] >= USAGE_STALE_MS) refreshInfo(agent);
+    }
+  }, [infos, usageClock, refreshInfo]);
+  const infosRef = useRef(infos);
+  infosRef.current = infos;
+  useEffect(() => {
+    const unlisten = onTrayPanelOpened(() => {
+      const now = Date.now();
+      setUsageClock(now);
+      for (const agent of ['claude', 'codex', 'pi'] as const) {
+        if (infosRef.current[agent].usage && now - usageReadAt.current[agent] >= USAGE_STALE_MS) refreshInfo(agent);
+      }
+    });
+    return () => { void unlisten.then((stop) => stop()); };
+  }, [refreshInfo]);
+
   useEffect(() => {
     let refreshing = false;
     const unlisten = onTrayRefresh(() => {
@@ -996,7 +1211,11 @@ export function App() {
     const previousTitle = taskMetaRef.current.titles[id];
     setTitleErrors(({ [id]: _removed, ...rest }) => rest);
     try {
-      const title = await generateTaskTitle(agent, id, titleOptions(allPrefs[agent], infos[agent].models));
+      const native = nativeModels[id] === undefined && !chosenPrefs[id]
+        ? (await readTask(agent, id)).modelSelection
+        : nativeModels[id];
+      const taskPrefs = taskPreferences(allPrefs[agent], native, chosenPrefs[id], sessionModes[id]);
+      const title = await generateTaskTitle(agent, id, titleOptions(taskPrefs, infos[agent].models));
       if (taskMetaRef.current.titles[id] !== previousTitle) return;
       await renameNativeTask(agent, id, title);
       const updated = (tasks: TaskSummary[]) => tasks.map((task) => task.id === id ? { ...task, title } : task);
@@ -1015,7 +1234,7 @@ export function App() {
       titleJobs.current.delete(id);
       setGeneratingTitles(new Set(titleJobs.current));
     }
-  }, [allPrefs, infos, refreshTasks]);
+  }, [allPrefs, nativeModels, chosenPrefs, sessionModes, infos, refreshTasks]);
 
   const changeExtraProjects = useCallback((next: string[]) => {
     setExtraProjects(next);
@@ -1101,6 +1320,12 @@ export function App() {
           extraProjects={extraProjects}
           onExtraProjectsChange={changeExtraProjects}
           defaultConversationDir={defaultConversationRoot}
+          sidebarOptions={sidebarOptions}
+          onSidebarOptionsChange={changeSidebarOptions}
+          archivedGroups={archivedGroups}
+          hiddenAgents={hiddenAgents}
+          onHiddenAgentsChange={changeHiddenAgents}
+          onUnarchive={unarchiveTask}
           version={version}
           onBack={() => setNav(goBack)}
         />
@@ -1120,7 +1345,8 @@ export function App() {
       />
       {sidebarCollapsed ? null : (
         <Sidebar
-          tasks={tasks ?? []}
+          tasks={sidebarTasks}
+          pendingTaskIds={pendingTaskIds}
           loaded={tasks !== null}
           selectedId={selectedId}
           running={running}
@@ -1132,10 +1358,9 @@ export function App() {
           conversationRoots={conversationRoots}
           pinnedProjects={pinnedProjects}
           options={sidebarOptions}
-          menuTaskId={menuAnchor?.id ?? null}
+          menuAnchor={menuAnchor}
           generatingTitles={generatingTitles}
           onGenerateTitle={(task) => void generateTitle(task.agent, task.id)}
-          onOptionsChange={(options) => { setSidebarOptions(options); saveConfig({ sidebar_group_by_cli: options.groupByCli, sidebar_sort: options.sort }); }}
           onPinnedProjectsChange={(paths) => { setPinnedProjects(paths); saveViewState({ pinnedProjects: paths }); }}
           projectOrder={projectOrder}
           onProjectOrderChange={(order) => {
@@ -1170,13 +1395,18 @@ export function App() {
           } ${selectedId ? 'border-b border-[hsl(var(--titlebar-border))]' : ''}`}
         >
           <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-2">
-            <span data-tauri-drag-region className="min-w-0 truncate text-13 font-medium">
+            {selectedId ? <span data-tauri-drag-region role="img"
+              aria-label={isTaskRunning ? `${AGENT_NAMES[selectedAgent]} · ${t('running')}` : AGENT_NAMES[selectedAgent]}
+              data-tooltip={AGENT_NAMES[selectedAgent]}
+              className={`flex size-4 shrink-0 items-center justify-center ${isTaskRunning ? 'task-running text-[var(--status-bar-accent)]' : 'text-[var(--text-secondary)]'}`}>
+              <AgentMark agent={selectedAgent} size={14} />
+            </span> : null}
+            <span data-tauri-drag-region className="min-w-0 truncate text-sm font-medium">
               {selectedTask ? taskTitle(taskMeta, selectedTask) : selectedId ? (draftTitles[selectedId] ?? '') : ''}
             </span>
-            {selectedId ? <span data-tauri-drag-region role="img" aria-label={AGENT_NAMES[selectedAgent]} title={AGENT_NAMES[selectedAgent]} className="shrink-0 text-[var(--text-secondary)]"><AgentMark agent={selectedAgent} size={14} /></span> : null}
           </div>
-          {selectedTask ? <TaskHeaderActions task={selectedTask} menuOpen={menuAnchor?.id === selectedTask.id}
-            onMenu={(bounds) => setMenuAnchor(menuAnchor ? null : { id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 })}
+          {selectedTask ? <TaskHeaderActions task={selectedTask} menuAnchor={menuAnchor}
+            onMenu={(bounds) => setMenuAnchor((current) => current?.source === 'header' && current.id === selectedTask.id ? null : { source: 'header', id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 })}
             onError={(error) => setNotices((current) => ({ ...current, [selectedTask.id]: { text: String(error), isError: true } }))} /> : null}
         </header>
         {selectedId ? (
@@ -1186,7 +1416,8 @@ export function App() {
                 taskId={selectedId}
                 agent={selectedAgent}
                 items={items}
-                isRunning={isRunning}
+                // A turn still going in a terminal is not over yet; its length is only known once it ends.
+                isRunning={isTaskRunning}
                 editableId={editableId}
                 onEditLast={editLast}
                 sendWithCmdEnter={settings.sendWithCmdEnter}
@@ -1215,7 +1446,8 @@ export function App() {
                 activity={selectedProgress.activity}
               />
             ) : null}
-            {!isRunning && selectedQueue?.paused && selectedQueue.entries.length > 0 ? (
+            {/* While another program holds the task, its notice already says why nothing is sent: one row, not two. */}
+            {!isRunning && !isHeldByWriter && selectedQueue?.paused && selectedQueue.entries.length > 0 ? (
               <QueuePauseStatus {...remoteStatus} queue={selectedQueue} onChange={updateQueue}
                 onError={(error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } }))} />
             ) : null}
@@ -1242,10 +1474,15 @@ export function App() {
             <div>
               <Composer
                 key={selectedId}
+                draftKey={selectedId}
+                inputHistory={composerInputHistory.current}
                 running={isRunning}
-                queueing={isRunning || Boolean(selectedQueue?.entries.length)}
+                // A paused queue does not hold back a new message: with nothing running it is sent at once.
+                queueing={isRunning || Boolean(selectedQueue?.entries.length && !selectedQueue.paused)}
                 disabled={isHeldByWriter || !queuesLoaded}
-                placeholder={t('placeholderContinue')}
+                placeholder={isRunning
+                  ? t('placeholderQueue', settings.sendWithCmdEnter ? { send: '⌘↵', key: '⇧⌘↵' } : { send: '↵', key: '⌘↵' })
+                  : t('placeholderContinue')}
                 sendWithCmdEnter={settings.sendWithCmdEnter}
                 editing={editingEntry}
                 onSaveEdit={saveQueueEdit}
@@ -1260,6 +1497,8 @@ export function App() {
                   <Suspense fallback={null}>
                     <PendingQueuePanel key={selectedId} queue={selectedQueue} editingId={editingEntry?.id}
                       onEdit={(entry) => void beginQueueEdit(entry)} onChange={updateQueue}
+                      running={turnAppenders.current.has(selectedId)}
+                      onSteer={(entry) => void steerQueued(selectedId, entry).catch((error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } })))}
                       onError={(error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } }))} />
                   </Suspense>
                 ) : null}
@@ -1294,7 +1533,7 @@ export function App() {
                   {branch ? (
                     <BranchPill
                       branch={branch}
-                      canUseWorktree={newTaskAgent === 'claude'}
+                      canUseWorktree={startAgent === 'claude'}
                       worktree={useWorktree}
                       onWorktreeChange={setUseWorktree}
                     />
@@ -1304,6 +1543,7 @@ export function App() {
               {hasRemoteNotice ? <ComposerStatusRow {...remoteStatus} /> : null}
               <Composer
                 key="new"
+                draftKey="new"
                 variant="new"
                 running={false}
                 disabled={!newTaskCwd || !queuesLoaded}
@@ -1372,7 +1612,7 @@ export function App() {
 
 function userItemFor(prompt: string, attachments: Attachment[], id: string): Item {
   return prompt === COMPACT_COMMAND ? { type: 'compaction', id } : {
-    type: 'user', id, text: prompt,
+    type: 'user', id, text: prompt, at: Date.now(),
     images: attachments.flatMap((attachment) => attachment.preview ?? []),
     files: attachments.filter((attachment) => attachment.kind === 'file').map(({ name, path }) => ({ name, path })),
   };
@@ -1385,6 +1625,7 @@ interface TurnSource {
   prompt: string;
   userItem: Item;
   selectOnStart: boolean;
+  initialPrefs?: TurnPrefs;
 }
 
 function WriterNotice({ writer, onSendAnyway }: { writer: ExternalWriter; onSendAnyway: () => void }) {

@@ -37,17 +37,35 @@ pub struct Context {
     pub conversation_roots: Vec<String>,
     pub conversation_dir: Option<String>,
     pub archived: Vec<String>,
+    /// CLIs whose tasks stay out of every list, as named in config.
+    pub hidden_agents: Vec<String>,
     pub titles: HashMap<String, String>,
     pub language: Option<String>,
 }
 
 pub(crate) struct RunRecord {
     agent: Agent,
+    prompt: String,
     task_id: Option<String>,
     started_at_ms: u64,
     started: Instant,
     events: Vec<TurnEvent>,
     sink: TurnSink,
+}
+
+impl RunRecord {
+    fn event_payload(&self, run_id: &str, seq: u64, event: &TurnEvent) -> Value {
+        let mut payload = json!({
+            "runId": run_id, "taskId": self.task_id, "agent": self.agent,
+            "startedAtMs": self.started_at_ms, "elapsedMs": self.started.elapsed().as_millis() as u64,
+            "seq": seq, "event": event,
+        });
+        // Lifecycle boundaries carry the input; streaming deltas keep their compact payload.
+        if matches!(event, TurnEvent::Started { .. } | TurnEvent::Finished { .. }) {
+            payload["prompt"] = json!(self.prompt);
+        }
+        payload
+    }
 }
 
 /// Debug builds can write the pairing text to a file, because a test cannot read it off the screen.
@@ -82,6 +100,25 @@ pub enum LinkStatus {
     Failed,
 }
 
+#[derive(Clone)]
+struct ConnectionStatus {
+    status: LinkStatus,
+    error: Option<String>,
+    relay_version: Option<String>,
+}
+
+impl Default for ConnectionStatus {
+    fn default() -> Self { Self { status: LinkStatus::Off, error: None, relay_version: None } }
+}
+
+impl ConnectionStatus {
+    fn set(&mut self, status: LinkStatus, error: Option<String>) {
+        if status != LinkStatus::Online { self.relay_version = None; }
+        self.status = status;
+        self.error = error;
+    }
+}
+
 pub(crate) enum Outgoing {
     Frame(Value),
     BeginPairing { pairing: Pairing, reply: oneshot::Sender<Result<(), String>> },
@@ -100,10 +137,9 @@ pub(crate) struct Inner {
     pub runs: Mutex<HashMap<String, RunRecord>>,
     pub online: Mutex<HashMap<String, String>>,
     pub info_cache: tokio::sync::Mutex<HashMap<&'static str, (std::time::Instant, Value)>>,
-    status: Mutex<(LinkStatus, Option<String>)>,
+    status: Mutex<ConnectionStatus>,
     sender: Mutex<Option<mpsc::UnboundedSender<Outgoing>>>,
     task: Mutex<Option<JoinHandle<()>>>,
-    next_run: AtomicU64,
     /// Numbers every turn event, so a phone can tell what a snapshot already holds.
     seq: AtomicU64,
 }
@@ -134,6 +170,7 @@ pub struct RemoteState {
     enabled: bool,
     relay_url: String,
     has_host_token: bool,
+    relay_version: Option<String>,
     status: LinkStatus,
     error: Option<String>,
     pairing: Option<PairingView>,
@@ -183,10 +220,9 @@ impl Remote {
             runs: Mutex::default(),
             online: Mutex::default(),
             info_cache: tokio::sync::Mutex::default(),
-            status: Mutex::new((LinkStatus::Off, None)),
+            status: Mutex::default(),
             sender: Mutex::default(),
             task: Mutex::default(),
-            next_run: AtomicU64::new(1),
             seq: AtomicU64::new(0),
         }));
         if writable { remote.restart_link(); }
@@ -195,7 +231,7 @@ impl Remote {
 
     pub fn state(&self) -> RemoteState {
         let config = self.0.lock_config();
-        let (status, error) = self.0.status.lock().map_or((LinkStatus::Off, None), |status| status.clone());
+        let ConnectionStatus { status, error, relay_version } = self.0.status.lock().map_or_else(|_| ConnectionStatus::default(), |status| status.clone());
         let online = self.0.online.lock().map(|online| online.clone()).unwrap_or_default();
         let pairing = self.0.pairing.lock().ok().and_then(|pairing| {
             pairing.as_ref().filter(|pairing| pairing.is_live()).map(|pairing| PairingView {
@@ -208,6 +244,7 @@ impl Remote {
             enabled: config.enabled,
             relay_url: config.relay_url.clone(),
             has_host_token: !config.host_token.is_empty(),
+            relay_version: matches!(status, LinkStatus::Online).then_some(relay_version).flatten(),
             status,
             error,
             pairing,
@@ -254,7 +291,7 @@ impl Remote {
 
     pub async fn begin_pairing(&self) -> Result<(), String> {
         let config = self.0.lock_config().clone();
-        if self.0.status.lock().map(|status| status.0.clone()).ok() != Some(LinkStatus::Online) {
+        if self.0.status.lock().map(|status| status.status.clone()).ok() != Some(LinkStatus::Online) {
             return Err("Not connected to the relay".to_owned());
         }
         let token = crypto::random_bytes::<32>();
@@ -310,11 +347,11 @@ impl Remote {
 
     /// Registers a turn so phones see it, whichever side started it. Every event then goes through
     /// the returned sink. Call `end_run` when the turn's function returns.
-    pub fn track(&self, agent: Agent, sink: TurnSink) -> (String, TurnSink) {
-        let run_id = format!("run-{}", self.0.next_run.fetch_add(1, Ordering::Relaxed));
+    pub fn track(&self, agent: Agent, task_id: Option<String>, prompt: String, sink: TurnSink) -> (String, TurnSink) {
+        let run_id = format!("run-{}", uuid::Uuid::new_v4());
         if let Ok(mut runs) = self.0.runs.lock() {
             runs.insert(run_id.clone(), RunRecord {
-                agent, task_id: None, started_at_ms: now_ms(), started: Instant::now(), events: Vec::new(), sink,
+                agent, prompt, task_id, started_at_ms: now_ms(), started: Instant::now(), events: Vec::new(), sink,
             });
         }
         let inner = self.0.clone();
@@ -324,13 +361,14 @@ impl Remote {
 
     /// A turn that failed before it could report that itself still has to end on the phones.
     pub fn end_run(&self, run_id: &str, result: &Result<(), String>) {
-        let record = self.0.runs.lock().ok().and_then(|mut runs| runs.remove(run_id));
+        let Ok(mut runs) = self.0.runs.lock() else { return; };
+        let record = runs.remove(run_id);
         let (Some(record), Err(message)) = (record, result) else {
             return;
         };
         let event = TurnEvent::Finished { is_error: true, cancelled: false, message: Some(message.clone()) };
         let seq = self.0.seq.fetch_add(1, Ordering::SeqCst) + 1;
-        self.0.broadcast_turn(run_id, record.task_id.as_deref(), record.started_at_ms, record.started.elapsed(), seq, &event);
+        self.0.broadcast_turn(run_id, &record, seq, &event);
         self.0.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
     }
 
@@ -394,7 +432,7 @@ impl Inner {
 
     pub(crate) fn set_status(&self, status: LinkStatus, error: Option<String>) {
         if let Ok(mut current) = self.status.lock() {
-            *current = (status, error);
+            current.set(status, error);
         }
         self.notify_changed();
     }
@@ -410,16 +448,13 @@ impl Inner {
         }
     }
 
-    fn broadcast_turn(&self, run_id: &str, task_id: Option<&str>, started_at_ms: u64, elapsed: Duration, seq: u64, event: &TurnEvent) {
-        self.send(Outgoing::Broadcast(json!({
-            "ev": "turn.event",
-            "p": {"runId": run_id, "taskId": task_id, "startedAtMs": started_at_ms, "elapsedMs": elapsed.as_millis() as u64, "seq": seq, "event": event},
-        })));
+    fn broadcast_turn(&self, run_id: &str, record: &RunRecord, seq: u64, event: &TurnEvent) {
+        self.send(Outgoing::Broadcast(json!({"ev": "turn.event", "p": record.event_payload(run_id, seq, event)})));
     }
 
     fn deliver(&self, run_id: &str, event: TurnEvent) -> Result<(), String> {
         // Numbered under the lock, so a snapshot's number splits the events exactly.
-        let (task_id, started_at_ms, elapsed, seq, sink) = {
+        let sink = {
             let mut runs = self.runs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             // A request can settle concurrently with the turn's final event.
             let Some(record) = runs.get_mut(run_id) else {
@@ -430,13 +465,13 @@ impl Inner {
             }
             push_event(&mut record.events, &event);
             let seq = self.seq.fetch_add(1, Ordering::SeqCst) + 1;
-            let result = (record.task_id.clone(), record.started_at_ms, record.started.elapsed(), seq, record.sink.clone());
+            self.broadcast_turn(run_id, record, seq, &event);
+            let sink = record.sink.clone();
             if matches!(event, TurnEvent::Finished { .. }) {
                 runs.remove(run_id);
             }
-            result
+            sink
         };
-        self.broadcast_turn(run_id, task_id.as_deref(), started_at_ms, elapsed, seq, &event);
         if matches!(event, TurnEvent::Started { .. } | TurnEvent::Finished { .. }) {
             self.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
         }
@@ -451,7 +486,7 @@ impl Inner {
         let list: Vec<Value> = runs
             .iter()
             .map(|(run_id, record)| {
-                json!({"runId": run_id, "taskId": record.task_id, "agent": record.agent,
+                json!({"runId": run_id, "taskId": record.task_id, "agent": record.agent, "prompt": record.prompt,
                     "startedAtMs": record.started_at_ms, "elapsedMs": record.started.elapsed().as_millis() as u64, "events": record.events})
             })
             .collect();
@@ -462,6 +497,17 @@ impl Inner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_version_is_retained_online_and_cleared_on_disconnect_or_reconnect() {
+        for next in [LinkStatus::Off, LinkStatus::Connecting, LinkStatus::Failed] {
+            let mut connection = ConnectionStatus { status: LinkStatus::Connecting, error: None, relay_version: Some("0.1.2026111101".into()) };
+            connection.set(LinkStatus::Online, None);
+            assert_eq!(connection.relay_version.as_deref(), Some("0.1.2026111101"));
+            connection.set(next, None);
+            assert!(connection.relay_version.is_none());
+        }
+    }
 
     #[test]
     fn pairing_is_available_after_registration_and_before_its_monotonic_deadline() {
@@ -484,6 +530,23 @@ mod tests {
         push_event(&mut events, &TurnEvent::ThinkingDelta { text: "x".into() });
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], TurnEvent::TextDelta { text } if text == "hello"));
+    }
+
+    #[test]
+    fn lifecycle_frames_identify_the_actual_agent_input_and_task_before_startup_can_fail() {
+        let record = RunRecord {
+            agent: Agent::Pi, task_id: Some("task".into()), prompt: "continue".into(),
+            started_at_ms: 100, started: Instant::now(), events: vec![],
+            sink: TurnSink::new(|_| Ok(())),
+        };
+        let failed = record.event_payload("run", 2, &TurnEvent::Finished { is_error: true, cancelled: false, message: Some("startup failed".into()) });
+        assert_eq!(failed["agent"], "pi");
+        assert_eq!(failed["taskId"], "task");
+        assert_eq!(failed["prompt"], "continue");
+        assert_eq!(failed["seq"], 2);
+        let delta = record.event_payload("run", 1, &TurnEvent::TextDelta { text: "part".into() });
+        assert!(delta.get("prompt").is_none());
+        assert_eq!(delta["agent"], "pi");
     }
 
     #[test]

@@ -15,7 +15,7 @@ const connectionHint = (clients: RemoteClient[]) =>
 export function RemoteAccessIndicator({ clients, onExpand }: { clients: RemoteClient[]; onExpand: () => void }) {
   return (
     <button type="button" onClick={onExpand} aria-label={t('remoteExpandNotice')}
-      title={`${connectionLabel(clients)}\n${connectionHint(clients)}`}
+      data-tooltip={`${connectionLabel(clients)}\n${connectionHint(clients)}`}
       className={`${ACTION} relative w-5 px-0 before:absolute before:-inset-1 before:content-['']`}>
       <span aria-hidden className="remote-access-dot h-2 w-2 rounded-full bg-[var(--status-bar-accent)]" />
     </button>
@@ -32,14 +32,14 @@ export function RemoteAccessNotice({ clients, error, onRetry, onManage, onCollap
 }) {
   if (!clients.length && !error) return null;
   if (error) return (
-    <div role="alert" title={error} className="flex h-7 min-w-0 max-w-full items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 text-12">
+    <div role="alert" data-tooltip={error} className="flex h-7 min-w-0 max-w-full items-center gap-2 rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 text-12">
       <AlertCircle size={13} aria-hidden className="shrink-0 text-[var(--text-danger)]" />
       <span className="min-w-0 truncate text-[var(--text-secondary)]">{t('remotePresenceFailed')}</span>
       <button type="button" onClick={onRetry} className={ACTION}>{t('remoteRefresh')}</button>
     </div>
   );
   return (
-    <div data-remote-access="expanded" title={connectionHint(clients)}
+    <div data-remote-access="expanded" data-tooltip={connectionHint(clients)}
       className="flex h-7 min-w-0 max-w-full select-none items-center gap-2 overflow-hidden rounded-full border border-[var(--border-default)] bg-[var(--surface-elevated)] px-3 py-0">
       <span aria-hidden className="remote-access-dot h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--status-bar-accent)]" />
       <span role="status" className="min-w-0 truncate text-12 text-[var(--text-primary)]">{connectionLabel(clients)}</span>
@@ -47,7 +47,7 @@ export function RemoteAccessNotice({ clients, error, onRetry, onManage, onCollap
         {clients.length > 1 ? <Eye size={13} aria-hidden /> : <MonitorOff size={13} aria-hidden />}
         {t(clients.length > 1 ? 'remoteManageDevices' : 'remoteRevokeAccess')}
       </button>
-      <button type="button" onClick={onCollapse} aria-label={t('remoteCollapseNotice')} title={t('remoteCollapseNotice')}
+      <button type="button" onClick={onCollapse} aria-label={t('remoteCollapseNotice')} data-tooltip={t('remoteCollapseNotice')}
         className={`${ACTION} w-5 px-0`}><X size={13} aria-hidden /></button>
     </div>
   );

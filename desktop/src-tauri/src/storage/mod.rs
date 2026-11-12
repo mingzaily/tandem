@@ -159,6 +159,9 @@ impl Store {
             "state" => self.update_state(&mut data, patch),
             _ => Err("存储目标使用 config 或 state".into()),
         };
+        if let Err(error) = &result {
+            crate::diagnostics::error("storage", format!("saving {target} failed: {error}"));
+        }
         data.write_error = result
             .as_ref()
             .err()
@@ -223,6 +226,7 @@ impl Store {
                 data.write_error = None;
             }
             Err(error) => {
+                crate::diagnostics::error("config", format!("config.toml rejected: {error}"));
                 data.config_error =
                     Some(format!("{error}。继续使用上次有效配置，修正文件后自动生效"))
             }
@@ -260,6 +264,7 @@ impl Store {
                 config.conversation_dir.clone()
             }),
             archived: data.state.task_meta.archived.clone(),
+            hidden_agents: config.hidden_task_agents.clone(),
             titles: data.state.task_meta.titles.clone(),
             language: match config.language.as_str() {
                 "system" => data.system_language.clone(),
@@ -370,7 +375,7 @@ pub fn ensure_gitignore(root: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?
         .unwrap_or_default();
     let original = text.clone();
-    for entry in ["/remote.json", "/cache/", "/.storage.lock", ".tmp*"] {
+    for entry in ["/remote.json", "/cache/", "/logs/", "/.storage.lock", ".tmp*"] {
         if !text.lines().any(|line| line == entry) {
             if !text.is_empty() && !text.ends_with('\n') {
                 text.push('\n');
@@ -394,6 +399,9 @@ pub fn publish(app: &AppHandle) {
     );
     app.state::<crate::remote::Remote>()
         .update_context(store.remote_context());
+    crate::notifications::refresh(app);
+    crate::updater::configuration_changed(app);
+    crate::diagnostics::set_verbose(snapshot.config.debug_log);
     let _ = app.emit(CHANGED, snapshot);
 }
 

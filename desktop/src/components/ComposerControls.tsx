@@ -18,6 +18,7 @@ import type { Agent, ModelOption, UsageWindows } from '../lib/api';
 import {
   contextPercent,
   describeUsage,
+  selectedModel,
   formatTokens,
   type PermissionMode,
   type TurnPrefs,
@@ -57,9 +58,6 @@ interface SelectProps {
   onChange: (prefs: TurnPrefs) => void;
 }
 
-const selectedModel = (prefs: TurnPrefs, models: ModelOption[]) =>
-  models.find((option) => option.value === (prefs.model ?? 'default'));
-
 const CODEX_HINTS: Partial<Record<PermissionMode, StringKey>> = {
   ask: 'modeAskHintCodex',
   auto: 'modeAutoHintCodex',
@@ -70,7 +68,7 @@ const CODEX_HINTS: Partial<Record<PermissionMode, StringKey>> = {
 export function PermissionSelect(props: SelectProps) {
   if (props.agent === 'pi') {
     return (
-      <span title={t('modePiHint')} className="inline-flex h-[30px] min-w-0 items-center gap-1 px-2.5 text-13 text-[var(--text-secondary)]">
+      <span data-tooltip={t('modePiHint')} className="inline-flex h-[30px] min-w-0 items-center gap-1 px-2.5 text-13 text-[var(--text-secondary)]">
         <Hand size={15} strokeWidth={1.8} aria-hidden className="shrink-0" />
         <span className="truncate">{t('modePi')}</span>
       </span>
@@ -138,7 +136,7 @@ function PermissionMenu({ agent, prefs, models, disabled, onChange }: SelectProp
                 <li key={mode.id} role="option" aria-selected={isSelected}>
                   <button
                     type="button"
-                    title={hintFor(mode)}
+                    data-tooltip={hintFor(mode)}
                     disabled={mode.id === 'auto' && autoUnavailable}
                     onClick={() => {
                       if (mode.id === 'bypassPermissions' && !isSelected) {
@@ -278,7 +276,7 @@ export function ProjectSelect({ value, options, onChange, onAddProject }: Projec
             <li key={cwd} role="option" aria-selected={cwd === value}>
               <button
                 type="button"
-                title={cwd}
+                data-tooltip={cwd}
                 onClick={() => {
                   onChange(cwd);
                   close();
@@ -323,11 +321,11 @@ export function BranchPill({ branch, canUseWorktree, worktree, onWorktreeChange 
   return (
     <span className="inline-flex h-[30px] min-w-0 max-w-[260px] items-center gap-1.5 rounded-full border border-[var(--create-agent-control-border)] bg-[var(--create-agent-control-bg)] px-3 text-12 font-medium text-[var(--create-agent-control-text)]">
       <GitBranch size={12} strokeWidth={2} aria-hidden className="shrink-0 text-[var(--create-agent-control-icon)]" />
-      <span title={branch} className="min-w-0 truncate">{branch}</span>
+      <span data-tooltip={branch} className="min-w-0 truncate">{branch}</span>
       {canUseWorktree ? (
         <>
           <span aria-hidden className="mx-0.5 h-3 w-px shrink-0 bg-[var(--create-agent-control-border)]" />
-          <label title={t('worktreeToggle')} className="flex shrink-0 cursor-pointer items-center gap-1.5">
+          <label data-tooltip={t('worktreeToggle')} className="flex shrink-0 cursor-pointer items-center gap-1.5">
             <input
               type="checkbox"
               aria-label={t('worktreeToggle')}
@@ -390,7 +388,9 @@ function ContextRing({ usedTokens, windowTokens, onCompact }: ContextProps) {
       title={t('contextRing', { used: formatTokens(usedTokens), total: formatTokens(windowTokens), percent: String(percent) })}
       width={300}
       align="right"
-      triggerClassName="!h-6 gap-1 !px-1.5 text-12 font-medium leading-none tabular-nums text-[var(--msg-tool-card-chevron)] hover:bg-[var(--surface-hover)]"
+      // The reference's ring: 20px, a 12px figure, no fill or border, dimmed on hover (`ContextCapacityRing.tsx`).
+      plainTrigger
+      triggerClassName="h-6 shrink-0 gap-1 text-12 font-medium leading-none tabular-nums text-[var(--msg-tool-card-chevron)] transition-opacity hover:opacity-75 active:opacity-60"
       bodyClassName="flex flex-col gap-3 p-4"
       trigger={
         <>
@@ -408,7 +408,7 @@ function ContextRing({ usedTokens, windowTokens, onCompact }: ContextProps) {
               strokeDashoffset={circumference * (1 - percent / 100)}
             />
           </svg>
-          {percent}%
+          <span style={{ color }}>{percent}%</span>
         </>
       }
     >
@@ -482,7 +482,7 @@ interface ComposerFooterProps {
 export function ComposerFooter({ cwd, label, usage, context, onCompact }: ComposerFooterProps) {
   return (
     <div className="mt-2 flex min-h-6 items-center justify-between gap-3 px-3">
-      <span title={cwd ?? undefined} className="flex min-w-0 items-center gap-1.5">
+      <span data-tooltip={cwd ?? undefined} className="flex min-w-0 items-center gap-1.5">
         {cwd ? (
           <>
             <Monitor size={12} aria-hidden className="shrink-0 text-[var(--workingdir-icon)]" />

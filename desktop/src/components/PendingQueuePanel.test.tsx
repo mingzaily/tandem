@@ -4,19 +4,35 @@ import { PendingQueuePanel } from './PendingQueuePanel';
 import type { TaskQueue } from '../lib/api';
 
 vi.hoisted(() => vi.stubGlobal('navigator', { language: 'zh-CN' }));
+vi.mock('@tanstack/react-virtual', () => ({
+  useVirtualizer: ({ count }: { count: number }) => ({
+    getTotalSize: () => 6 + count * 32,
+    getVirtualItems: () => Array.from({ length: count }, (_, index) => ({ key: index, index, start: 6 + index * 32 })),
+    measureElement: () => {}, scrollToIndex: () => {}, measurementsCache: [],
+  }),
+}));
+
 afterAll(() => vi.unstubAllGlobals());
 
 function render(count: number, paused: boolean) {
   const queue: TaskQueue = {
-    taskId: 'task', agent: 'claude', paused, error: null, revision: 1,
+    taskId: 'task', agent: 'claude', paused, pausedAfterRestart: false, error: null, revision: 1,
     entries: Array.from({ length: count }, (_, index) => ({
       id: String(index), prompt: '待发送', attachments: [], options: { model: null, effort: null, permissionMode: null },
     })),
   };
-  return renderToStaticMarkup(<PendingQueuePanel queue={queue} onEdit={() => {}} onChange={() => {}} onError={() => {}} />);
+  return renderToStaticMarkup(<PendingQueuePanel queue={queue} onEdit={() => {}} onChange={() => {}} onError={() => {}} running onSteer={() => {}} />);
 }
 
 describe('pending queue structure', () => {
+  it('keeps a queue icon and a same-position drag handle on every row', () => {
+    const html = render(3, false);
+    expect(html.match(/lucide-list-end/g)).toHaveLength(3);
+    expect(html.match(/lucide-grip-vertical/g)).toHaveLength(3);
+    expect(html).toContain('aria-label="移动第 1 条待发送消息"');
+    expect(html).toContain('aria-keyshortcuts="ArrowUp ArrowDown Home End"');
+  });
+
   it('keeps the pause explanation and continue action out of the input card', () => {
     const html = render(3, true);
     expect(html).toContain('role="list"');

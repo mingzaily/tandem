@@ -16,7 +16,7 @@ export function HomeSuggestions({ onSelect }: { onSelect: (prompt: string) => vo
         <button
           key={label}
           type="button"
-          title={t(prompt)}
+          data-tooltip={t(prompt)}
           onClick={() => onSelect(t(prompt))}
           className="inline-flex h-[38px] max-w-full items-center gap-2.5 rounded-full px-3 text-14 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-hover)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
         >

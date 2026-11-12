@@ -8,13 +8,14 @@ interface FloatingMenuProps {
   x: number;
   y: number;
   width?: number;
+  placement?: 'below' | 'above';
   label: string;
   onClose: () => void;
   children: ReactNode;
 }
 
 /** A menu that opens at a point. It leaves the sidebar's DOM, whose scrolling would clip it. */
-export function FloatingMenu({ x, y, width = 200, label, onClose, children }: FloatingMenuProps) {
+export function FloatingMenu({ x, y, width = 200, placement = 'below', label, onClose, children }: FloatingMenuProps) {
   const inheritedTree = useContext(MenuTree);
   const id = useId();
   const tree = inheritedTree ?? id;
@@ -26,9 +27,9 @@ export function FloatingMenu({ x, y, width = 200, label, onClose, children }: Fl
     const { offsetWidth, offsetHeight } = panel.current;
     setPosition({
       left: Math.max(WINDOW_MARGIN_PX, Math.min(x, window.innerWidth - offsetWidth - WINDOW_MARGIN_PX)),
-      top: Math.max(WINDOW_MARGIN_PX, Math.min(y, window.innerHeight - offsetHeight - WINDOW_MARGIN_PX)),
+      top: Math.max(WINDOW_MARGIN_PX, Math.min(placement === 'above' ? y - offsetHeight : y, window.innerHeight - offsetHeight - WINDOW_MARGIN_PX)),
     });
-  }, [x, y]);
+  }, [x, y, placement, children]);
 
   useEffect(() => {
     const closeOutside = (event: MouseEvent) => {

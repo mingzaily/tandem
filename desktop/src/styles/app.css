@@ -213,13 +213,94 @@
   background: var(--msg-scrollbar-hover);
 }
 
+/* Pointer fallback keeps the cursor stable across row buttons and the floating preview. */
+body.pending-queue-dragging,
+body.pending-queue-dragging *,
+body.sidebar-dragging,
+body.sidebar-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 .pending-queue-scroll::-webkit-scrollbar {
   width: 4px;
 }
-/* 4px list padding + 1px row border + 19px padding share the editor's 24px inset. */
-.pending-queue-row {
-  padding-left: 19px;
-  padding-right: 7px;
+.reply-actions {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-enter) var(--motion-ease-out);
+  transition-delay: var(--motion-enter);
+}
+.assistant-reply:hover > .reply-actions,
+.assistant-reply:focus-within > .reply-actions {
+  opacity: 1;
+  pointer-events: auto;
+  transition: none;
+}
+@media (hover: none) {
+  .reply-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reply-actions { transition: none; }
+}
+
+.composer-editor,
+.composer-code-mirror {
+  tab-size: 2;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.composer-code-backdrop {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.composer-code-mirror {
+  visibility: hidden;
+  padding-top: var(--space-3);
+  padding-bottom: var(--space-1);
+}
+.composer-code-surface {
+  position: absolute;
+  left: calc(var(--composer-content-inset) - var(--space-1_5));
+  right: calc(var(--composer-content-inset) - var(--space-1_5));
+  border-radius: var(--radius);
+  background: var(--msg-code-block-bg);
+}
+
+.composer-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--chat-input-border-focus);
+  opacity: 0;
+}
+.composer-resize-handle:hover::after,
+.composer-resize-handle:focus-visible::after { opacity: 0.65; }
+body.composer-resizing,
+body.composer-resizing * { cursor: ns-resize !important; user-select: none !important; }
+
+.composer-content-inset {
+  padding-inline: var(--composer-content-inset);
+}
+
+/* The queue keeps room for its handle independently of the editor's text inset. */
+.pending-queue-leading {
+  left: calc(var(--space-2) - var(--space-1));
+}
+.pending-queue-row,
+.pending-queue-more {
+  padding-left: calc(var(--queue-content-inset) - var(--space-1));
+  padding-right: var(--space-2);
 }
 .pending-queue-scroll::-webkit-scrollbar-thumb {
   border: none;

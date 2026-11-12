@@ -14,6 +14,13 @@ translucent_sidebar = true
 keep_in_menu_bar = true
 notify_when_done = true
 
+# 自动检查并下载更新；安装和重启始终由用户确认。间隔可选 1 / 6 / 12 / 24 小时。
+auto_update = false
+update_check_interval_hours = 6
+
+# 在 ~/.tandem/logs/ 记录运行细节，方便反馈问题；错误始终记录。日志只在本机，不记录对话内容。
+debug_log = false
+
 # 空字符串表示 ~/.tandem/conversations；旧目录中的任务继续可见。
 conversation_dir = ""
 past_conversation_dirs = []
@@ -23,6 +30,8 @@ new_task_agent = "claude"
 # 项目下按 CLI 分组；任务排序：time（最近活动）/ type（CLI 类型）/ priority（等你回答 > 完成未读 > 运行中 > 其他）。
 sidebar_group_by_cli = false
 sidebar_sort = "time"
+# 不在任务列表里显示的 CLI（claude / codex / pi）：不扫描它们的会话，登录状态、MCP 和 Skills 照常显示。
+hidden_task_agents = []
 
 # model、effort 留空时跟随 CLI；权限选项只通过启动参数传递。
 [agents.claude]
@@ -79,12 +88,16 @@ pub struct Config {
     pub translucent_sidebar: bool,
     pub keep_in_menu_bar: bool,
     pub notify_when_done: bool,
+    pub auto_update: bool,
+    pub update_check_interval_hours: u8,
+    pub debug_log: bool,
     pub conversation_dir: String,
     pub past_conversation_dirs: Vec<String>,
     pub projects: Vec<String>,
     pub new_task_agent: String,
     pub sidebar_group_by_cli: bool,
     pub sidebar_sort: String,
+    pub hidden_task_agents: Vec<String>,
     pub agents: Agents,
 }
 
@@ -100,12 +113,16 @@ impl Default for Config {
             translucent_sidebar: true,
             keep_in_menu_bar: true,
             notify_when_done: true,
+            auto_update: false,
+            update_check_interval_hours: 6,
+            debug_log: false,
             conversation_dir: String::new(),
             past_conversation_dirs: Vec::new(),
             projects: Vec::new(),
             new_task_agent: "claude".into(),
             sidebar_group_by_cli: false,
             sidebar_sort: "time".into(),
+            hidden_task_agents: Vec::new(),
             agents: Agents::default(),
         }
     }
@@ -118,6 +135,9 @@ impl Config {
         }
         if !["system", "zh", "en"].contains(&self.language.as_str()) {
             return Err("language 使用 system、zh 或 en".into());
+        }
+        if ![1, 6, 12, 24].contains(&self.update_check_interval_hours) {
+            return Err("update_check_interval_hours 使用 1、6、12 或 24 小时".into());
         }
         if !(12..=18).contains(&self.ui_font_size) {
             return Err("ui_font_size 范围为 12–18".into());
@@ -150,6 +170,9 @@ impl Config {
         }
         if !["time", "type", "priority"].contains(&self.sidebar_sort.as_str()) {
             return Err("sidebar_sort 使用 time、type 或 priority".into());
+        }
+        if self.hidden_task_agents.iter().any(|agent| !["claude", "codex", "pi"].contains(&agent.as_str())) {
+            return Err("hidden_task_agents 只能包含 claude、codex 或 pi".into());
         }
         for path in self
             .projects
@@ -305,6 +328,36 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn automatic_update_defaults_validation_and_hand_edits_share_one_schema() {
+        let (_, defaults) = parse("theme = 'dark'").unwrap();
+        assert!(!defaults.auto_update);
+        assert_eq!(defaults.update_check_interval_hours, 6);
+        for hours in [1, 6, 12, 24] {
+            let (mut doc, _) = parse("# 用户注释\ntheme = 'dark'").unwrap();
+            let config = patch(&mut doc, json!({"auto_update":true, "update_check_interval_hours":hours}).as_object().unwrap()).unwrap();
+            assert!(config.auto_update);
+            assert_eq!(config.update_check_interval_hours, hours);
+            assert!(doc.to_string().contains("# 用户注释"));
+            assert_eq!(parse(&doc.to_string()).unwrap().1, config);
+        }
+        for source in ["update_check_interval_hours = 0", "update_check_interval_hours = 2", "update_check_interval_hours = 25",
+            "update_check_interval_hours = '6'", "auto_update = 'yes'"] {
+            assert!(parse(source).is_err(), "{source}");
+        }
+    }
+
+    #[test]
+    fn debug_log_defaults_off_and_rejects_non_boolean_hand_edits() {
+        let (mut doc, template) = parse(TEMPLATE).unwrap();
+        assert!(!template.debug_log);
+        assert!(!parse("theme = 'dark'").unwrap().1.debug_log);
+        let config = patch(&mut doc, json!({"debug_log": true}).as_object().unwrap()).unwrap();
+        assert!(config.debug_log);
+        assert!(doc.to_string().contains("# 在 ~/.tandem/logs/"));
+        assert!(parse("debug_log = 'on'").is_err());
+    }
+
+    #[test]
     fn changes_keep_comments_order_and_unrelated_manual_settings() {
         let source = "# 我的界面\ntheme = 'dark' # 晚上用\nui_font_size = 16\n\n[agents.codex] # 工作模型\nmodel = 'my-model' # 我的选择\n";
         let (mut doc, _) = parse(source).unwrap();
@@ -331,6 +384,7 @@ mod tests {
             "ui_font_size = 'large'",
             "ui_font_size = 100",
             "projects = ['relative']",
+            "hidden_task_agents = ['cursor']",
             "theme = [",
         ] {
             assert!(parse(source).is_err(), "{source}");

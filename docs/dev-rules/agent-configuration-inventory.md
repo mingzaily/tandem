@@ -47,3 +47,11 @@ Pi 的 `settings.json`（全局和项目 `.pi/`）决定显示哪一套来源：
 - 没有适配器、`extensions` 也没有 `-builtin:mcp`：读取内置 MCP 的 `mcp.json`。
 - 没有适配器且内置 MCP 已停用：不列服务器，显示“Pi 内置 MCP 已停用”。
 
+
+适配器的 `imports` 按它的 `IMPORT_PATHS` 展开：Claude Code 依次找 `~/.claude/mcp.json`、`~/.claude.json`、`~/.claude/claude_desktop_config.json`，Codex 找 `~/.codex/config.toml`、`config.json`，Cursor、Windsurf、Claude Desktop 和项目里的 `.vscode/mcp.json` 同理，每种只读第一个存在的文件。导入的条目优先级最低：适配器自己的同名配置覆盖它，先列的导入覆盖后列的。界面在条目后标“导入自 Claude Code”等。经适配器加载的条目都标 `provider: pi-mcp-adapter`，分组标题写成“pi-mcp-adapter · 全局配置”，与 Pi 自己读取的条目分开。OpenCode 会合并多个文件，没有展开，仍以说明列出。
+## 设置页的展示
+
+Agent 设置页对照参考 `ProvidersSection.tsx` 的供应商页：一张卡片，左边 224px 窄栏列出 Claude Code、Codex、Pi（28px 头像、名称、状态注记、就绪圆点），右边是所选 CLI 的详情。详情头固定（36px 头像、版本与登录状态、安装或登录按钮），下面是“在任务列表中显示”开关，再往下是可滚动的清单：吸顶工具行放 MCP 服务器 / Skills 分段切换（带数量）、项目选择和搜索框，列表按“当前项目”“全局配置”分组，组头可折叠，每行一个图标、名称和一行说明（对照 `UnifiedModelList.tsx` 的分组与单行模型行）。项目选择只列真实目录，“对话”没有项目级配置，不列出。
+
+“在任务列表中显示”写入 `config.toml` 的 `hidden_task_agents`。关闭后桌面侧栏和手机端都不列出这个 CLI 的任务，也不扫描它的会话文件；登录状态、MCP 和 Skills 照常读取。适合习惯在 Codex App 等官方客户端里使用某个 CLI 的情况。
+

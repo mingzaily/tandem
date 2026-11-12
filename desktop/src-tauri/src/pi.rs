@@ -16,7 +16,7 @@ use crate::sessions::{is_under, Agent, DiscoveredProject, Message, MessageKind, 
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, UNIX_EPOCH};
@@ -24,7 +24,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::process::Command;
 
 const TITLE_CHARS: usize = 80;
-const TITLE_TAIL_BYTES: u64 = 256 * 1024;
 const MAX_TEXT_BYTES: usize = 20 * 1024;
 const MAX_TASKS: usize = 500;
 const INFO_TIMEOUT: Duration = Duration::from_secs(20);
@@ -88,13 +87,8 @@ fn read_cwd(path: &Path) -> Option<String> {
 }
 
 fn user_text(message: &Value) -> Option<String> {
-    let content = message.get("content")?;
-    if let Some(text) = content.as_str() {
-        return Some(text.to_owned());
-    }
-    content.as_array()?.iter().find_map(|block| {
-        (block.get("type")?.as_str()? == "text").then(|| block.get("text")?.as_str().map(str::to_owned))?
-    })
+    let text = user_message_text(message);
+    (!text.trim().is_empty()).then_some(text)
 }
 
 fn first_prompt(path: &Path) -> Option<String> {
@@ -104,20 +98,6 @@ fn first_prompt(path: &Path) -> Option<String> {
         let message = value.get("message")?;
         (message.get("role")?.as_str()? == "user").then(|| user_text(message))?
     })
-}
-
-fn session_name(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(length.saturating_sub(TITLE_TAIL_BYTES))).ok()?;
-    let mut tail = Vec::new();
-    file.read_to_end(&mut tail).ok()?;
-    String::from_utf8_lossy(&tail)
-        .lines()
-        .rev()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|value| value.get("type").and_then(Value::as_str) == Some("session_info"))
-        .and_then(|value| value.get("name")?.as_str().map(str::to_owned))
 }
 
 fn shorten(text: &str) -> String {
@@ -146,7 +126,7 @@ pub fn list_tasks(sessions: &Path, roots: &[String]) -> Vec<TaskSummary> {
         .into_iter()
         .filter_map(|(updated_at_ms, path)| {
             let cwd = read_cwd(&path).filter(|cwd| belongs(cwd))?;
-            let title = session_name(&path).or_else(|| first_prompt(&path)).unwrap_or_default();
+            let title = crate::session_titles::pi(&path).or_else(|| first_prompt(&path)).unwrap_or_default();
             Some(TaskSummary {
                 id: task_id_of(&path)?,
                 title: shorten(&title),
@@ -252,6 +232,40 @@ fn entry_messages(entry: &Value) -> Vec<Message> {
     }
 }
 
+fn image_hint(line: &str) -> bool {
+    let Some(body) = line.strip_prefix("[Image: original ").and_then(|line| line.strip_suffix(" to map to original image.]")) else {
+        return false;
+    };
+    let Some((sizes, scale)) = body.split_once(". Multiply coordinates by ") else { return false };
+    let Some((original, displayed)) = sizes.split_once(", displayed at ") else { return false };
+    let dimensions = |value: &str| value.split_once(['x', '×']).is_some_and(|(width, height)| {
+        width.parse::<u32>().is_ok_and(|value| value > 0) && height.parse::<u32>().is_ok_and(|value| value > 0)
+    });
+    dimensions(original) && dimensions(displayed) && scale.parse::<f64>().is_ok_and(|value| value.is_finite() && value > 0.0)
+}
+
+/// Pi appends image-resize coordinates for the model after the user's prompt.
+fn user_message_text(inner: &Value) -> String {
+    let text = text_of(inner.get("content"));
+    let has_image = inner.get("content").and_then(Value::as_array)
+        .is_some_and(|blocks| blocks.iter().any(|block| block.get("type").and_then(Value::as_str) == Some("image")));
+    if !has_image { return text; }
+    let mut body = text.as_str();
+    let mut removed = false;
+    loop {
+        let (before, line) = body.rsplit_once('\n').unwrap_or(("", body));
+        if !image_hint(line) { break; }
+        body = before;
+        removed = true;
+    }
+    // Pi joins the original prompt and hint lines with exactly two newlines.
+    // Removing only that separator preserves the user's own trailing whitespace and CRLF.
+    if removed {
+        if let Some(original) = body.strip_suffix('\n') { return original.to_owned(); }
+    }
+    text
+}
+
 fn user_messages(inner: &Value, id: &str, timestamp: Option<String>) -> Vec<Message> {
     let mut messages = Vec::new();
     if let Some(blocks) = inner.get("content").and_then(Value::as_array) {
@@ -269,7 +283,7 @@ fn user_messages(inner: &Value, id: &str, timestamp: Option<String>) -> Vec<Mess
             }
         }
     }
-    let text = text_of(inner.get("content"));
+    let text = user_message_text(inner);
     if !text.trim().is_empty() {
         messages.push(message(id.to_owned(), MessageKind::User, text, timestamp));
     }
@@ -277,10 +291,8 @@ fn user_messages(inner: &Value, id: &str, timestamp: Option<String>) -> Vec<Mess
 }
 
 fn assistant_messages(inner: &Value, id: &str, timestamp: Option<String>) -> Vec<Message> {
-    let Some(blocks) = inner.get("content").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    blocks
+    let blocks = inner.get("content").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let mut messages: Vec<Message> = blocks
         .iter()
         .enumerate()
         .filter_map(|(index, block)| {
@@ -305,7 +317,14 @@ fn assistant_messages(inner: &Value, id: &str, timestamp: Option<String>) -> Vec
                 _ => None,
             }
         })
-        .collect()
+        .collect();
+    if inner.get("stopReason").and_then(Value::as_str) == Some("error") {
+        let text = inner.get("errorMessage").and_then(Value::as_str).unwrap_or_default();
+        let mut error = message(format!("{id}:error"), MessageKind::Assistant, text.to_owned(), timestamp);
+        error.is_error = true;
+        messages.push(error);
+    }
+    messages
 }
 
 /// Walks from the last entry back through its parents, which skips abandoned branches.
@@ -327,6 +346,30 @@ fn active_path(entries: &[Value]) -> Vec<&Value> {
     path
 }
 
+fn task_model(entries: &[&Value]) -> Option<crate::sessions::TaskModel> {
+    let mut model = None;
+    let mut effort = None;
+    for entry in entries {
+        match entry.get("type").and_then(Value::as_str) {
+            Some("model_change") => {
+                if let (Some(provider), Some(id)) = (entry.get("provider").and_then(Value::as_str), entry.get("modelId").and_then(Value::as_str)) {
+                    model = Some(format!("{provider}/{id}"));
+                }
+            }
+            Some("thinking_level_change") => effort = entry.get("thinkingLevel").and_then(Value::as_str).map(str::to_owned),
+            Some("message") => {
+                if let Some(message) = entry.get("message").filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant")) {
+                    if let (Some(provider), Some(id)) = (message.get("provider").and_then(Value::as_str), message.get("model").and_then(Value::as_str)) {
+                        model = Some(format!("{provider}/{id}"));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    model.map(|model| crate::sessions::TaskModel { model, effort })
+}
+
 pub fn read_task(path: &Path) -> Result<TaskContent, String> {
     let file = File::open(path).map_err(|error| error.to_string())?;
     let entries: Vec<Value> = BufReader::new(file)
@@ -335,8 +378,10 @@ pub fn read_task(path: &Path) -> Result<TaskContent, String> {
         .filter_map(|line| serde_json::from_str(&line).ok())
         .filter(|value: &Value| value.get("type").and_then(Value::as_str) != Some("session"))
         .collect();
-    let messages = active_path(&entries).into_iter().flat_map(entry_messages).collect();
-    Ok(TaskContent { messages, context: None })
+    let active = active_path(&entries);
+    let model_selection = task_model(&active);
+    let messages = crate::sessions::terminal_reply_errors(active.into_iter().flat_map(entry_messages).collect());
+    Ok(TaskContent { messages, context: None, model_selection, permission_mode: None })
 }
 
 pub fn task_cwd(id: &str) -> Result<String, String> {
@@ -469,8 +514,10 @@ fn stream_events(value: &Value, state: &mut TurnState) -> Vec<TurnEvent> {
             let Some(inner) = value.get("message").filter(|inner| inner.get("role").and_then(Value::as_str) == Some("assistant")) else {
                 return Vec::new();
             };
-            if inner.get("stopReason").and_then(Value::as_str) == Some("error") {
-                state.error = Some(inner.get("errorMessage").and_then(Value::as_str).unwrap_or("Pi reported a failure").to_owned());
+            match inner.get("stopReason").and_then(Value::as_str) {
+                Some("error") => state.error = Some(inner.get("errorMessage").and_then(Value::as_str).unwrap_or("Pi reported a failure").to_owned()),
+                Some("stop" | "toolUse" | "length") => state.error = None,
+                _ => {}
             }
             inner.get("usage").map(|usage| usage_events(usage, state)).unwrap_or_default()
         }
@@ -491,6 +538,10 @@ fn stream_events(value: &Value, state: &mut TurnState) -> Vec<TurnEvent> {
         _ => Vec::new(),
     }
 }
+
+/// The known pi-ask-user RPC entry; presentation translates it while wire values stay native.
+const ASK_USER_CUSTOM_OPTION: &str = "✏️ Type custom response...";
+const CUSTOM_ANSWER_COMMAND: &str = "tandem_custom_answer";
 
 /// An extension's dialog as a card, or None for the requests that only change its own display.
 fn ui_request(value: &Value) -> Option<(String, TurnEvent, PendingRequest)> {
@@ -514,16 +565,23 @@ fn ui_request(value: &Value) -> Option<(String, TurnEvent, PendingRequest)> {
             ))
         }
         "select" | "input" | "editor" => {
-            let options: Vec<Value> = value
-                .get("options")
-                .and_then(Value::as_array)
-                .map(|options| options.iter().filter_map(Value::as_str).map(|label| json!({"label": label})).collect())
-                .unwrap_or_default();
-            let question = json!({"question": title, "header": "", "options": options});
+            let native_options: Vec<&str> = value.get("options").and_then(Value::as_array)
+                .map(|options| options.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+            let custom = method == "select" && native_options.contains(&ASK_USER_CUSTOM_OPTION);
+            let options: Vec<Value> = native_options.into_iter().filter(|label| !custom || *label != ASK_USER_CUSTOM_OPTION)
+                .map(|label| json!({"label": label})).collect();
+            let mut question = json!({"question": title, "header": "", "options": options, "allowCustom": method != "select" || custom});
+            // pi-ask-user joins the question and its background for the native RPC dialog.
+            if let Some((main, context)) = title.split_once("\n\nContext:\n")
+                .filter(|(main, context)| !main.trim().is_empty() && !context.trim().is_empty())
+            {
+                question["displayQuestion"] = json!(main);
+                question["context"] = json!(context);
+            }
             Some((
                 id.clone(),
                 TurnEvent::Question { request_id: id, questions: json!([question]) },
-                PendingRequest::for_pi(QUESTION_TOOL, json!({"question": title}), method),
+                PendingRequest::for_pi(QUESTION_TOOL, json!({"question": title, "customOption": custom}), method),
             ))
         }
         _ => None,
@@ -534,7 +592,16 @@ pub fn ui_reply(id: &str, request: &PendingRequest, method: &str, decision: &Dec
     let reply = match (method, decision) {
         (_, Decision::Deny) => json!({"type": "extension_ui_response", "id": id, "cancelled": true}),
         ("confirm", Decision::Allow) => json!({"type": "extension_ui_response", "id": id, "confirmed": true}),
-        (_, Decision::Answer { answers }) => {
+        ("select", Decision::Answer { answers, custom: true }) => {
+            if request.input.get("customOption").and_then(Value::as_bool) != Some(true) {
+                return Err("当前选项没有自定义回答入口".into());
+            }
+            let question = request.input.get("question").and_then(Value::as_str).unwrap_or_default();
+            let answer = answers.get(question).and_then(Value::as_str).filter(|answer| !answer.trim().is_empty()).ok_or("请填写自定义回答")?;
+            // The runner sends select -> input only after the user submits the local draft.
+            json!({"type": CUSTOM_ANSWER_COMMAND, "id": id, "question": question, "answer": answer})
+        }
+        (_, Decision::Answer { answers, .. }) => {
             let question = request.input.get("question").and_then(Value::as_str).unwrap_or_default();
             let value = answers.get(question).cloned().unwrap_or(Value::Null);
             json!({"type": "extension_ui_response", "id": id, "value": value})
@@ -542,6 +609,30 @@ pub fn ui_reply(id: &str, request: &PendingRequest, method: &str, decision: &Dec
         _ => return Err("This decision does not fit the request".into()),
     };
     Ok(reply.to_string())
+}
+
+/// pi-ask-user's two RPC dialogs share one local answer; returning to options stays in the UI.
+#[derive(Default)]
+struct DialogReplies {
+    custom: HashMap<String, String>,
+}
+
+impl DialogReplies {
+    fn outbound(&mut self, line: &str) -> Result<String, String> {
+        let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
+        if value.get("type").and_then(Value::as_str) != Some(CUSTOM_ANSWER_COMMAND) { return Ok(line.to_owned()); }
+        let question = value.get("question").and_then(Value::as_str).ok_or("自定义回答缺少原问题")?;
+        let answer = value.get("answer").and_then(Value::as_str).ok_or("自定义回答缺少正文")?;
+        self.custom.insert(question.to_owned(), answer.to_owned());
+        Ok(json!({"type":"extension_ui_response", "id":value["id"], "value":ASK_USER_CUSTOM_OPTION}).to_string())
+    }
+
+    fn follow_up(&mut self, request: &Value) -> Option<String> {
+        if request.get("method")?.as_str()? != "input" || request.get("placeholder")?.as_str()? != "Type your answer..." { return None; }
+        let title = request.get("title")?.as_str()?;
+        let answer = self.custom.remove(title)?;
+        Some(json!({"type":"extension_ui_response", "id":request["id"], "value":answer}).to_string())
+    }
 }
 
 fn prompt_line(prompt: &str, attachments: &Prepared) -> String {
@@ -561,6 +652,16 @@ fn prompt_line(prompt: &str, attachments: &Prepared) -> String {
     command.to_string()
 }
 
+/// Pi's RPC `steer`: delivered to the running agent after its current step. The id carries the
+/// prompt back if Pi refuses it.
+pub fn steer_line(prompt: &str, attachments: &Prepared) -> String {
+    let mut command: Value = serde_json::from_str(&prompt_line(prompt, attachments)).unwrap_or_default();
+    command["type"] = json!("steer");
+    command["id"] = json!(format!("{STEER_ID_PREFIX}{}", serde_json::to_string(prompt).unwrap_or_default()));
+    command.to_string()
+}
+const STEER_ID_PREFIX: &str = "steer:";
+
 pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: TurnSink) -> Result<(), String> {
     request.options.validate_pi()?;
     let emit = |event| on_event.send(event);
@@ -578,6 +679,13 @@ pub async fn send_turn(runs: &Runs, request: TurnRequest, on_event: TurnSink) ->
     };
     if !Path::new(&cwd).is_dir() {
         return Err(format!("Working directory not found: {cwd}"));
+    }
+    if request.task_id.is_some() && !request.options.ignore_external_writer {
+        let sessions = sessions_dir()?;
+        let writers = tauri::async_runtime::spawn_blocking(move || crate::writers::read_pi_writers(&sessions)).await.map_err(|error| error.to_string())?;
+        if writers.iter().any(|writer| writer.task_id == task_id && !runs.owns_writer(writer)) {
+            return Err(crate::runner::EXTERNAL_WRITER_ERROR.into());
+        }
     }
     let channels = runs.begin(&task_id)?;
     let result = async {
@@ -602,7 +710,7 @@ async fn run_turn(
     sink: &TurnSink,
 ) -> Result<(), String> {
     let emit = |event| sink.send(event);
-    let RunChannels { mut cancel, mut input } = channels;
+    let RunChannels { mut cancel, mut input, steer } = channels;
     let env = login_env::login_env().await;
     let program = login_env::find_in_path("pi", env.get("PATH")).ok_or("pi was not found in the login shell PATH")?;
     let mut args: Vec<String> = vec!["--mode".to_owned(), "rpc".to_owned()];
@@ -620,6 +728,7 @@ async fn run_turn(
     if let Some(effort) = &request.options.effort {
         args.extend(["--thinking".to_owned(), effort.clone()]);
     }
+    crate::diagnostics::debug("pi", || format!("starting {} {}", program.display(), crate::diagnostics::flag_names(&args)));
     let mut child = Command::new(program)
         .args(args)
         .current_dir(cwd)
@@ -631,6 +740,7 @@ async fn run_turn(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("Failed to start pi: {error}"))?;
+    crate::diagnostics::debug("pi", || format!("pid {}", child.id().unwrap_or_default()));
     let mut stdin = child.stdin.take().ok_or("pi has no stdin")?;
     let stdout = child.stdout.take().ok_or("pi has no stdout")?;
     let mut lines = AsyncBufReader::new(stdout).lines();
@@ -642,6 +752,7 @@ async fn run_turn(
     stdin.write_all(start.as_bytes()).await.map_err(|error| format!("Failed to send the prompt: {error}"))?;
 
     let mut state = TurnState { model: request.options.model.clone(), ..TurnState::default() };
+    let mut dialogs = DialogReplies::default();
     let mut finished = None::<TurnEvent>;
     let mut abort_deadline = None::<tokio::time::Instant>;
     while finished.is_none() {
@@ -662,6 +773,13 @@ async fn run_turn(
                     continue;
                 }
                 match value.get("type").and_then(Value::as_str) {
+                    Some("response") if value.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with(STEER_ID_PREFIX)) => {
+                        steer.confirm_one();
+                        if value.get("success").and_then(Value::as_bool) == Some(false) {
+                            let prompt = value.get("id").and_then(Value::as_str).and_then(|id| serde_json::from_str(&id[STEER_ID_PREFIX.len()..]).ok()).unwrap_or_default();
+                            emit(TurnEvent::SteerRefused { prompt })?;
+                        }
+                    }
                     Some("response") => {
                         let is_prompt = value.get("id").and_then(Value::as_str) == Some("prompt");
                         if is_prompt && value.get("success").and_then(Value::as_bool) == Some(false) {
@@ -687,12 +805,17 @@ async fn run_turn(
                         }
                     }
                     Some("extension_ui_request") => {
+                        if let Some(reply) = dialogs.follow_up(&value) {
+                            stdin.write_all(format!("{reply}\n").as_bytes()).await.map_err(|error| error.to_string())?;
+                            continue;
+                        }
                         if let Some((id, event, pending)) = ui_request(&value) {
                             runs.add_pending_request(task_id, id, pending);
                             emit(event)?;
                         }
                     }
                     Some("agent_settled") => {
+                        steer.close();
                         let aborted = value.get("aborted").and_then(Value::as_bool).unwrap_or(false);
                         finished = Some(TurnEvent::Finished {
                             is_error: state.error.is_some() && !aborted,
@@ -701,6 +824,27 @@ async fn run_turn(
                         });
                     }
                     _ => {
+                        if matches!(value.get("type").and_then(Value::as_str), Some("tool_execution_end" | "agent_start")) { dialogs.custom.clear(); }
+                        let assistant_message = value.pointer("/message/role").and_then(Value::as_str) == Some("assistant");
+                        if assistant_message && value.get("type").and_then(Value::as_str) == Some("message_start") {
+                            sink.generation_request()?;
+                        }
+                        if assistant_message && value.get("type").and_then(Value::as_str) == Some("message_end") {
+                            sink.generation_reasoning_output(value.pointer("/message/usage/reasoning").and_then(Value::as_u64))?;
+                            sink.generation_pause()?;
+                            if let Some(content) = value.pointer("/message/content").and_then(Value::as_array) {
+                                for block in content.iter().filter(|block| block.get("type").and_then(Value::as_str) == Some("toolCall")) {
+                                    if let Some(input) = block.get("arguments") { sink.generation_tool_input(&input.to_string())?; }
+                                }
+                            }
+                        }
+                        if value.get("type").and_then(Value::as_str) == Some("message_update") {
+                            match value.pointer("/assistantMessageEvent/type").and_then(Value::as_str) {
+                                Some("text_start" | "thinking_start" | "toolcall_start") => sink.generation_start()?,
+                                Some("toolcall_delta") => sink.generation_tool_delta(value.pointer("/assistantMessageEvent/delta").and_then(Value::as_str).unwrap_or_default())?,
+                                _ => {}
+                            }
+                        }
                         for event in stream_events(&value, &mut state) {
                             emit(event)?;
                         }
@@ -708,6 +852,7 @@ async fn run_turn(
                 }
             }
             Some(reply) = input.recv() => {
+                let reply = dialogs.outbound(&reply)?;
                 stdin.write_all(format!("{reply}\n").as_bytes()).await.map_err(|error| error.to_string())?;
             }
             _ = &mut cancel, if abort_deadline.is_none() => {
@@ -721,8 +866,12 @@ async fn run_turn(
     }
     // Closing stdin is how Pi is asked to finish writing and exit.
     drop(stdin);
-    if tokio::time::timeout(EXIT_TIMEOUT, child.wait()).await.is_err() {
-        let _ = child.kill().await;
+    match tokio::time::timeout(EXIT_TIMEOUT, child.wait()).await {
+        Ok(status) => crate::diagnostics::debug("pi", || format!("exited ({})", status.map_or_else(|error| error.to_string(), |status| status.to_string()))),
+        Err(_) => {
+            crate::diagnostics::debug("pi", || "did not exit in time, killed".to_owned());
+            let _ = child.kill().await;
+        }
     }
     match finished {
         Some(event) => emit(event),
@@ -759,12 +908,86 @@ mod tests {
     }
 
     #[test]
+    fn terminal_reply_errors_survive_history_reading_but_successful_retries_clear_them() {
+        for recovered in [false, true] {
+            let mut lines = vec![
+                json!({"type":"session", "cwd":"/code/app"}),
+                json!({"type":"message", "id":"u", "parentId":null, "message":{"role":"user", "content":"first"}}),
+                json!({"type":"message", "id":"e", "parentId":"u", "message":{"role":"assistant", "content":[], "stopReason":"error", "errorMessage":"provider rejected the request"}}),
+            ];
+            if recovered {
+                lines.push(json!({"type":"message", "id":"a", "parentId":"e", "message":{"role":"assistant", "stopReason":"stop", "content":[{"type":"text", "text":"recovered"}]}}));
+            } else {
+                lines.push(json!({"type":"message", "id":"next", "parentId":"e", "message":{"role":"user", "content":"try again"}}));
+            }
+            let (_dir, path) = session(&lines);
+            let messages = read_task(&path).unwrap().messages;
+            let errors: Vec<_> = messages.iter().filter(|message| message.kind == MessageKind::Assistant && message.is_error).collect();
+            assert_eq!(errors.len(), usize::from(!recovered));
+            if !recovered {
+                assert_eq!(messages[1].text, "provider rejected the request");
+                assert_eq!(messages[2].text, "try again");
+            }
+        }
+    }
+
+    #[test]
     fn reads_the_branch_ending_at_the_last_entry() {
         let (_dir, path) = session(&sample());
         let messages = read_task(&path).unwrap().messages;
         let kinds: Vec<&str> = messages.iter().map(|message| message.text.as_str()).collect();
         assert_eq!(kinds, ["fix it", "hm", r#"{"file_path":"/a.rs"}"#, "body", "done"]);
         assert_eq!(messages[2].tool_name.as_deref(), Some("Read"));
+    }
+
+    #[test]
+    fn restores_model_and_thinking_from_the_active_branch_including_changes_after_a_reply() {
+        let lines = vec![
+            json!({"type":"session", "id":"root", "cwd":"/code/app"}),
+            json!({"type":"model_change", "id":"m1", "parentId":null, "provider":"p", "modelId":"a"}),
+            json!({"type":"thinking_level_change", "id":"e1", "parentId":"m1", "thinkingLevel":"high"}),
+            json!({"type":"message", "id":"u", "parentId":"e1", "message":{"role":"user", "content":"hi"}}),
+            json!({"type":"message", "id":"a", "parentId":"u", "message":{"role":"assistant", "provider":"p", "model":"a", "content":[]}}),
+            json!({"type":"model_change", "id":"abandoned", "parentId":"a", "provider":"p", "modelId":"wrong"}),
+            json!({"type":"model_change", "id":"m2", "parentId":"a", "provider":"p", "modelId":"b"}),
+            json!({"type":"thinking_level_change", "id":"e2", "parentId":"m2", "thinkingLevel":"off"}),
+        ];
+        let (_dir, path) = session(&lines);
+        let content = read_task(&path).unwrap();
+        assert_eq!(content.model_selection, Some(crate::sessions::TaskModel { model:"p/b".into(), effort:Some("off".into()) }));
+    }
+
+    #[test]
+    fn recovers_the_pi_model_from_assistant_metadata_when_change_entries_are_missing() {
+        let lines = [
+            json!({"type":"session", "cwd":"/code/app"}),
+            json!({"type":"message", "id":"a", "parentId":null, "message":{"role":"assistant", "provider":"p", "model":"a", "content":[]}}),
+        ];
+        let (_dir, path) = session(&lines);
+        assert_eq!(read_task(&path).unwrap().model_selection, Some(crate::sessions::TaskModel { model:"p/a".into(), effort:None }));
+    }
+
+    #[test]
+    fn image_coordinates_stay_out_of_visible_user_text_without_removing_the_image() {
+        let note = "[Image: original 2072x586, displayed at 2000x566. Multiply coordinates by 1.04 to map to original image.]";
+        let inner = json!({"role":"user", "content":[
+            {"type":"text", "text":format!("请看图片\n\n{note}")},
+            {"type":"image", "mimeType":"image/png", "data":"AA"},
+        ]});
+        let messages = user_messages(&inner, "user", None);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[0].image.is_some());
+        assert_eq!(messages[1].text, "请看图片");
+        assert_eq!(user_text(&inner).as_deref(), Some("请看图片"));
+        let literal = json!({"content":[{"type":"text","text":note}]});
+        assert_eq!(user_message_text(&literal), note);
+        let quoted = json!({"content":[{"type":"text","text":format!("说明如下：\n{note}\n这是原文")},{"type":"image"}]});
+        assert!(user_message_text(&quoted).contains(note));
+        let multiple = json!({"content":[{"type":"text","text":format!("原文\n\n{note}\n{note}")},{"type":"image"}]});
+        assert_eq!(user_message_text(&multiple), "原文");
+        let original = "Windows 粘贴\r\n保留原始换行  \n\n";
+        let spaced = json!({"content":[{"type":"text","text":format!("{original}\n\n{note}")},{"type":"image"}]});
+        assert_eq!(user_message_text(&spaced), original);
     }
 
     #[test]
@@ -798,6 +1021,28 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_name_survives_a_long_follow_up_and_a_fresh_task_list() {
+        let mut lines = sample();
+        lines.push(json!({"type":"session_info", "name":"Earlier title"}));
+        lines.push(json!({"type":"session_info", "name":"调整消息对齐并添加时间显示"}));
+        lines.push(json!({"type":"message", "message":{"role":"assistant", "content":[{"type":"text", "text":"x".repeat(512 * 1024)}]}}));
+        let (dir, _path) = session(&lines);
+        for _ in 0..2 {
+            let tasks = list_tasks(dir.path(), &["/code/app".to_owned()]);
+            assert_eq!(tasks[0].title, "调整消息对齐并添加时间显示");
+        }
+    }
+
+    #[test]
+    fn clearing_a_saved_name_uses_the_first_prompt_instead_of_an_older_name() {
+        let mut lines = sample();
+        lines.push(json!({"type":"session_info", "name":"Earlier title"}));
+        lines.push(json!({"type":"session_info", "name":"   "}));
+        let (dir, _path) = session(&lines);
+        assert_eq!(list_tasks(dir.path(), &["/code/app".to_owned()])[0].title, "fix it");
+    }
+
+    #[test]
     fn stream_events_become_the_shared_turn_events() {
         let mut state = TurnState { model: Some("m".into()), ..TurnState::default() };
         let text = json!({"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "hi"}});
@@ -813,6 +1058,30 @@ mod tests {
     }
 
     #[test]
+    fn a_successful_retry_clears_the_previous_pi_request_error() {
+        for reason in ["stop", "toolUse", "length"] {
+            let mut state = TurnState::default();
+            let failed = json!({"type":"message_end", "message":{"role":"assistant", "stopReason":"error", "errorMessage":"input_image image_url must be valid base64"}});
+            stream_events(&failed, &mut state);
+            assert!(state.error.is_some());
+            let retry = json!({"type":"message_end", "message":{"role":"assistant", "stopReason":reason, "usage":{"output":5}}});
+            stream_events(&retry, &mut state);
+            assert_eq!(state.error, None, "successful retry ended with {reason}");
+            assert_eq!(state.output_tokens, 5);
+        }
+    }
+
+    #[test]
+    fn pi_keeps_the_latest_terminal_failure_until_a_request_succeeds() {
+        let mut state = TurnState::default();
+        for error in ["first failure", "last failure"] {
+            stream_events(&json!({"type":"message_end", "message":{"role":"assistant", "stopReason":"error", "errorMessage":error}}), &mut state);
+        }
+        stream_events(&json!({"type":"tool_execution_end", "toolCallId":"t", "result":{"content":[]}}), &mut state);
+        assert_eq!(state.error.as_deref(), Some("last failure"));
+    }
+
+    #[test]
     fn extension_dialogs_become_cards_and_their_replies_match() {
         let confirm = json!({"type": "extension_ui_request", "id": "1", "method": "confirm", "title": "Delete?", "message": "really"});
         let (id, event, pending) = ui_request(&confirm).unwrap();
@@ -823,13 +1092,100 @@ mod tests {
         assert_eq!(reply["cancelled"], true);
 
         let select = json!({"type": "extension_ui_request", "id": "2", "method": "select", "title": "Pick", "options": ["A", "B"]});
-        let (id, _, pending) = ui_request(&select).unwrap();
+        let (id, event, pending) = ui_request(&select).unwrap();
+        let TurnEvent::Question { questions, .. } = event else { panic!("Expected select question"); };
+        assert_eq!(questions[0]["allowCustom"], false);
+        assert_eq!(questions[0]["options"].as_array().unwrap().len(), 2);
         let mut answers = serde_json::Map::new();
         answers.insert("Pick".to_owned(), json!("B"));
-        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers }).unwrap()).unwrap();
+        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
+        assert_eq!(reply["value"], "B");
+
+        for method in ["input", "editor"] {
+            let (id, event, pending) = ui_request(&json!({"id": "text", "method": method, "title": "Your answer"})).unwrap();
+            let TurnEvent::Question { questions, .. } = event else { panic!("Expected text question"); };
+            assert_eq!(questions[0]["allowCustom"], true);
+            assert!(questions[0]["options"].as_array().unwrap().is_empty());
+            let answers = json!({"Your answer": "我的自定义回答"}).as_object().unwrap().clone();
+            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true }).unwrap()).unwrap();
+            assert_eq!(reply["value"], "我的自定义回答");
+        }
+        let native_custom = "✏️ Type custom response...";
+        let (id, event, pending) = ui_request(&json!({"id": "custom", "method": "select", "title": "Pick", "options": ["A", "B", native_custom]})).unwrap();
+        let TurnEvent::Question { questions, .. } = event else { panic!("Expected select question"); };
+        assert_eq!(questions[0]["options"].as_array().unwrap().len(), 2);
+        assert_eq!(questions[0]["allowCustom"], true);
+        let answers = json!({"Pick": "B"}).as_object().unwrap().clone();
+        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
         assert_eq!(reply["value"], "B");
 
         assert!(ui_request(&json!({"id": "3", "method": "setStatus"})).is_none());
+    }
+
+    #[test]
+    fn pi_context_presentation_keeps_the_native_question_and_reply_keys() {
+        let title = "选择下一步？\n\nContext:\n当前改动已保存。\n接下来选择验证范围。";
+        for method in ["select", "input", "editor"] {
+            let (id, event, pending) = ui_request(&json!({"id":"context", "method":method, "title":title, "options":["继续", ASK_USER_CUSTOM_OPTION]})).unwrap();
+            let TurnEvent::Question { questions, .. } = event else { panic!("Expected a question"); };
+            assert_eq!(questions[0]["question"], title);
+            assert_eq!(questions[0]["displayQuestion"], "选择下一步？");
+            assert_eq!(questions[0]["context"], "当前改动已保存。\n接下来选择验证范围。");
+            assert_eq!(pending.input["question"], title);
+            let answers = [(title.to_owned(), json!("继续"))].into_iter().collect();
+            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
+            assert_eq!(reply["value"], "继续");
+            if method == "select" {
+                let answers = [(title.to_owned(), json!("自定义下一步"))].into_iter().collect();
+                let command = ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true }).unwrap();
+                let mut dialogs = DialogReplies::default();
+                dialogs.outbound(&command).unwrap();
+                let follow_up = dialogs.follow_up(&json!({"id":"input", "method":"input", "title":title, "placeholder":"Type your answer..."})).unwrap();
+                assert_eq!(serde_json::from_str::<Value>(&follow_up).unwrap()["value"], "自定义下一步");
+            }
+        }
+    }
+
+    #[test]
+    fn ordinary_question_text_and_empty_context_keep_their_native_presentation() {
+        for title in ["解释 Context: 的含义", "Context:\n这是问题正文", "问题\n\nContext:\n  ", "\n\nContext:\n只有背景"] {
+            let (_, event, _) = ui_request(&json!({"id":"plain", "method":"input", "title":title})).unwrap();
+            let TurnEvent::Question { questions, .. } = event else { panic!("Expected a question"); };
+            assert_eq!(questions[0]["question"], title);
+            assert!(questions[0].get("displayQuestion").is_none());
+            assert!(questions[0].get("context").is_none());
+        }
+    }
+
+    #[test]
+    fn pi_custom_draft_submits_through_the_native_select_then_input_without_a_second_page() {
+        let (_, event, pending) = ui_request(&json!({"id":"select", "method":"select", "title":"选一个", "options":["原选项", ASK_USER_CUSTOM_OPTION]})).unwrap();
+        let TurnEvent::Question { questions, .. } = event else { panic!("Expected a question"); };
+        assert_eq!(questions[0]["options"], json!([{"label":"原选项"}]));
+        assert_eq!(questions[0]["allowCustom"], true);
+        let answers = json!({"选一个":"我的中文回答"}).as_object().unwrap().clone();
+        let command = ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true }).unwrap();
+        let mut dialogs = DialogReplies::default();
+        let sent: Value = serde_json::from_str(&dialogs.outbound(&command).unwrap()).unwrap();
+        assert_eq!(sent, json!({"type":"extension_ui_response", "id":"select", "value":ASK_USER_CUSTOM_OPTION}));
+        assert!(dialogs.follow_up(&json!({"id":"other", "method":"input", "title":"其他问题", "placeholder":"Type your answer..."})).is_none());
+        assert!(dialogs.follow_up(&json!({"id":"comment", "method":"input", "title":"选一个", "placeholder":"Optional comment (press Enter to skip)..."})).is_none());
+        let input = json!({"id":"input", "method":"input", "title":"选一个", "placeholder":"Type your answer..."});
+        let reply: Value = serde_json::from_str(&dialogs.follow_up(&input).unwrap()).unwrap();
+        assert_eq!(reply, json!({"type":"extension_ui_response", "id":"input", "value":"我的中文回答"}));
+        assert!(dialogs.follow_up(&input).is_none());
+    }
+
+    #[test]
+    fn ordinary_selects_and_cancelled_drafts_keep_their_native_values() {
+        let (_, _, pending) = ui_request(&json!({"id":"select", "method":"select", "title":"选择", "options":["A", "B"]})).unwrap();
+        let answers = json!({"选择":"自定义"}).as_object().unwrap().clone();
+        assert!(ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true }).is_err());
+        let mut dialogs = DialogReplies::default();
+        let cancel = ui_reply("select", &pending, "select", &Decision::Deny).unwrap();
+        let wire: Value = serde_json::from_str(&dialogs.outbound(&cancel).unwrap()).unwrap();
+        assert_eq!(wire["cancelled"], true);
+        assert!(dialogs.custom.is_empty());
     }
 
     #[test]

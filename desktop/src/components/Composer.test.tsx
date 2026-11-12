@@ -6,7 +6,7 @@ vi.hoisted(() => vi.stubGlobal('navigator', { language: 'zh-CN' }));
 afterAll(() => vi.unstubAllGlobals());
 
 function render(props: Partial<Parameters<typeof Composer>[0]> = {}) {
-  return renderToStaticMarkup(<Composer running={false} placeholder="继续聊一聊…" toolbarLeft={null} toolbarRight={null} onSend={() => {}} onStop={() => {}} {...props} />);
+  return renderToStaticMarkup(<Composer draftKey="test" running={false} placeholder="继续聊一聊…" toolbarLeft={null} toolbarRight={null} onSend={() => {}} onStop={() => {}} {...props} />);
 }
 
 describe('composer action meaning', () => {
@@ -21,7 +21,7 @@ describe('composer action meaning', () => {
     const html = render({ queueing: true });
     expect(html).not.toContain('本条消息将加入待发送队列');
     expect(html).toContain('aria-label="加入待发送队列"');
-    expect(html).toContain('title="加入待发送队列"');
+    expect(html).toContain('data-tooltip="加入待发送队列"');
     expect(html).toContain('lucide-list-plus');
     expect(html).not.toContain('lucide-arrow-up');
     expect(html).not.toContain('aria-label="停止生成"');
@@ -34,6 +34,17 @@ describe('composer action meaning', () => {
     expect(html.match(/aria-label="取消编辑"/g)).toHaveLength(1);
     expect(html).not.toContain('本条消息将加入待发送队列');
     expect(html).not.toContain('lucide-list-plus');
+  });
+
+  it('allows adding and removing images while editing a queued message', () => {
+    const html = render({ editing: {
+      id: 'queued', prompt: '待发送', options: { model: null, effort: null, permissionMode: null },
+      attachments: [{ id: 'image', name: 'image.png', kind: 'image', preview: 'data:image/png;base64,AA' }],
+    } });
+    const add = html.match(/<button[^>]*aria-label="添加图片或文件"[^>]*>/)?.[0];
+    expect(add).toBeDefined();
+    expect(add).not.toContain('disabled=');
+    expect(html).toContain('aria-label="移除 image.png"');
   });
 
   it('keeps ordinary task and new-task inputs free of queue instructions', () => {

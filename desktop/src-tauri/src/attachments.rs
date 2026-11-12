@@ -86,6 +86,10 @@ pub struct SavedAttachment {
 }
 
 impl SavedAttachment {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     pub fn presentation(&self, task_id: &str) -> Attachment {
         match &self.stored {
             SavedStored::Image { name, media_type, data } => Attachment {

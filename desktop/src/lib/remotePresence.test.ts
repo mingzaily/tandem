@@ -7,7 +7,7 @@ afterEach(() => vi.resetAllMocks());
 
 const phone = (clientId: string, isOnline = true): RemoteClient => ({ clientId, name: clientId, isOnline, pairedAtMs: 0 });
 const state = (clients: RemoteClient[], patch: Partial<RemoteState> = {}): RemoteState => ({
-  enabled: true, relayUrl: 'ws://localhost/ws', hasHostToken: true, status: 'online',
+  enabled: true, relayUrl: 'ws://localhost/ws', hasHostToken: true, relayVersion: null, status: 'online',
   error: null, pairing: null, clients, ...patch,
 });
 const received = (value: RemoteState) => ({ type: 'received' as const, state: value });

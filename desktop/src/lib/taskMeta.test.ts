@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptNativeTitle, EMPTY_TASK_META, renameTask, taskTitle, toggleArchived, togglePin } from './taskMeta';
+import { acceptNativeTitle, EMPTY_TASK_META, renameTask, taskTitle, toggleArchived, togglePin, unarchive } from './taskMeta';
 
 describe('taskMeta', () => {
   it('pins and unpins', () => {
@@ -11,6 +11,12 @@ describe('taskMeta', () => {
   it('removes the pin when archiving', () => {
     const archived = toggleArchived(togglePin(EMPTY_TASK_META, 'a'), 'a');
     expect(archived).toMatchObject({ pins: [], archived: ['a'] });
+  });
+
+  it('brings an archived task back and leaves others untouched', () => {
+    const archived = toggleArchived(EMPTY_TASK_META, 'a');
+    expect(unarchive(archived, 'a').archived).toEqual([]);
+    expect(unarchive(archived, 'b')).toBe(archived);
   });
 
   it('a rename overrides the title and an empty one restores it', () => {

@@ -1,4 +1,4 @@
-import { Archive, ArchiveRestore, Sparkles, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
+import { Archive, ArchiveRestore, Loader2, Sparkles, Copy, FolderOpen, Pencil, Pin, PinOff, type LucideIcon } from 'lucide-react';
 import { revealTaskFolder, type Agent, type TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
 import { toggleArchived, togglePin, type TaskMeta } from '../lib/taskMeta';
@@ -7,6 +7,7 @@ import { MENU_ROW } from './ComposerMenu';
 import { FloatingMenu } from './FloatingMenu';
 
 export interface TaskMenuAnchor {
+  source: 'sidebar' | 'header';
   id: string;
   x: number;
   y: number;
@@ -27,9 +28,9 @@ export function TaskMenu({ anchor, task, meta, onMetaChange, onRename, onGenerat
   const { id, agent } = task;
   const isPinned = meta.pins.includes(id);
   const isArchived = meta.archived.includes(id);
-  const items: { label: string; icon: LucideIcon; run: () => void; disabled?: boolean }[] = [
+  const items: { label: string; icon: LucideIcon; run: () => void; busy?: boolean }[] = [
     { label: t('taskRename'), icon: Pencil, run: () => onRename(id) },
-    { label: t(generatingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: Sparkles, run: () => onGenerateTitle(agent, id), disabled: generatingTitle },
+    { label: t(generatingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: generatingTitle ? Loader2 : Sparkles, run: () => onGenerateTitle(agent, id), busy: generatingTitle },
     ...(isArchived
       ? []
       : [
@@ -53,19 +54,20 @@ export function TaskMenu({ anchor, task, meta, onMetaChange, onRename, onGenerat
   ];
   return (
     <FloatingMenu x={anchor.x} y={anchor.y} label={t('taskMenu')} onClose={onClose}>
-      {items.map(({ label, icon: Icon, run, disabled }) => (
+      {items.map(({ label, icon: Icon, run, busy }) => (
         <button
           key={label}
           type="button"
           role="menuitem"
-          disabled={disabled}
+          aria-busy={busy || undefined}
+          disabled={busy}
           onClick={() => {
             onClose();
             run();
           }}
-          className={`${MENU_ROW} disabled:opacity-40`}
+          className={`${MENU_ROW} aria-busy:opacity-100`}
         >
-          <Icon size={15} strokeWidth={1.8} aria-hidden className="shrink-0 text-[var(--cmd-palette-item-icon)]" />
+          <Icon size={15} strokeWidth={1.8} aria-hidden className={`shrink-0 text-[var(--cmd-palette-item-icon)] ${busy ? 'motion-safe:animate-spin motion-safe:[animation-duration:var(--motion-spinner-cycle)]' : ''}`} />
           <span className="min-w-0 flex-1 truncate">{label}</span>
         </button>
       ))}

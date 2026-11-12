@@ -16,11 +16,15 @@ pnpm test
 
 ## 构建
 
+源码修改先运行类型检查和测试，保持正在使用的应用与任务进程运行。只有用户明确要求重新构建或重启时，才构建、启动或重启应用。
+
 | 命令 | 用途 |
 |---|---|
 | `pnpm tauri dev` | 开发，页面热更新 |
 | `pnpm tauri build --bundles app` | 正式版，产物在 `src-tauri/target/release/bundle/macos/` |
 | `pnpm tauri build --debug --bundles app` | 带脚本驱动的调试版，页面与正式版相同 |
+
+正式分发由 `main` 的 push 自动触发 CI：分配日期版本、执行检查、构建 Apple Silicon / Intel 通用 `.dmg`，再发布 GitHub Release。使用免费 ad hoc 签名，产物与重跑规则见 [CI 与本地验证](ci-validation.md#桌面自动发布)。本机命令用于开发验证，CI 构建使用独立的临时工作区。
 
 ## 驱动窗口
 

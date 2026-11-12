@@ -20,6 +20,12 @@ pub struct McpServer {
     command: Option<String>,
     scope: Scope,
     source: String,
+    /// For Pi's adapter: the client whose config this entry was imported from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imported_from: Option<String>,
+    /// The extension that loads this entry, when the CLI does not read it itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -151,24 +157,64 @@ impl Inventory {
         ].into_iter().map(|path| (path, Scope::Global))
             .chain(cwd.into_iter().flat_map(|cwd| [cwd.join(".mcp.json"), cwd.join(".pi/mcp.json"), cwd.join(".pi/mcp-adapter.json")]).map(|path| (path, Scope::Project)))
             .collect();
-        let start = self.mcp_servers.len();
         let mut imports: Vec<String> = Vec::new();
-        for (path, scope) in &sources {
-            self.read_config(path, *scope, None, false);
+        for (path, _) in &sources {
             if let Ok(Some(config)) = json(path) {
                 for kind in config.get("imports").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
                     if !imports.iter().any(|known| known == kind) { imports.push(kind.to_owned()); }
                 }
             }
         }
+        let start = self.mcp_servers.len();
+        // Imports rank below the adapter's own files, and an earlier import below a later one loses
+        // to it by name; the dedup below keeps the last entry, so they go in first, in reverse.
+        let mut unexpanded = Vec::new();
+        for kind in imports.iter().rev() {
+            let before = self.mcp_servers.len();
+            if !self.read_import(kind, paths, cwd) { unexpanded.insert(0, kind.clone()); }
+            for server in &mut self.mcp_servers[before..] { server.imported_from = Some(kind.clone()); }
+        }
+        for (path, scope) in &sources {
+            self.read_config(path, *scope, None, false);
+        }
         // A later file overrides an earlier one by server name, as the adapter merges them.
         let mut seen = HashSet::new();
         let mut kept: Vec<McpServer> = self.mcp_servers.drain(start..).rev().filter(|server| seen.insert(server.name.clone())).collect();
         kept.reverse();
+        for server in &mut kept { server.provider = Some("pi-mcp-adapter"); }
         self.mcp_servers.extend(kept);
-        if !imports.is_empty() {
-            self.notes.push(ResourceNote { section: "mcp", kind: "mcpImports", detail: imports.join(", ") });
+        if !unexpanded.is_empty() {
+            self.notes.push(ResourceNote { section: "mcp", kind: "mcpImports", detail: unexpanded.join(", ") });
         }
+    }
+
+    /// One of the adapter's `imports`: the first of its candidate files that exists, read the way
+    /// the adapter's `IMPORT_PATHS` and `extractServers` do. False for a kind not followed here.
+    fn read_import(&mut self, kind: &str, paths: &Locations, cwd: Option<&Path>) -> bool {
+        let home = &paths.home;
+        let (candidates, scope): (Vec<PathBuf>, Scope) = match kind {
+            "claude-code" => (vec![home.join(".claude/mcp.json"), home.join(".claude.json"), home.join(".claude/claude_desktop_config.json")], Scope::Global),
+            "claude-desktop" => (vec![home.join("Library/Application Support/Claude/claude_desktop_config.json")], Scope::Global),
+            "codex" => (vec![home.join(".codex/config.toml"), home.join(".codex/config.json")], Scope::Global),
+            "cursor" => (vec![home.join(".cursor/mcp.json")], Scope::Global),
+            "windsurf" => (vec![home.join(".windsurf/mcp.json")], Scope::Global),
+            "vscode" => (cwd.map(|cwd| cwd.join(".vscode/mcp.json")).into_iter().collect(), Scope::Project),
+            _ => return false,
+        };
+        let Some(path) = candidates.into_iter().find(|path| path.exists()) else { return true; };
+        let is_toml = path.extension().is_some_and(|extension| extension == "toml");
+        let config = match if is_toml { toml(&path) } else { json(&path) } {
+            Ok(Some(value)) => value,
+            Ok(None) => return true,
+            Err(reason) => { self.error("mcp", &path, reason); return true; }
+        };
+        let servers = match kind {
+            "claude-code" | "claude-desktop" => config.get("mcpServers"),
+            "codex" => config.get("mcp_servers").or_else(|| config.get("mcpServers")),
+            _ => config.get("mcpServers").or_else(|| config.get("mcp-servers")),
+        };
+        self.servers(servers, scope, &path);
+        true
     }
 
     fn servers(&mut self, value: Option<&Value>, scope: Scope, path: &Path) {
@@ -178,7 +224,7 @@ impl Inventory {
             if !config.is_object() { self.error("mcp", path, format!("MCP 服务器 {name} 的配置需要是对象")); continue; }
             let command = config.get("command").and_then(Value::as_str).map(str::to_owned);
             let transport = config.get("type").and_then(Value::as_str).unwrap_or(if command.is_some() { "stdio" } else { "http" });
-            self.mcp_servers.push(McpServer { name: name.clone(), transport: transport.into(), command, scope, source: path.to_string_lossy().into_owned() });
+            self.mcp_servers.push(McpServer { name: name.clone(), transport: transport.into(), command, scope, source: path.to_string_lossy().into_owned(), imported_from: None, provider: None });
         }
     }
 

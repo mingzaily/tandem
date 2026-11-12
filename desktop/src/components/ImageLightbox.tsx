@@ -47,7 +47,7 @@ function Lightbox({ src, alt, onClose }: { src: string; alt: string; onClose: ()
       <button
         type="button"
         aria-label={t('imagePreviewClose')}
-        title={t('imagePreviewClose')}
+        data-tooltip={t('imagePreviewClose')}
         onClick={onClose}
         className="absolute right-4 top-4 z-10 flex size-8 items-center justify-center rounded-full bg-white/15 text-white transition-colors hover:bg-white/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
       >
@@ -87,7 +87,7 @@ export function ZoomableImage({ src, alt = '', className, children }: { src: str
       <button
         type="button"
         aria-label={t('imagePreviewOpen')}
-        title={t('imagePreviewOpen')}
+        data-tooltip={t('imagePreviewOpen')}
         onClick={() => setIsOpen(true)}
         className="block cursor-zoom-in rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
       >

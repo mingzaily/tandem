@@ -106,7 +106,7 @@
     --sidebar-border: var(--border-default-hsl);
     --sidebar-item-hover: var(--surface-hover-hsl);
     --sidebar-item-active: 0 0% 90%;
-    --sidebar-item-active-foreground: var(--foreground);
+    --sidebar-item-active-foreground: hsl(var(--foreground));
     --sidebar-item-active-border: var(--sidebar-item-active);
     --sidebar-search-bg: var(--surface-hsl);
     --sidebar-muted: var(--text-tertiary-hsl);
@@ -661,7 +661,7 @@
     --sidebar-border: var(--border-default-hsl);
     --sidebar-item-hover: var(--surface-hover-hsl);
     --sidebar-item-active: 60 2% 17%;
-    --sidebar-item-active-foreground: var(--foreground);
+    --sidebar-item-active-foreground: hsl(var(--foreground));
     --sidebar-item-active-border: var(--sidebar-item-active);
     --sidebar-search-bg: var(--surface-hsl);
     --sidebar-muted: var(--text-tertiary-hsl);

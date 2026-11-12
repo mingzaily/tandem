@@ -74,11 +74,13 @@ fn host_projects(context: &Context) -> Vec<Value> {
 
 async fn host_info(inner: &Inner) -> Result<Value, OpError> {
     let env = login_env::login_env().await;
+    let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
+    // A CLI whose tasks are hidden is not offered for new tasks on the phone either.
     let agents: Vec<&str> = ["claude", "codex", "pi"]
         .into_iter()
+        .filter(|command| !context.hidden_agents.iter().any(|name| name == command))
         .filter(|command| login_env::find_in_path(command, env.get("PATH")).is_some())
         .collect();
-    let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
     Ok(json!({
         "name": host_name(),
         "version": inner.app.package_info().version.to_string(),
@@ -92,7 +94,7 @@ async fn tasks_list(inner: &Inner) -> Result<Value, OpError> {
     let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
     let reader = inner.app.state::<codex::Reader>();
     let runs = inner.app.state::<runner::Runs>();
-    let mut tasks = commands::collect_tasks(reader.inner(), context.projects, context.conversation_roots).await;
+    let mut tasks = commands::collect_tasks(reader.inner(), context.projects, context.conversation_roots, &context.hidden_agents).await;
     tasks.retain(|task| !context.archived.contains(&task.id));
     for task in &mut tasks {
         if let Some(title) = context.titles.get(&task.id) {
@@ -137,7 +139,13 @@ async fn task_read(inner: &Inner, value: &Value) -> Result<Value, OpError> {
         .await
         .map_err(|message| OpError("NOT_FOUND", message))?;
     let (messages, total) = page_of(content.messages, request.before, request.limit);
-    Ok(json!({"messages": messages, "context": content.context, "total": total}))
+    Ok(json!({
+        "messages": messages,
+        "context": content.context,
+        "modelSelection": content.model_selection,
+        "permissionMode": content.permission_mode,
+        "total": total,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -223,7 +231,7 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
         )
         .map_err(|error| error.to_string())
     });
-    let (run_id, sink) = remote.track(request.agent, page_sink);
+    let (run_id, sink) = remote.track(request.agent, request.task_id.clone(), prompt.clone(), page_sink);
     if let Ok(mut holder) = run_holder.lock() {
         holder.clone_from(&run_id);
     }

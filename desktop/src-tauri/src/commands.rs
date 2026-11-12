@@ -86,6 +86,7 @@ pub async fn send_turn(
     request: SendRequest,
     on_event: Channel<runner::TurnEvent>,
 ) -> Result<(), String> {
+    let _activity = crate::updater::activity()?;
     let SendRequest { agent, task_id, cwd, prompt, attachment_ids, options } = request;
     if prompt.trim().is_empty() && attachment_ids.is_empty() {
         return Err("There is nothing to send".into());
@@ -94,10 +95,63 @@ pub async fn send_turn(
     { let store = app.state::<storage::Store>(); store.ensure_writable()?; }
     let prepared = attachments.take(&attachment_ids)?;
     let page_sink = runner::TurnSink::new(move |event| on_event.send(event).map_err(|error| error.to_string()));
-    let (run_id, sink) = remote.track(agent, page_sink);
+    let (run_id, sink) = remote.track(agent, task_id.clone(), prompt.clone(), page_sink);
     let result = queue::dispatch(&app, agent, codex::TurnRequest { task_id, cwd, prompt, attachments: prepared, options }, sink).await;
     remote.end_run(&run_id, &result);
     result
+}
+
+/// Adds a message to the turn that is running, the way each CLI takes one mid-turn. Fails with
+/// `NO_ACTIVE_TURN` once the turn can no longer take it, and the page queues the message instead.
+#[tauri::command]
+pub async fn steer_turn(
+    runs: State<'_, runner::Runs>,
+    attachments: State<'_, attachments::Attachments>,
+    agent: Agent,
+    task_id: String,
+    prompt: String,
+    attachment_ids: Vec<String>,
+) -> Result<(), String> {
+    if prompt.trim().is_empty() && attachment_ids.is_empty() {
+        return Err("There is nothing to send".into());
+    }
+    if !runs.can_steer(&task_id) {
+        return Err(runner::NO_ACTIVE_TURN.into());
+    }
+    let prepared = attachments.take(&attachment_ids)?;
+    let line = match agent {
+        Agent::Claude => runner::user_input_line(&prompt, &prepared),
+        Agent::Codex => codex::steer_line(&prompt, &prepared),
+        Agent::Pi => pi::steer_line(&prompt, &prepared),
+    };
+    runs.steer(&task_id, line)
+}
+
+/// Hands a queued message to the running turn, as the reference's row 插话 does. It leaves the
+/// queue only once the turn has taken it.
+#[tauri::command]
+pub async fn steer_queued_turn(
+    app: AppHandle,
+    runs: State<'_, runner::Runs>,
+    task_id: String,
+    entry_id: String,
+) -> Result<queue::SteeredEntry, String> {
+    if !runs.can_steer(&task_id) {
+        return Err(runner::NO_ACTIVE_TURN.into());
+    }
+    let id = task_id.clone();
+    let queued_id = entry_id.clone();
+    let (agent, entry, prepared) = queue::access(&app, move |store| store.peek(&id, &queued_id)).await?;
+    let line = match agent {
+        Agent::Claude => runner::user_input_line(&entry.prompt, &prepared),
+        Agent::Codex => codex::steer_line(&entry.prompt, &prepared),
+        Agent::Pi => pi::steer_line(&entry.prompt, &prepared),
+    };
+    runs.steer(&task_id, line)?;
+    let id = task_id.clone();
+    let snapshot = queue::access(&app, move |store| store.remove(&id, &entry_id)).await?;
+    queue::announce(&app, &snapshot);
+    Ok(queue::SteeredEntry { queue: snapshot, entry })
 }
 
 #[tauri::command]
@@ -139,9 +193,15 @@ pub async fn enqueue_turn(
 }
 
 #[tauri::command]
-pub async fn edit_queued_turn(app: AppHandle, task_id: String, entry_id: String, prompt: String) -> Result<queue::Snapshot, String> {
+pub async fn edit_queued_turn(
+    app: AppHandle, task_id: String, entry_id: String, prompt: String,
+    keep_attachment_ids: Vec<String>, attachment_ids: Vec<String>,
+) -> Result<queue::Snapshot, String> {
+    let attachments = app.state::<attachments::Attachments>();
+    let additions = attachments.capture(&attachment_ids)?;
     let id = task_id.clone();
-    let snapshot = queue::access(&app, move |store| store.edit(&id, &entry_id, prompt)).await?;
+    let snapshot = queue::access(&app, move |store| store.edit(&id, &entry_id, prompt, &keep_attachment_ids, additions)).await?;
+    attachments.release(&attachment_ids);
     queue::announce(&app, &snapshot);
     queue::kick(app, task_id);
     Ok(snapshot)
@@ -344,15 +404,23 @@ pub(crate) async fn read_info(reader: &codex::Reader, agent: Agent) -> Result<cl
     }
 }
 
-/// One agent being unavailable should not hide the others.
-pub(crate) async fn collect_tasks(reader: &codex::Reader, projects: Vec<String>, conversations_dirs: Vec<String>) -> Vec<sessions::TaskSummary> {
+/// One agent being unavailable should not hide the others. A hidden agent's sessions are not read.
+pub(crate) async fn collect_tasks(reader: &codex::Reader, projects: Vec<String>, conversations_dirs: Vec<String>, hidden: &[String]) -> Vec<sessions::TaskSummary> {
+    let shown = |agent: &str| !hidden.iter().any(|name| name == agent);
     let mut all_roots = projects.clone();
     all_roots.extend(conversations_dirs.clone());
     let roots = all_roots.clone();
-    let mut tasks = blocking(move || sessions::list_tasks(&sessions::claude_projects_dir()?, &roots)).await.unwrap_or_default();
-    let cwds = blocking(move || Ok(conversations::expand_roots(projects, &conversations_dirs))).await.unwrap_or_default();
-    tasks.extend(reader.list_tasks(&cwds).await.unwrap_or_default());
-    tasks.extend(blocking(move || Ok(pi::list_tasks(&pi::sessions_dir()?, &all_roots))).await.unwrap_or_default());
+    let mut tasks = Vec::new();
+    if shown("claude") {
+        tasks.extend(blocking(move || sessions::list_tasks(&sessions::claude_projects_dir()?, &roots)).await.unwrap_or_default());
+    }
+    if shown("codex") {
+        let cwds = blocking(move || Ok(conversations::expand_roots(projects, &conversations_dirs))).await.unwrap_or_default();
+        tasks.extend(reader.list_tasks(&cwds).await.unwrap_or_default());
+    }
+    if shown("pi") {
+        tasks.extend(blocking(move || Ok(pi::list_tasks(&pi::sessions_dir()?, &all_roots))).await.unwrap_or_default());
+    }
     tasks
 }
 
@@ -383,16 +451,41 @@ pub fn tray_panel_action(app: AppHandle, action: String, task_id: Option<String>
 
 #[tauri::command]
 pub fn notify_user(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    if !app.state::<storage::Store>().snapshot().config.notify_when_done { return Ok(()); }
     tray::notify(&app, &title, &body)
 }
 
 #[tauri::command]
+pub async fn update_app_badge(app: AppHandle, count: u32) -> Result<(), String> {
+    crate::notifications::update(&app, count).await
+}
+
+#[tauri::command]
+pub async fn notification_status() -> Result<crate::notifications::Status, String> {
+    crate::notifications::status().await
+}
+
+#[tauri::command]
+pub async fn request_notification_permission(app: AppHandle) -> Result<crate::notifications::Status, String> {
+    let status = crate::notifications::request_permission().await?;
+    crate::notifications::sync(&app).await?;
+    Ok(status)
+}
+
+#[tauri::command]
+pub async fn open_notification_settings(app: AppHandle) -> Result<(), String> {
+    crate::notifications::open_settings(&app).await
+}
+
+#[tauri::command]
 pub async fn install_agent(jobs: State<'_, agents::Jobs>, command: String, on_event: Channel<agents::JobEvent>) -> Result<(), String> {
+    let _activity = crate::updater::activity()?;
     agents::install(jobs.inner(), &command, on_event).await
 }
 
 #[tauri::command]
 pub async fn login_agent(jobs: State<'_, agents::Jobs>, command: String, on_event: Channel<agents::JobEvent>) -> Result<(), String> {
+    let _activity = crate::updater::activity()?;
     agents::login(jobs.inner(), &command, on_event).await
 }
 
@@ -405,7 +498,7 @@ pub fn stop_agent_job(jobs: State<'_, agents::Jobs>) {
 /// a thread is open, so its file has to say whether a turn is under way.
 pub(crate) async fn collect_writers(runs: &runner::Runs, reader: &codex::Reader) -> Result<Vec<writers::ExternalWriter>, String> {
     let mut found = blocking(runner::external_writers).await?;
-    found.retain(|writer| !runs.is_running(&writer.task_id));
+    found.retain(|writer| !runs.owns_writer(writer));
     for writer in found.iter_mut().filter(|writer| !writer.can_override) {
         if let Some(path) = reader.task_file(&writer.task_id).await {
             writer.is_busy = blocking(move || Ok(writers::codex_turn_running(&path))).await?;
@@ -556,4 +649,27 @@ pub async fn update_preferences(app: AppHandle, window: WebviewWindow, target: S
     let result = blocking(move || writer.state::<storage::Store>().update(&target, patch)).await;
     storage::publish(&app);
     result
+}
+
+/// Opens Tandem's own log folder, a fixed location the page cannot change.
+#[tauri::command]
+pub async fn open_log_folder() -> Result<(), String> {
+    let dir = crate::diagnostics::dir().ok_or("日志不可用：另一个 Tandem 正在使用本地数据")?;
+    blocking(move || {
+        storage::io::private_dir(&dir)?;
+        open_path(&dir, false)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_logs() -> Result<(), String> {
+    blocking(crate::diagnostics::clear).await
+}
+
+/// Uncaught page errors. The page is untrusted, so the text is only stored, cut to size and
+/// bounded by the daily file limit.
+#[tauri::command]
+pub fn log_page_error(window: WebviewWindow, message: String) {
+    crate::diagnostics::error(&format!("page:{}", window.label()), message);
 }

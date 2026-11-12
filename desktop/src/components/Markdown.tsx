@@ -31,7 +31,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
     if (task && path) void openTaskPath(task.agent, task.id, path, action).catch((reason) => setError(String(reason)));
   };
   return <>
-    <a href={href} title={error ?? absolutePath ?? undefined}
+    <a href={href} data-tooltip={error ?? absolutePath ?? undefined}
       className={chip ? 'file-reference-chip' : undefined}
       onClick={(event) => { event.preventDefault(); if (path) open('open'); else if (href) void openExternal(href); }}
       onContextMenu={path ? (event) => { event.preventDefault(); setMenu({ x: event.clientX, y: event.clientY }); } : undefined}>

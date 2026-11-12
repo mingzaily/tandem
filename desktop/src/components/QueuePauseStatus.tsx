@@ -8,6 +8,7 @@ export function QueuePauseStatus({ queue, onChange, onError, center, indicator }
   onChange: (queue: TaskQueue) => void;
   onError: (error: unknown) => void;
 }) {
+  const label = t(queue.pausedAfterRestart ? 'queuePausedRestart' : 'queuePaused');
   return (
     <ComposerStatusRow center={center} indicator={indicator} actions={
       <button type="button" onClick={() => void resumeQueue(queue.taskId).then(onChange).catch(onError)}
@@ -15,9 +16,9 @@ export function QueuePauseStatus({ queue, onChange, onError, center, indicator }
         {t('queueResume')}
       </button>
     }>
-      <span role="status" title={t('queuePaused')} className="flex min-w-0 items-center gap-1.5 text-13 font-medium text-[var(--status-bar-accent)]">
+      <span role="status" data-tooltip={label} className="flex min-w-0 items-center gap-1.5 text-13 font-medium text-[var(--status-bar-accent)]">
         <Pause size={14} strokeWidth={2} aria-hidden className="shrink-0" />
-        <span className="truncate">{t('queuePaused')}</span>
+        <span className="truncate">{label}</span>
       </span>
     </ComposerStatusRow>
   );

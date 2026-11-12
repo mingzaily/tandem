@@ -27,11 +27,20 @@
 ```bash
 cd docs/reference/repos
 git clone --filter=blob:none --no-checkout https://github.com/makecindy/cindy.git cindy
-git -C cindy switch --detach v0.1.121
+git -C cindy switch --detach origin/main
 git clone --depth 1 https://github.com/zhukunpenglinyutong/desktop-cc-gui.git ccgui
 ```
 
 | 目录 | 内容 | 许可 |
 |---|---|---|
-| `repos/cindy` | Cindy `v0.1.121`，界面复刻的基准 | Apache-2.0，名称、Logo、角色形象除外 |
+| `repos/cindy` | Cindy `main`，用于查阅当前上游实现；最近更新为 `d386dc764f`（2026-11-11） | Apache-2.0，名称、Logo、角色形象除外 |
 | `repos/ccgui` | desktop-cc-gui，参考原生会话和终端互通的做法 | MIT |
+
+更新 Cindy 参考源码时，先确认参考仓库没有本地修改，再拉取并检出默认分支：
+
+```bash
+git -C docs/reference/repos/cindy fetch origin main --tags
+git -C docs/reference/repos/cindy switch --detach origin/main
+```
+
+参考仓库保持 detached HEAD，更新后在本页记录提交。`desktop/design/tokens/` 和 `docs/design-rules/upstream/` 是独立维护的副本，来源版本沿用各自记录；参考源码更新后，按具体需求查阅和适配。

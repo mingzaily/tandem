@@ -4,7 +4,7 @@
 
 ## Tandem 是什么
 
-个人自用的轻量桌面客户端，用 Tauri 驱动用户自己安装的 Claude Code、Codex、Pi。界面复刻 Cindy 的视觉规范，代码不是 Cindy 的 fork，也不跟进上游。
+面向个人工作流的轻量 macOS 桌面客户端，用 Tauri 驱动用户自己安装的 Claude Code、Codex、Pi。桌面相关改动进入主分支 `main` 后，通过检查即由 CI 自动构建和发布安装包，规则见 [CI 与本地验证](docs/dev-rules/ci-validation.md)。界面复刻 Cindy 的视觉规范，代码不是 Cindy 的 fork，也不跟进上游。
 
 ## 仓库结构
 
@@ -32,7 +32,7 @@
 
 - **用用户环境里的 CLI**：不内置、不托管、不自动更新 agent 二进制。只有用户在设置里点“安装”时，才用用户的 npm 全局安装。
 - **不改用户的 CLI 配置**：不写 `~/.claude/settings.json`、`~/.codex/config.toml`、`~/.pi/agent/*.json`。需要注入的内容走启动参数。
-- **不上报**：没有遥测、崩溃上报和自动更新，不连接 Cindy 服务端。
+- **不上报**：没有遥测和崩溃上报，不连接 Cindy 服务端。应用更新使用 Tandem 的 GitHub Releases，可手动检查下载，或按用户开启的自动更新设置定期检查下载；安装和重启始终由用户确认。
 - **不用 Cindy 的品牌**：用户可见处不出现 Cindy 的名称、Logo 和角色形象。保留 `LICENSE`、`NOTICE`。
 
 ## 常用命令

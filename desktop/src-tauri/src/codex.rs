@@ -18,6 +18,13 @@ use crate::runner::{Decision, PendingRequest, RunChannels, Runs, TurnEvent, Turn
 use crate::sessions::{Agent, DiscoveredProject, Message, MessageKind, TaskContent, TaskContext, TaskSummary};
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
+
+/// Marks a line on a run's input as a message to add to the running turn, sent as `turn/steer`.
+const STEER_KEY: &str = "tandemSteer";
+
+pub fn steer_line(prompt: &str, attachments: &crate::attachments::Prepared) -> String {
+    json!({STEER_KEY: {"prompt": prompt, "input": attachments.codex_input(prompt)}}).to_string()
+}
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -32,7 +39,6 @@ const READER_IDLE: Duration = Duration::from_secs(60);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_LIMIT: u64 = 200;
-const ITEM_PAGE: u64 = 200;
 /// Very long threads show their most recent part. The rest stays available in Codex.
 const MAX_ITEMS: usize = 3000;
 const TITLE_CHARS: usize = 80;
@@ -57,6 +63,7 @@ impl Conn {
         let env = login_env::login_env().await;
         let program = login_env::find_in_path("codex", env.get("PATH"))
             .ok_or("codex was not found in the login shell PATH")?;
+        crate::diagnostics::debug("codex", || format!("starting {} app-server", program.display()));
         let mut child = Command::new(program)
             .arg("app-server")
             .current_dir(cwd)
@@ -68,6 +75,7 @@ impl Conn {
             .kill_on_drop(true)
             .spawn()
             .map_err(|error| format!("Failed to start codex: {error}"))?;
+        crate::diagnostics::debug("codex", || format!("pid {}", child.id().unwrap_or_default()));
         let stdin = child.stdin.take().ok_or("codex has no stdin")?;
         let stdout = child.stdout.take().ok_or("codex has no stdout")?;
         let mut conn = Self { child, stdin, lines: BufReader::new(stdout).lines(), next_id: 1 };
@@ -240,37 +248,44 @@ impl Reader {
 
     pub async fn read_task(&self, id: &str) -> Result<TaskContent, String> {
         require_uuid(id)?;
-        match self.read_items(id).await {
+        let mut thread = self.call_all(vec![("thread/read", json!({"threadId": id, "includeTurns": false}))]).await?;
+        let model_selection = thread.pop().and_then(|result| task_model(result.get("thread")?));
+        let mut content = match self.read_turns(id).await {
             Err(error) if error.contains(BROKEN_LINEAGE) => {
                 let path = self.task_file(id).await.ok_or(error)?;
                 tauri::async_runtime::spawn_blocking(move || read_own_rollout(&path)).await.map_err(|error| error.to_string())?
             }
             result => result,
-        }
+        }?;
+        content.model_selection = model_selection;
+        Ok(content)
     }
 
-    async fn read_items(&self, id: &str) -> Result<TaskContent, String> {
+    async fn read_turns(&self, id: &str) -> Result<TaskContent, String> {
         let mut newest_first = Vec::new();
         let mut cursor = Value::Null;
+        let mut item_count = 0;
         loop {
-            let params = json!({"threadId": id, "limit": ITEM_PAGE, "sortDirection": "desc", "cursor": cursor});
-            let mut results = self.call_all(vec![("thread/items/list", params)]).await?;
+            let params = json!({"threadId": id, "limit": 25, "itemsView":"full", "sortDirection": "desc", "cursor": cursor});
+            let mut results = self.call_all(vec![("thread/turns/list", params)]).await?;
             let result = results.pop().unwrap_or(Value::Null);
-            if let Some(items) = result.get("data").and_then(Value::as_array) {
-                newest_first.extend(items.iter().filter_map(|entry| entry.get("item").cloned()));
+            if let Some(turns) = result.get("data").and_then(Value::as_array) {
+                item_count += turns.iter().map(|turn| turn.get("items").and_then(Value::as_array).map_or(0, Vec::len).max(1)).sum::<usize>();
+                newest_first.extend(turns.iter().cloned());
             }
             cursor = result.get("nextCursor").cloned().unwrap_or(Value::Null);
-            if cursor.is_null() || newest_first.len() >= MAX_ITEMS {
+            if cursor.is_null() || item_count >= MAX_ITEMS {
                 break;
             }
         }
         let rollout = self.task_file(id).await;
         let messages = tauri::async_runtime::spawn_blocking(move || {
-            let images = rollout_images::for_missing(newest_first.iter(), rollout.as_deref());
-            newest_first.iter().rev().flat_map(|item| item_messages_with(item, &images)).collect()
+            let items = newest_first.iter().filter_map(|turn| turn.get("items").and_then(Value::as_array)).flatten();
+            let images = rollout_images::for_missing(items, rollout.as_deref());
+            newest_first.iter().rev().flat_map(|turn| turn_messages(turn, &images)).collect()
         })
         .await.map_err(|error| error.to_string())?;
-        Ok(TaskContent { messages, context: None::<TaskContext> })
+        Ok(TaskContent { messages, context: None::<TaskContext>, model_selection: None, permission_mode: None })
     }
 
     pub async fn task_cwd(&self, id: &str) -> Result<String, String> {
@@ -390,6 +405,15 @@ fn block_text(blocks: Option<&Value>) -> String {
         .unwrap_or_default()
 }
 
+fn task_model(thread: &Value) -> Option<crate::sessions::TaskModel> {
+    let model = thread.get("model")?.as_str()?.to_owned();
+    if model.is_empty() { return None; }
+    Some(crate::sessions::TaskModel {
+        model,
+        effort: thread.get("reasoningEffort").and_then(Value::as_str).map(str::to_owned),
+    })
+}
+
 /// The thread's own part of the history, read from its file because the official read refused it.
 fn read_own_rollout(path: &Path) -> Result<TaskContent, String> {
     let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
@@ -402,7 +426,7 @@ fn read_own_rollout(path: &Path) -> Result<TaskContent, String> {
     let start = items.len().saturating_sub(MAX_ITEMS);
     let images = rollout_images::for_missing(items[start..].iter(), Some(path));
     let messages = items[start..].iter().flat_map(|item| item_messages_with(item, &images)).collect();
-    Ok(TaskContent { messages, context: None })
+    Ok(TaskContent { messages, context: None, model_selection: None, permission_mode: None })
 }
 
 async fn is_installed() -> bool {
@@ -847,6 +871,7 @@ fn question_event(request_id: String, params: &Value) -> (TurnEvent, PendingRequ
                 "question": question.get("question"),
                 "header": question.get("header"),
                 "options": question.get("options").filter(|options| !options.is_null()).cloned().unwrap_or_else(|| json!([])),
+                "allowCustom": question.get("isOther").and_then(Value::as_bool).unwrap_or(false),
             })
         })
         .collect();
@@ -863,7 +888,7 @@ pub fn decision_result(request: &PendingRequest, decision: &Decision) -> Result<
         Decision::Allow if !is_question => Ok(json!({"decision": "accept"})),
         Decision::Deny if !is_question => Ok(json!({"decision": "decline"})),
         Decision::Deny => Ok(json!({"answers": {}})),
-        Decision::Answer { answers } if is_question => {
+        Decision::Answer { answers, .. } if is_question => {
             let by_id = question_answers(&request.input, answers);
             Ok(json!({"answers": by_id}))
         }
@@ -977,6 +1002,19 @@ fn token_events(params: &Value, state: &mut TurnState) -> Vec<TurnEvent> {
     events
 }
 
+fn turn_messages(turn: &Value, images: &HashMap<String, String>) -> Vec<Message> {
+    let mut messages: Vec<_> = turn.get("items").and_then(Value::as_array).into_iter().flatten()
+        .flat_map(|item| item_messages_with(item, images)).collect();
+    if turn.get("status").and_then(Value::as_str) == Some("failed") {
+        let id = turn.get("id").and_then(Value::as_str).unwrap_or_default();
+        let details = turn.get("error").and_then(|error| error.get("message")).and_then(Value::as_str).unwrap_or_default();
+        let mut error = message(format!("{id}:error"), MessageKind::Assistant, details.to_owned());
+        error.is_error = true;
+        messages.push(error);
+    }
+    messages
+}
+
 fn finished_event(turn: &Value) -> TurnEvent {
     let status = turn.get("status").and_then(Value::as_str).unwrap_or_default();
     let error = turn.get("error").and_then(|error| error.get("message")).and_then(Value::as_str);
@@ -1063,7 +1101,9 @@ async fn run_turn(
     sink: &TurnSink,
 ) -> Result<(), String> {
     let emit = |event| sink.send(event);
-    let RunChannels { mut cancel, mut input } = channels;
+    let RunChannels { mut cancel, mut input, steer } = channels;
+    // Added messages awaiting the server's answer, by request id, so a refusal can be queued.
+    let mut steering: HashMap<u64, String> = HashMap::new();
     let mut params = if request.options.ephemeral {
         json!({"approvalPolicy": "untrusted", "sandboxPolicy": {"type": "readOnly", "networkAccess": false}})
     } else {
@@ -1093,6 +1133,19 @@ async fn run_turn(
                 };
                 let Ok(value) = serde_json::from_str::<Value>(&line) else { continue };
                 let method = value.get("method").and_then(Value::as_str);
+                if method == Some("item/started") {
+                    match value.pointer("/params/item/type").and_then(Value::as_str) {
+                        Some("agentMessage" | "reasoning") => sink.generation_start()?,
+                        Some("commandExecution" | "fileChange" | "mcpToolCall" | "dynamicToolCall" | "collabAgentToolCall" | "webSearch") => {
+                            sink.generation_pause()?;
+                            for call in tool_calls(&value["params"]["item"]) { sink.generation_tool_input(&call.input)?; }
+                        }
+                        _ => {}
+                    }
+                }
+                if method == Some("thread/tokenUsage/updated") {
+                    sink.generation_reasoning_output(value.pointer("/params/tokenUsage/last/reasoningOutputTokens").and_then(Value::as_u64))?;
+                }
                 let id = value.get("id");
                 match (method, id) {
                     (Some(method), Some(id)) => {
@@ -1124,11 +1177,14 @@ async fn run_turn(
                         turn_id = value.pointer("/params/turn/id").and_then(Value::as_str).map(str::to_owned);
                     }
                     (Some("turn/completed"), None) => {
+                        steer.close();
+                        for prompt in steering.into_values() { emit(TurnEvent::SteerRefused { prompt })?; }
                         sink.accepted(thread_id).await?;
                         let turn = value.get("params").and_then(|params| params.get("turn")).cloned().unwrap_or(Value::Null);
                         return emit(finished_event(&turn));
                     }
                     (Some("error"), None) => {
+                        sink.generation_request()?;
                         // Retryable errors are followed by another attempt, and a final failure
                         // ends with turn/completed, so this alone does not finish the turn.
                     }
@@ -1143,6 +1199,11 @@ async fn run_turn(
                             emit(event)?;
                         }
                     }
+                    (None, Some(id)) if id.as_u64().is_some_and(|id| steering.contains_key(&id)) => {
+                        let prompt = id.as_u64().and_then(|id| steering.remove(&id)).unwrap_or_default();
+                        steer.confirm_one();
+                        if value.get("error").is_some() { emit(TurnEvent::SteerRefused { prompt })?; }
+                    }
                     (None, Some(id)) if id.as_u64() == Some(start_id) => {
                         let result = rpc_result(&value)?;
                         let id = result.pointer("/turn/id").and_then(Value::as_str).ok_or("codex 未返回轮次 ID")?;
@@ -1152,7 +1213,21 @@ async fn run_turn(
                     _ => {}
                 }
             }
-            Some(reply) = input.recv() => conn.write(&serde_json::from_str::<Value>(&reply).map_err(|error| error.to_string())?).await?,
+            Some(reply) = input.recv() => {
+                let value = serde_json::from_str::<Value>(&reply).map_err(|error| error.to_string())?;
+                match (value.get(STEER_KEY), &turn_id) {
+                    (Some(steered), Some(turn)) => {
+                        let prompt = steered.get("prompt").and_then(Value::as_str).unwrap_or_default().to_owned();
+                        let id = conn.request("turn/steer", json!({"threadId": thread_id, "expectedTurnId": turn, "input": steered.get("input")})).await?;
+                        steering.insert(id, prompt);
+                    }
+                    (Some(steered), None) => {
+                        steer.confirm_one();
+                        emit(TurnEvent::SteerRefused { prompt: steered.get("prompt").and_then(Value::as_str).unwrap_or_default().to_owned() })?;
+                    }
+                    (None, _) => conn.write(&value).await?,
+                }
+            }
             _ = &mut cancel, if interrupt_deadline.is_none() => {
                 if let Some(turn_id) = &turn_id {
                     conn.request("turn/interrupt", json!({"threadId": thread_id, "turnId": turn_id})).await?;
@@ -1169,6 +1244,29 @@ async fn run_turn(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_threads_persisted_model_and_reasoning_effort() {
+        let selected = task_model(&json!({"model": "gpt-task-a", "reasoningEffort": "high", "modelProvider": "provider"})).unwrap();
+        assert_eq!(selected, crate::sessions::TaskModel { model: "gpt-task-a".into(), effort: Some("high".into()) });
+        assert_eq!(task_model(&json!({"model": "gpt-task-b", "reasoningEffort": null})).unwrap().effort, None);
+        assert!(task_model(&json!({"model": null})).is_none());
+    }
+
+    #[test]
+    fn native_turn_status_restores_an_error_after_partial_output_only_for_failed_turns() {
+        for status in ["failed", "completed", "interrupted", "inProgress"] {
+            let turn = json!({"id":"turn", "status":status, "items":[
+                {"type":"userMessage", "id":"u", "content":[{"type":"text", "text":"do it"}]},
+                {"type":"agentMessage", "id":"a", "text":"partial reply"}
+            ], "error":{"message":"provider failed"}});
+            let messages = turn_messages(&turn, &HashMap::new());
+            assert_eq!(messages[0].text, "do it");
+            assert_eq!(messages[1].text, "partial reply");
+            assert_eq!(messages.len(), if status == "failed" { 3 } else { 2 });
+            if status == "failed" { assert!(messages[2].is_error); assert_eq!(messages[2].text, "provider failed"); }
+        }
+    }
 
     #[test]
     fn a_thread_becomes_a_task_named_by_its_title_or_first_message() {
@@ -1334,12 +1432,25 @@ mod tests {
     }
 
     #[test]
+    fn codex_questions_follow_the_native_free_text_option_without_changing_answer_ids() {
+        for allow in [false, true] {
+            let (event, request) = question_event("request".into(), &json!({"questions": [{"id": "q", "question": "Pick", "header": "Choice", "isOther": allow, "options": [{"label": "A", "description": "first"}]}]}));
+            let TurnEvent::Question { questions, .. } = event else { panic!("Expected question"); };
+            assert_eq!(questions[0]["allowCustom"], allow);
+            assert_eq!(questions[0]["options"].as_array().unwrap().len(), 1);
+            let answers = json!({"Pick": "my own answer"}).as_object().unwrap().clone();
+            let reply = decision_result(&request, &Decision::Answer { answers, custom: true }).unwrap();
+            assert_eq!(reply["answers"]["q"]["answers"][0], "my own answer");
+        }
+    }
+
+    #[test]
     fn answers_questions_by_id_and_decisions_in_codex_terms() {
         let questions = json!([{"id": "q1", "question": "Colour?"}, {"id": "q2", "question": "Size?"}]);
         let pending = PendingRequest::for_codex(crate::runner::QUESTION_TOOL, questions);
         let mut answers = Map::new();
         answers.insert("Colour?".to_owned(), json!("Red"));
-        let result = decision_result(&pending, &Decision::Answer { answers }).unwrap();
+        let result = decision_result(&pending, &Decision::Answer { answers, custom: false }).unwrap();
         assert_eq!(result["answers"]["q1"]["answers"][0], "Red");
         assert!(result["answers"].get("q2").is_none());
 

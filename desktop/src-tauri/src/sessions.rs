@@ -6,13 +6,12 @@ use crate::attachments::ATTACHED_FILE_PREFIX;
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
 const MAX_TASKS: usize = 300;
-const TITLE_TAIL_BYTES: u64 = 256 * 1024;
 /// Claude records a stopped turn as a user message starting with this.
 const INTERRUPTION_PREFIX: &str = "[Request interrupted by user";
 const MAX_TEXT_BYTES: usize = 20 * 1024;
@@ -81,11 +80,21 @@ pub struct TaskContext {
     pub model: Option<String>,
 }
 
+#[derive(Debug, Serialize, PartialEq)]
+pub struct TaskModel {
+    pub model: String,
+    pub effort: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskContent {
     pub messages: Vec<Message>,
     pub context: Option<TaskContext>,
+    pub model_selection: Option<TaskModel>,
+    /// The permission mode the CLI last ran this task in; Claude records it on each prompt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,9 +111,12 @@ struct Line {
     is_meta: bool,
     #[serde(default)]
     is_compact_summary: bool,
+    #[serde(default)]
+    is_api_error_message: bool,
     timestamp: Option<String>,
     message: Option<Box<RawValue>>,
     attachment: Option<Box<RawValue>>,
+    permission_mode: Option<String>,
 }
 
 struct Entry {
@@ -112,8 +124,10 @@ struct Entry {
     is_user: bool,
     is_meta: bool,
     is_compact_summary: bool,
+    is_api_error_message: bool,
     timestamp: Option<String>,
     message: Box<RawValue>,
+    permission_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -257,7 +271,38 @@ pub fn read_task(path: &Path) -> Result<TaskContent, String> {
             let raw: RawUsage = serde_json::from_str(entry.message.get()).ok()?;
             Some(TaskContext { used_tokens: context_tokens(&raw.usage?)?, model: raw.model })
         });
-    Ok(TaskContent { messages, context })
+    let permission_mode = entries
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(index, _)| included.contains(index))
+        .find_map(|(_, entry)| entry.permission_mode.clone());
+    let model_selection = entries.iter().enumerate().rev()
+        .filter(|(index, entry)| !entry.is_user && !entry.is_meta && included.contains(index))
+        .find_map(|(_, entry)| {
+            let raw: RawUsage = serde_json::from_str(entry.message.get()).ok()?;
+            let model = raw.model.filter(|model| !model.is_empty() && model != "<synthetic>")?;
+            Some(TaskModel { model, effort: None })
+        });
+    Ok(TaskContent { messages: terminal_reply_errors(messages), context, model_selection, permission_mode })
+}
+
+/// A request recovered within the same turn leaves no terminal error; a new prompt keeps it.
+pub fn terminal_reply_errors(messages: Vec<Message>) -> Vec<Message> {
+    let mut pending = Vec::new();
+    let mut recovered = HashSet::new();
+    for (index, message) in messages.iter().enumerate() {
+        match message.kind {
+            MessageKind::User => pending.clear(),
+            MessageKind::Assistant if message.is_error => {
+                recovered.extend(pending.drain(..));
+                pending.push(index);
+            },
+            MessageKind::Assistant | MessageKind::ToolUse => recovered.extend(pending.drain(..)),
+            _ => {}
+        }
+    }
+    messages.into_iter().enumerate().filter_map(|(index, message)| (!recovered.contains(&index)).then_some(message)).collect()
 }
 
 /// What `--resume-session-at` needs to replace the last prompt: the assistant message that
@@ -325,8 +370,10 @@ fn read_entries(path: &Path) -> Result<(Vec<Entry>, HashMap<String, String>), St
                     is_user: true,
                     is_meta: false,
                     is_compact_summary: false,
+                    is_api_error_message: false,
                     timestamp: parsed.timestamp,
                     message,
+                    permission_mode: None,
                 });
             }
             continue;
@@ -340,8 +387,10 @@ fn read_entries(path: &Path) -> Result<(Vec<Entry>, HashMap<String, String>), St
                 is_user: kind == Some("user"),
                 is_meta: parsed.is_meta,
                 is_compact_summary: parsed.is_compact_summary,
+                is_api_error_message: parsed.is_api_error_message,
                 timestamp: parsed.timestamp,
                 message,
+                permission_mode: parsed.permission_mode,
             });
         }
     }
@@ -434,13 +483,21 @@ struct QueuedCommand {
     prompt: Option<Box<RawValue>>,
     #[serde(default)]
     human_turn: bool,
+    origin: Option<Value>,
+    command_mode: Option<String>,
+    #[serde(default)]
+    is_meta: bool,
 }
 
 /// What the user typed while a turn was running is recorded as an attachment, not a user line.
 /// Programs queue commands the same way, and those are not the user's words.
 fn queued_message(attachment: &RawValue) -> Option<Box<RawValue>> {
     let queued: QueuedCommand = serde_json::from_str(attachment.get()).ok()?;
-    if queued.kind != "queued_command" || !queued.human_turn {
+    // The terminal marks typed messages `humanTurn`. A message written into a running print-mode
+    // process, as Tandem adds one mid-turn, carries no origin at all; task notifications and peer
+    // messages name their origin or are marked meta.
+    let typed_mid_turn = queued.origin.is_none() && queued.command_mode.as_deref() == Some("prompt") && !queued.is_meta;
+    if queued.kind != "queued_command" || !(queued.human_turn || typed_mid_turn) {
         return None;
     }
     let prompt = queued.prompt?;
@@ -564,7 +621,7 @@ fn text_message(entry: &Entry, block: usize, kind: MessageKind, text: &str) -> M
         text,
         tool_name: None,
         tool_use_id: None,
-        is_error: false,
+        is_error: kind == MessageKind::Assistant && entry.is_api_error_message,
         truncated,
         timestamp: entry.timestamp.clone(),
         image: None, image_error: None,
@@ -680,7 +737,7 @@ fn modified_ms(path: &Path) -> Option<u64> {
 fn summarize(path: &Path, updated_at_ms: u64) -> Option<TaskSummary> {
     let (cwd, first_prompt) = read_cwd_and_first_prompt(path);
     let cwd = cwd?;
-    let title = read_title_from_tail(path)
+    let title = crate::session_titles::claude(path)
         .or(first_prompt)
         .unwrap_or_default();
     Some(TaskSummary {
@@ -753,49 +810,41 @@ fn prompt_without_attachments(text: &str) -> Option<String> {
     first.rsplit('/').next().map(str::to_owned)
 }
 
-/// A user-set title outranks the generated one. Both are appended, so the last of each wins.
-fn read_title_from_tail(path: &Path) -> Option<String> {
-    let mut file = File::open(path).ok()?;
-    let length = file.metadata().ok()?.len();
-    let start = length.saturating_sub(TITLE_TAIL_BYTES);
-    file.seek(SeekFrom::Start(start)).ok()?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).ok()?;
-    let text = String::from_utf8_lossy(&bytes);
-    let mut custom = None;
-    let mut generated = None;
-    for line in text.lines() {
-        if !line.contains("itle\"") {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        match value.get("type").and_then(Value::as_str) {
-            Some("custom-title") => {
-                custom = value
-                    .get("customTitle")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-            }
-            Some("ai-title") => {
-                generated = value
-                    .get("aiTitle")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned);
-            }
-            _ => {}
-        }
-    }
-    custom.or(generated)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn read_messages_for_test(path: &Path) -> Result<Vec<Message>, String> {
         read_task(path).map(|content| content.messages)
+    }
+
+    #[test]
+    fn native_api_errors_mark_the_failed_reply_and_successful_retries_clear_the_marker() {
+        for recovered in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut error = assistant("err", "u", "m", json!({"type":"text", "text":"API error details"}));
+            error["isApiErrorMessage"] = json!(true);
+            let mut lines = vec![user("u", None, json!("first")), error];
+            lines.push(if recovered { assistant("ok", "err", "m", json!({"type":"text", "text":"recovered"})) } else { user("next", Some("err"), json!("try again")) });
+            let path = write_session(dir.path(), "p", ID, &lines);
+            let messages = read_task(&path).unwrap().messages;
+            assert_eq!(messages.iter().filter(|message| message.kind == MessageKind::Assistant && message.is_error).count(), usize::from(!recovered));
+            if !recovered { assert!(messages[1].is_error); assert_eq!(messages[2].text, "try again"); }
+        }
+    }
+
+    #[test]
+    fn restores_the_last_real_model_on_the_active_claude_branch() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("task.jsonl");
+        let lines = [
+            json!({"type":"assistant", "uuid":"a", "message":{"model":"claude-a", "content":[]}}),
+            json!({"type":"assistant", "uuid":"abandoned", "parentUuid":"a", "message":{"model":"wrong", "content":[]}}),
+            json!({"type":"assistant", "uuid":"b", "parentUuid":"a", "message":{"model":"claude-b", "content":[]}}),
+            json!({"type":"assistant", "uuid":"synthetic", "parentUuid":"b", "message":{"model":"<synthetic>", "content":[]}}),
+        ];
+        std::fs::write(&path, lines.iter().map(Value::to_string).collect::<Vec<_>>().join("\n")).unwrap();
+        assert_eq!(read_task(&path).unwrap().model_selection, Some(TaskModel { model:"claude-b".into(), effort:None }));
     }
 
     #[test]
@@ -840,6 +889,17 @@ mod tests {
 
     fn texts(messages: &[Message]) -> Vec<&str> {
         messages.iter().map(|message| message.text.as_str()).collect()
+    }
+
+    #[test]
+    fn the_last_recorded_permission_mode_on_the_active_branch_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut terminal = user("u1", None, json!("in the terminal"));
+        terminal["permissionMode"] = json!("auto");
+        let mut sent_here = user("u2", Some("a1"), json!("from elsewhere"));
+        sent_here["permissionMode"] = json!("default");
+        let path = write_session(dir.path(), "p", ID, &[terminal, assistant("a1", "u1", "m1", json!({"type":"text","text":"ok"})), sent_here]);
+        assert_eq!(read_task(&path).unwrap().permission_mode.as_deref(), Some("default"));
     }
 
     #[test]
@@ -979,15 +1039,26 @@ mod tests {
             "type": "attachment", "uuid": "q3", "parentUuid": "h",
             "attachment": {"type": "queued_command", "humanTurn": true, "prompt": [{"type": "text", "text": "with blocks"}]},
         });
+        // Written into a running print-mode process, as Tandem adds a message mid-turn.
+        let added = json!({
+            "type": "attachment", "uuid": "q4", "parentUuid": "q3",
+            "attachment": {"type": "queued_command", "commandMode": "prompt", "prompt": [{"type": "text", "text": "added mid-turn"}]},
+        });
+        let notification = json!({
+            "type": "attachment", "uuid": "q5", "parentUuid": "q4",
+            "attachment": {"type": "queued_command", "commandMode": "task-notification", "origin": {"kind": "task-notification"}, "prompt": "task done"},
+        });
         let path = write_session(dir.path(), "p", ID, &[
             user("u1", None, json!("first")),
             queued("q1", "u1", true, "typed meanwhile"),
             queued("q2", "q1", false, "from a program"),
             hook,
             blocks,
-            user("u2", Some("q3"), json!("last")),
+            added,
+            notification,
+            user("u2", Some("q5"), json!("last")),
         ]);
-        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["first", "typed meanwhile", "with blocks", "last"]);
+        assert_eq!(texts(&read_messages_for_test(&path).unwrap()), ["first", "typed meanwhile", "with blocks", "added mid-turn", "last"]);
     }
 
     #[test]
@@ -1088,6 +1159,23 @@ mod tests {
         assert_eq!(title(ids[1]), "Generated");
         assert_eq!(title(ids[2]), "Custom");
         assert_eq!(tasks[0].cwd, "/work/app");
+    }
+
+    #[test]
+    fn saved_titles_survive_later_output_and_keep_custom_title_priority() {
+        for custom in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut lines = vec![user("u1", None, json!("first prompt"))];
+            if custom {
+                lines.push(json!({"type":"custom-title", "customTitle":"Custom"}));
+            }
+            lines.push(json!({"type":"ai-title", "aiTitle":"Generated"}));
+            lines.push(assistant("a1", "u1", "m1", json!({"type":"text", "text":"x".repeat(512 * 1024)})));
+            let path = write_session(dir.path(), "p", ID, &lines);
+            let expected = if custom { "Custom" } else { "Generated" };
+            assert_eq!(summarize(&path, 0).unwrap().title, expected);
+            assert_eq!(list_tasks(dir.path(), &["/".to_owned()]).unwrap()[0].title, expected);
+        }
     }
 
     #[test]

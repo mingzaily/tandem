@@ -18,17 +18,20 @@ pub const SYSTEM_PROMPT: &str = "Generate a concise title for the task described
 pub struct Jobs(Mutex<HashSet<String>>);
 
 pub struct Job<'a> {
+    _activity: tokio::sync::RwLockReadGuard<'static, ()>,
     jobs: &'a Jobs,
     id: String,
 }
 
 impl Jobs {
     pub fn begin(&self, id: &str) -> Result<Job<'_>, String> {
+        let activity = crate::updater::activity()?;
         let mut jobs = self.0.lock().map_err(|error| error.to_string())?;
         if !jobs.insert(id.to_owned()) {
             return Err("这个任务正在生成标题".into());
         }
         Ok(Job {
+            _activity: activity,
             jobs: self,
             id: id.to_owned(),
         })
@@ -421,7 +424,7 @@ pub async fn save_name(
         store.reserve_metadata(&task_id, protocol.agent())
     })
     .await?;
-    let result = save_name_idle(protocol, id.clone(), request_id, request).await;
+    let result = save_name_idle(protocol, id.clone(), request_id, request, runs.inner()).await;
     let task_id = id.clone();
     let released = crate::queue::access(app, move |store| store.release_metadata(&task_id)).await;
     crate::queue::kick(app.clone(), id);
@@ -434,6 +437,7 @@ async fn save_name_idle(
     id: String,
     request_id: String,
     request: serde_json::Value,
+    runs: &Runs,
 ) -> Result<(), String> {
     use std::process::Stdio;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -507,6 +511,8 @@ async fn save_name_idle(
         .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("启动 CLI 保存标题失败：{error}"))?;
+    // The CLI may register this resumed session; it remains an owned metadata writer.
+    let _owned = runs.own_metadata_writer(child.id().ok_or("CLI 缺少进程 ID")?)?;
     let mut stdin = child.stdin.take().ok_or("CLI 缺少输入通道")?;
     let mut lines = BufReader::new(child.stdout.take().ok_or("CLI 缺少输出通道")?).lines();
     let operation = async {

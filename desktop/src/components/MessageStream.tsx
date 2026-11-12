@@ -4,22 +4,25 @@ import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
 import type { Agent } from '../lib/api';
 import type { Item, Row, TextItem, ToolItem, WorkGroup } from '../lib/items';
-import { MAX_LIVE_ACTIVITIES, visibleWorkItems } from '../lib/items';
+import { completedReplyIds, visibleWorkItems } from '../lib/items';
 import { buildMessageRows } from '../lib/fileChanges';
 import { describeTool, formatDuration } from '../lib/tools';
 import { ZoomableImage } from './ImageLightbox';
-import { Markdown, TaskFileContext } from './Markdown';
+import { TaskFileContext } from './Markdown';
+import { AssistantReply } from './AssistantReply';
+import { ReplyError } from './ReplyError';
 import { FileChangeSummary } from './FileChangeSummary';
 import { EditableUserMessage } from './UserMessageEdit';
 
 const BOTTOM_THRESHOLD_PX = 48;
 const ESTIMATED_ROW_PX = 40;
 const ACTIVITY_ROW =
-  'group flex w-full items-center gap-1.5 rounded-[8px] px-2 py-[3px] text-left outline-none select-none cursor-pointer transition-colors duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] hover:bg-[var(--msg-code-inline-bg)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] motion-reduce:transition-none';
+  'group flex w-full items-center gap-1.5 rounded-[8px] px-2 py-[3px] text-14 leading-5 text-left outline-none select-none cursor-pointer transition-colors duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] hover:bg-[var(--msg-code-inline-bg)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] motion-reduce:transition-none';
+const WORK_ICON_SLOT = 'inline-flex h-5 w-4 shrink-0 items-center justify-center';
 const CHEVRON_SLOT =
   'ml-auto flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[8px] text-[var(--msg-tool-card-chevron)] transition-colors duration-[var(--motion-fast)] group-hover:bg-[var(--cmd-palette-item-hover)]';
 
-type Toggle = (id: string) => void;
+type Toggle = (id: string, defaultOpen?: boolean) => void;
 
 interface MessageStreamProps {
   taskId: string;
@@ -37,14 +40,15 @@ interface MessageStreamProps {
   bottomPadding: number;
 }
 
-const expandedMemory = new Map<string, Set<string>>();
+const expandedMemory = new Map<string, Map<string, boolean>>();
 
 export default function MessageStream({ taskId, agent, items, isRunning, editableId, onEditLast, sendWithCmdEnter, isLoading, cwd, bottomPadding }: MessageStreamProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
   const rows = useMemo(() => buildMessageRows(items, isRunning, cwd), [items, isRunning, cwd]);
-  // Expansion lives here because rows unmount when they scroll out of view.
-  const [expanded, setExpanded] = useState<Set<string>>(() => expandedMemory.get(taskId) ?? new Set());
+  const copyableReplies = useMemo(() => completedReplyIds(items, isRunning), [items, isRunning]);
+  // Explicit open and closed choices survive virtualized rows; absent entries use their default.
+  const [expanded, setExpanded] = useState(() => expandedMemory.get(taskId) ?? new Map<string, boolean>());
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroller.current,
@@ -62,10 +66,10 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
     }
   }, [rows, totalSize, virtualizer]);
 
-  const toggle = useCallback((id: string) => {
+  const toggle = useCallback((id: string, defaultOpen = false) => {
     setExpanded((current) => {
-      const next = new Set(current);
-      if (!next.delete(id)) next.add(id);
+      const next = new Map(current);
+      next.set(id, !(current.get(id) ?? defaultOpen));
       expandedMemory.set(taskId, next);
       return next;
     });
@@ -108,7 +112,7 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
                 }`}
               >
                 {row.type === 'changes' ? (
-                  <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.has(row.id)} onToggle={() => toggle(row.id)} />
+                  <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.get(row.id) ?? false} onToggle={() => toggle(row.id)} />
                 ) : row.type === 'group' ? (
                   <Group group={row} expanded={expanded} onToggle={toggle} />
                 ) : row.type === 'user' && row.id === editableId ? (
@@ -116,7 +120,7 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
                     <ItemRow item={row} expanded={expanded} onToggle={toggle} />
                   </EditableUserMessage>
                 ) : (
-                  <ItemRow item={row} expanded={expanded} onToggle={toggle} />
+                  <ItemRow item={row} expanded={expanded} onToggle={toggle} copyable={copyableReplies.has(row.id)} />
                 )}
               </div>
             </div>
@@ -129,11 +133,11 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
 }
 
 interface RowProps {
-  expanded: Set<string>;
+  expanded: Map<string, boolean>;
   onToggle: Toggle;
 }
 
-function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
+function ItemRow({ item, expanded, onToggle, copyable = false }: RowProps & { item: Item; copyable?: boolean }) {
   switch (item.type) {
     case 'user':
       return (
@@ -145,7 +149,7 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
               ))}
               {item.imageErrors?.map((reason, index) => (
                 <span key={`image-error-${index}`} role="img" aria-label={t(reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}
-                  title={t(reason === 'tooLarge' ? 'imageTooLarge' : reason === 'unsupported' ? 'imageUnsupported' : reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}
+                  data-tooltip={t(reason === 'tooLarge' ? 'imageTooLarge' : reason === 'unsupported' ? 'imageUnsupported' : reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}
                   className="flex min-h-[140px] max-w-[280px] flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-[hsl(var(--border))] bg-[hsl(var(--muted))] p-4 text-12 font-medium text-[hsl(var(--muted-foreground))]">
                   <ImageOff size={32} aria-hidden className="text-[var(--text-tertiary)]" /><span>{t(reason === 'missing' ? 'imageMissing' : 'imageUnreadable')}</span>
                 </span>
@@ -153,7 +157,7 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
               {item.files?.map((file) => (
                 <span
                   key={file.path ?? file.name}
-                  title={file.path}
+                  data-tooltip={file.path}
                   className="inline-flex h-[30px] min-w-0 max-w-full items-center gap-1.5 rounded-lg border border-[var(--msg-user-border)] bg-[var(--msg-user-bg)] px-2.5 text-13 text-[var(--msg-user-text)]"
                 >
                   <FileText size={14} strokeWidth={1.8} aria-hidden className="shrink-0" />
@@ -169,8 +173,10 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
           ) : null}
         </div>
       );
+    case 'error':
+      return <ReplyError details={item.text} />;
     case 'assistant':
-      return <Markdown text={item.text} />;
+      return <AssistantReply text={item.text} copyable={copyable} at={item.at} />;
     case 'notice':
       return (
         <div className="flex items-center gap-1.5 px-2 py-[3px] text-14 text-[var(--status-paused)]">
@@ -192,16 +198,17 @@ function ItemRow({ item, expanded, onToggle }: RowProps & { item: Item }) {
         </div>
       );
     case 'thinking':
-      return <ThinkingRow item={item} isOpen={expanded.has(item.id)} onToggle={onToggle} />;
+      return <ThinkingRow item={item} isOpen={expanded.get(item.id) ?? false} onToggle={onToggle} />;
     case 'tool':
-      return <ToolRow item={item} isOpen={expanded.has(item.id)} onToggle={onToggle} />;
+      return <ToolRow item={item} isOpen={expanded.get(item.id) ?? false} onToggle={onToggle} />;
   }
 }
 
-function Group({ group, expanded, onToggle }: RowProps & { group: WorkGroup }) {
-  const isOpen = expanded.has(group.id);
-  const canToggle = !group.isRunning || group.items.length > MAX_LIVE_ACTIVITIES;
-  const visible = visibleWorkItems(group, isOpen);
+export function Group({ group, expanded, onToggle }: RowProps & { group: WorkGroup }) {
+  const choice = expanded.get(group.id);
+  const defaultOpen = group.preview ?? group.isRunning;
+  const isOpen = choice ?? defaultOpen;
+  const visible = visibleWorkItems(group, choice);
   const base = group.isRunning ? t('workRunning') : group.durationMs !== null
     ? t(group.isSummary ? 'processed' : 'worked', { duration: formatDuration(group.durationMs) })
     : t('workDetails');
@@ -209,24 +216,23 @@ function Group({ group, expanded, onToggle }: RowProps & { group: WorkGroup }) {
     <div className="w-full min-w-0">
       <button
         type="button"
-        aria-expanded={canToggle ? isOpen : undefined}
-        disabled={!canToggle}
+        aria-expanded={isOpen}
         data-work-group={group.isRunning ? 'running' : 'completed'}
-        onClick={() => onToggle(group.id)}
-        className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[8px] py-[2px] text-left transition-opacity duration-[var(--motion-fast)] enabled:hover:opacity-80 disabled:cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
+        onClick={() => onToggle(group.id, defaultOpen)}
+        className="flex w-full cursor-pointer select-none items-center gap-1.5 rounded-[8px] py-[2px] text-14 leading-5 text-left transition-opacity duration-[var(--motion-fast)] hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
       >
-        <span className="shrink-0 text-[var(--msg-tool-card-chevron)]">{group.isRunning ? <Loader2 size={14} aria-hidden className="animate-spin motion-reduce:animate-none" /> : <Layers size={14} aria-hidden />}</span>
-        <span className="min-w-0 translate-y-[1px] truncate text-14 text-[var(--msg-tool-card-chevron)]">
+        <span aria-hidden className={`${WORK_ICON_SLOT} text-[var(--msg-tool-card-chevron)]`}>{group.isRunning ? <Loader2 size={14} className="animate-spin motion-reduce:animate-none" /> : <Layers size={14} />}</span>
+        <span className="min-w-0 truncate text-14 leading-5 text-[var(--msg-tool-card-chevron)]">
           {base}
         </span>
         <div className="flex-1" />
-        {canToggle ? <ChevronRight
+        <ChevronRight
           size={14}
           aria-hidden
           className={`shrink-0 text-[var(--msg-tool-card-chevron)] transition-transform duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] motion-reduce:transition-none ${
             isOpen ? 'rotate-90' : ''
           }`}
-        /> : null}
+        />
       </button>
       {visible.length ? (
         <div className="mt-1 flex min-w-0 flex-col gap-0.5 border-l-2 border-[var(--agent-actions-rail)] py-[2px] pl-3">
@@ -261,7 +267,7 @@ function ThinkingRow({ item, isOpen, onToggle }: { item: TextItem; isOpen: boole
       onClick={() => onToggle(item.id)}
       className={`${ACTIVITY_ROW} ${isOpen ? '!items-start' : ''}`}
     >
-      <span aria-hidden className="inline-flex h-[18px] w-4 shrink-0 items-center justify-center text-[var(--msg-tool-card-chevron)]">
+      <span aria-hidden className={`${WORK_ICON_SLOT} text-[var(--msg-tool-card-chevron)]`}>
         <Sparkles size={13} />
       </span>
       <span
@@ -288,9 +294,7 @@ function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; 
         <span
           role="img"
           aria-label={status}
-          className={`inline-flex h-[18px] w-4 shrink-0 items-center justify-center ${
-            item.isError ? 'text-[var(--text-danger)]' : 'text-[var(--msg-tool-card-chevron)]'
-          }`}
+          className={`${WORK_ICON_SLOT} ${item.isError ? 'text-[var(--text-danger)]' : 'text-[var(--msg-tool-card-chevron)]'}`}
         >
           {!isDone ? (
             <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
@@ -305,14 +309,14 @@ function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; 
         ) : null}
         {display.fileName ? (
           <span
-            title={display.text}
+            data-tooltip={display.text}
             className="inline-flex h-[22px] min-w-0 items-center gap-1 rounded-md border border-[var(--chat-input-chip-border)] bg-[var(--chat-input-chip-bg)] px-1.5 text-13 text-[var(--chat-input-chip-text)]"
           >
             <FileText size={12} aria-hidden className="shrink-0 text-[var(--chat-input-chip-icon)]" />
             <span className="min-w-0 truncate">{display.fileName}</span>
           </span>
         ) : (
-          <span title={display.title ?? display.text} className="min-w-0 truncate text-14 font-medium text-[var(--msg-tool-card-chevron)]">
+          <span data-tooltip={display.title ?? display.text} className="min-w-0 truncate text-14 font-medium text-[var(--msg-tool-card-chevron)]">
             {display.text}
           </span>
         )}
@@ -329,7 +333,7 @@ function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; 
       </button>
       {display.command && !isOpen ? (
         <div
-          title={display.command}
+          data-tooltip={display.command}
           className="min-w-0 truncate px-2 pb-[3px] pl-[30px] font-mono text-12 leading-[1.5] text-[var(--msg-tool-card-chevron)]"
         >
           {display.command}

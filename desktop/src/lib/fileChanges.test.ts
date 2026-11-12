@@ -76,6 +76,15 @@ describe('file changes in the message stream', () => {
     expect(buildMessageRows(items, false, null).filter(({ type }) => type === 'changes').map(({ id }) => id)).toEqual(['changes-user', 'changes-user-2']);
   });
 
+  it('keeps edits before and after a steer in the same active turn without a premature change card', () => {
+    const items: Item[] = [prompt, tool('/a'), { type: 'user', id: 'steer', text: 'also b', steered: true }, tool('/b'), { type: 'assistant', id: 'answer', text: 'done' }];
+    expect(buildMessageRows(items, true, null).filter((row) => row.type === 'changes')).toEqual([]);
+    const completed = buildMessageRows(items, false, null).filter((row) => row.type === 'changes');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].files.map(({ path }) => path)).toEqual(['/a', '/b']);
+    expect(summarizeFileChanges(items, null).files.map(({ path }) => path)).toEqual(['/a', '/b']);
+  });
+
   it('keeps interruptions and compaction inside the same file-change turn', () => {
     const rows = buildMessageRows([
       prompt, tool('/a'), { type: 'notice', id: 'stop', text: '已中断' }, { type: 'compaction', id: 'compact' }, tool('/b'),

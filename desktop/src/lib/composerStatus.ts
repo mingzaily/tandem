@@ -1,4 +1,4 @@
-import type { ModelOption, TurnOptions, UsageWindow } from './api';
+import type { ModelOption, TaskModel, TurnOptions, UsageWindow, UsageWindows } from './api';
 import { t } from './i18n';
 
 export type PermissionMode = 'ask' | 'acceptEdits' | 'auto' | 'bypassPermissions';
@@ -9,17 +9,35 @@ export interface TurnPrefs {
   permissionMode: PermissionMode;
 }
 
+/** Claude's recorded mode, as one of the composer's choices; plan and other modes have none. */
+export function sessionPermissionMode(mode: string | undefined): PermissionMode | null {
+  if (mode === 'default') return 'ask';
+  return mode === 'acceptEdits' || mode === 'auto' || mode === 'bypassPermissions' ? mode : null;
+}
+
 export const DEFAULT_PREFS: TurnPrefs = { model: null, effort: null, permissionMode: 'ask' };
 
+/** Existing tasks resume their own CLI model; new-task defaults only supply a missing permission mode. */
+export function taskPreferences(defaults: TurnPrefs, native?: TaskModel | null, chosen?: TurnPrefs, permissionMode?: PermissionMode): TurnPrefs {
+  return chosen ?? { model: native?.model ?? null, effort: native?.effort ?? null, permissionMode: permissionMode ?? defaults.permissionMode };
+}
+
+/** Native model ids may be the resolved identity behind a CLI menu alias. */
+export function selectedModel(prefs: Pick<TurnPrefs, 'model'>, models: ModelOption[]): ModelOption | undefined {
+  return models.find((option) => option.value === (prefs.model ?? 'default'))
+    ?? (prefs.model ? models.find((option) => option.value !== 'default' && option.resolvedModel === prefs.model)
+      ?? models.find((option) => option.resolvedModel === prefs.model) : undefined);
+}
+
 export function titleOptions(prefs: TurnPrefs, models: ModelOption[]): Pick<TurnOptions, 'model' | 'effort'> {
-  const model = models.find((option) => option.value === (prefs.model ?? 'default'));
+  const model = selectedModel(prefs, models);
   const levels = model?.supportsEffort ? model.supportedEffortLevels : [];
   return { model: prefs.model, effort: levels.includes('low') ? 'low' : levels[0] ?? null };
 }
 
 /** Leaves out whatever the chosen model cannot do, so the CLI never rejects the turn. */
 export function turnOptions(prefs: TurnPrefs, models: ModelOption[]): TurnOptions {
-  const model = models.find((option) => option.value === (prefs.model ?? 'default'));
+  const model = selectedModel(prefs, models);
   const effortFits = !model || (model.supportsEffort && model.supportedEffortLevels.includes(prefs.effort ?? ''));
   const autoFits = !model || model.supportsAutoMode;
   const mode = prefs.permissionMode === 'auto' && !autoFits ? 'ask' : prefs.permissionMode;
@@ -53,13 +71,22 @@ export function resetTimeMs(window: UsageWindow): number | null {
   return Number.isNaN(at) ? null : at;
 }
 
+/** True once any window has reset since it was read, so the figures need reading again. */
+export function usageExpired(windows: UsageWindows | null, now: number): boolean {
+  return [windows?.fiveHour, windows?.sevenDay].some((window) => {
+    const at = window ? resetTimeMs(window) : null;
+    return at !== null && at <= now;
+  });
+}
+
 /** "4小时 剩余 97%": how long until the window resets, and how much of it is left. */
 export function describeUsage(
   window: UsageWindow,
   now: number,
 ): { text: string; low: boolean; remaining: number; resetIn: string } | null {
   const at = resetTimeMs(window);
-  if (at === null) return null;
+  // A window past its reset has started over, so the old figure no longer says anything.
+  if (at === null || at <= now) return null;
   const minutes = Math.max(1, Math.floor((at - now) / 60_000));
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);

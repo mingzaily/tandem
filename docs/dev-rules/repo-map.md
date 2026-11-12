@@ -25,7 +25,7 @@
 | `src/components/QuestionPrompt.tsx`、`PermissionPrompt.tsx` | 提问和确认卡片 |
 | `src/components/SettingsView.tsx`、`SettingsSelect.tsx` | 设置页，含共用主题/语言胶囊下拉、Agent、项目和远程 |
 | `src/components/AgentResources.tsx` | 按需加载的 MCP 与 Skills 只读清单、来源和错误展示，长列表虚拟化 |
-| `src/components/SidebarOptionsMenu.tsx`、`src/lib/sidebarModel.ts` | 项目内 CLI 分组、任务排序（时间、类型、优先级）、完成未读标记、项目置顶顺序与悬停二级菜单 |
+| `src/lib/sidebarModel.ts`、`src/components/SettingsView.tsx` 的项目页 | 项目内 CLI 分组、任务排序（时间、类型、优先级）、完成未读标记、项目置顶顺序；分组和排序在设置里修改 |
 | `src/components/UserMessageEdit.tsx` | 编辑最后一条消息后重发（仅 Claude Code） |
 | `src/components/TaskHeaderActions.tsx`、`Tip.tsx` | 标题栏项目/续接快捷入口、菜单按下态和提示 |
 | `src/components/TrayPanel.tsx` | 菜单栏面板，是单独的窗口 |

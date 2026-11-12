@@ -36,7 +36,7 @@ function Gauge({ source, isRisen }: { source: TraySource; isRisen: boolean }) {
   const liquid = tightest.remaining > 0 ? Math.max(3, (tightest.remaining / 100) * TUBE_INNER_HEIGHT) : 0;
   const hint = source.windows.map((window) => `${windowName(window)}：${t('trayResetIn', { time: window.resetIn })}`).join('\n');
   return (
-    <div className="flex min-w-0 flex-1 flex-col items-center gap-[7px] pb-0.5 pt-1" title={hint}>
+    <div className="flex min-w-0 flex-1 flex-col items-center gap-[7px] pb-0.5 pt-1" data-tooltip={hint}>
       <div className={`flex h-[22px] items-baseline gap-px tabular-nums ${tightest.isLow ? 'text-[var(--tray-warn)]' : ''}`}>
         <span className="text-[18px] font-medium leading-[22px]">{tightest.remaining}</span>
         <span className={`text-[11px] ${tightest.isLow ? '' : 'text-[var(--tray-ink-3)]'}`}>%</span>
@@ -162,7 +162,7 @@ export function TrayPanel() {
         <button
           type="button"
           aria-label={t(isRefreshing ? 'trayRefreshing' : 'trayRefresh')}
-          title={t(isRefreshing ? 'trayRefreshing' : 'trayRefresh')}
+          data-tooltip={t(isRefreshing ? 'trayRefreshing' : 'trayRefresh')}
           aria-busy={isRefreshing}
           disabled={isRefreshing}
           onClick={() => void refresh()}
@@ -213,10 +213,10 @@ export function TrayPanel() {
           {t('trayOpen')}
         </button>
         <span className="flex-1" />
-        <button type="button" aria-label={t('settings')} title={t('settings')} onClick={() => void trayPanelAction('settings')} className={ICON_BUTTON}>
+        <button type="button" aria-label={t('settings')} data-tooltip={t('settings')} onClick={() => void trayPanelAction('settings')} className={ICON_BUTTON}>
           <Settings size={14} strokeWidth={1.8} aria-hidden />
         </button>
-        <button type="button" aria-label={t('trayQuit')} title={t('trayQuit')} onClick={() => void trayPanelAction('quit')} className={ICON_BUTTON}>
+        <button type="button" aria-label={t('trayQuit')} data-tooltip={t('trayQuit')} onClick={() => void trayPanelAction('quit')} className={ICON_BUTTON}>
           <Power size={14} strokeWidth={1.8} aria-hidden />
         </button>
       </div>

@@ -93,20 +93,31 @@ fn symlinked_shared_skills_are_deduplicated_and_ancestor_scans_stop_at_the_repos
 }
 
 #[test]
-fn pi_with_the_mcp_adapter_lists_its_shared_sources_and_names_its_imports() {
+fn pi_with_the_mcp_adapter_lists_its_shared_sources_and_imports() {
     let temp = tempfile::tempdir().unwrap();
     let paths = Locations::at(temp.path().join("home"));
     let project = temp.path().join("project");
     fs::create_dir_all(project.join(".git")).unwrap();
     write(&paths.pi.join("settings.json"), &json!({"extensions":["-builtin:mcp"],"packages":["npm:pi-mcp-adapter"]}).to_string());
     write(&paths.home.join(".config/mcp/mcp.json"), &json!({"mcpServers":{"devtools":{"command":"npx"},"shadowed":{"command":"old"}}}).to_string());
-    write(&paths.pi.join("mcp-adapter.json"), &json!({"imports":["claude-code","codex"],"mcpServers":{"computer-use":{"command":"cu"}}}).to_string());
+    write(&paths.pi.join("mcp-adapter.json"), &json!({"imports":["claude-code","codex","opencode"],"mcpServers":{"computer-use":{"command":"cu"}}}).to_string());
     write(&project.join(".pi/mcp-adapter.json"), &json!({"imports":["codex"],"mcpServers":{"shadowed":{"url":"https://new"}}}).to_string());
+    // Imported entries rank below the adapter's own: its computer-use replaces Claude's.
+    write(&paths.home.join(".claude.json"), &json!({"mcpServers":{"context7":{"command":"npx"},"computer-use":{"command":"claude-cu"}}}).to_string());
+    write(&paths.home.join(".codex/config.toml"), "[mcp_servers.fetch]\ncommand = \"uvx\"\n");
     let pi = read(&paths, Some(&project)).pop().unwrap();
-    let servers: Vec<_> = pi.mcp_servers.iter().map(|server| (server.name.as_str(), server.scope, server.command.as_deref())).collect();
-    assert_eq!(servers, [("devtools", Scope::Global, Some("npx")), ("computer-use", Scope::Global, Some("cu")), ("shadowed", Scope::Project, None)]);
+    let servers: Vec<_> = pi.mcp_servers.iter().map(|server| (server.name.as_str(), server.command.as_deref(), server.imported_from.as_deref())).collect();
+    assert_eq!(servers, [
+        ("fetch", Some("uvx"), Some("codex")),
+        ("context7", Some("npx"), Some("claude-code")),
+        ("devtools", Some("npx"), None),
+        ("computer-use", Some("cu"), None),
+        ("shadowed", None, None),
+    ]);
+    // OpenCode's merged files are not followed, so it stays a note.
     assert_eq!(pi.notes.len(), 1);
-    assert_eq!((pi.notes[0].kind, pi.notes[0].detail.as_str()), ("mcpImports", "claude-code, codex"));
+    assert_eq!((pi.notes[0].kind, pi.notes[0].detail.as_str()), ("mcpImports", "opencode"));
+    assert!(pi.mcp_servers.iter().all(|server| server.provider == Some("pi-mcp-adapter")));
     assert!(pi.errors.is_empty());
 }
 

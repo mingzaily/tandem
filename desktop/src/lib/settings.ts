@@ -39,6 +39,10 @@ export interface AppSettings {
   translucentSidebar: boolean;
   keepInMenuBar: boolean;
   notifyWhenDone: boolean;
+  autoUpdate: boolean;
+  updateCheckIntervalHours: number;
+  /** Detailed local diagnostic log; errors are logged either way. */
+  debugLog: boolean;
   /** Where new conversations go. Null means the default under `~/.tandem`. */
   conversationDir: string | null;
   /** Earlier choices, whose conversations stay listed after the setting changes. */
@@ -55,6 +59,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   translucentSidebar: true,
   keepInMenuBar: true,
   notifyWhenDone: true,
+  autoUpdate: false,
+  updateCheckIntervalHours: 6,
+  debugLog: false,
   conversationDir: null,
   pastConversationDirs: [],
 };
@@ -80,6 +87,7 @@ function settingsFromConfig(config: Config): AppSettings {
     uiFontSize: config.ui_font_size, sendWithCmdEnter: config.send_with_cmd_enter, translucentSidebar: config.translucent_sidebar,
     keepInMenuBar: config.keep_in_menu_bar, notifyWhenDone: config.notify_when_done, conversationDir: config.conversation_dir || null,
     pastConversationDirs: config.past_conversation_dirs,
+    autoUpdate: config.auto_update, updateCheckIntervalHours: config.update_check_interval_hours, debugLog: config.debug_log,
   };
 }
 
@@ -89,6 +97,7 @@ export function saveSettings(settings: AppSettings) {
     ui_font_size: settings.uiFontSize, send_with_cmd_enter: settings.sendWithCmdEnter, translucent_sidebar: settings.translucentSidebar,
     keep_in_menu_bar: settings.keepInMenuBar, notify_when_done: settings.notifyWhenDone, conversation_dir: settings.conversationDir ?? '',
     past_conversation_dirs: settings.pastConversationDirs,
+    auto_update: settings.autoUpdate, update_check_interval_hours: settings.updateCheckIntervalHours, debug_log: settings.debugLog,
   });
 }
 

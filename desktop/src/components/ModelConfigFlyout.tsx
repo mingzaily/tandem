@@ -67,8 +67,8 @@ export function ModelConfigFlyout({ model, name, source, effort, anchor, returnF
     <div ref={flyout} role="dialog" aria-label={t('modelConfigFor', { model: name })} data-composer-menu-owner={owner.id}
       className="fixed z-[60] overflow-y-auto rounded-xl border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] p-3.5 pb-3 shadow-[shadow:var(--shadow-menu)]"
       style={{ left: position?.left, top: position?.top, width: position?.width ?? 264, maxHeight: position?.maxHeight, visibility: position ? 'visible' : 'hidden' }}>
-      <div title={name} className="line-clamp-2 text-14 font-semibold leading-[1.35] text-[var(--model-item-text)]">{name}</div>
-      <div title={[source, model.description].filter(Boolean).join(' · ')} className="truncate border-b border-[var(--model-dropdown-border)] pb-2.5 pt-[3px] text-12 text-[var(--text-tertiary)]">
+      <div data-tooltip={name} className="line-clamp-2 text-14 font-semibold leading-[1.35] text-[var(--model-item-text)]">{name}</div>
+      <div data-tooltip={[source, model.description].filter(Boolean).join(' · ')} className="truncate border-b border-[var(--model-dropdown-border)] pb-2.5 pt-[3px] text-12 text-[var(--text-tertiary)]">
         {source}{model.description ? ` · ${model.description}` : ''}
       </div>
       <EffortSlider levels={model.supportedEffortLevels} value={effort} defaultLevel={effectiveEffort(model, null)} onChange={onChange} className="pt-3.5" />

@@ -1,0 +1,2 @@
+Production update archive verified with configured public key: 7114605 bytes
+Tampered update archive rejected

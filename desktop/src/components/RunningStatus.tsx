@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, Sparkles, X } from 'lucide-react';
+import { Activity, ArrowDown, Sparkles } from 'lucide-react';
 import { ComposerStatusRow, type ComposerStatusSlots } from './ComposerStatusRow';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -46,28 +46,30 @@ function RateChart({ rate }: { rate: RateHistory }) {
   );
 }
 
-function RateCard({ rate, outputTokens, now }: { rate: RateHistory; outputTokens: number; now: number }) {
+export function RateCard({ rate, outputTokens, now }: { rate: RateHistory; outputTokens: number; now: number }) {
   const recent = currentRate(rate, now);
+  // Between generations (a tool running, waiting for an answer) the last speed stays, dimmed.
+  const shown = recent ?? rate.latestRate;
   const average = averageRate(rate);
   const withUnit = (value: number | null) => (value === null ? '—' : `${formatRate(value)} ${t('rateUnit')}`);
   const stats: [string, string][] = [
     [t('rateAverage'), withUnit(average)],
     [t('rateTotal'), t('tokenCount', { tokens: formatTokens(outputTokens) })],
-    [t('ratePeak'), withUnit(rate.samples.length > 0 ? rate.peak : null)],
+    [t('ratePeak'), withUnit(rate.peak)],
   ];
   return (
-    <div title={t('rateNote')} className="flex flex-col gap-3">
-      {/* The room on the right is for the close button, which would otherwise sit on the chart. */}
-      <div className="flex items-center justify-between gap-3 pr-5">
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-3">
         <div className="min-w-0">
           <div className="mb-1 flex items-center gap-1.5 text-12 text-[var(--text-secondary)]">
             <Activity size={14} aria-hidden />
             {t('rateCurrent')}
           </div>
-          <div className="flex items-baseline gap-1.5 tabular-nums text-[var(--text-primary)]">
-            <span className="text-[28px] font-medium leading-none">{recent === null ? '—' : formatRate(recent)}</span>
+          <div className={`flex items-baseline gap-1.5 tabular-nums ${recent === null ? 'text-[var(--text-tertiary)]' : 'text-[var(--text-primary)]'}`}>
+            <span className="text-[28px] font-medium leading-none">{shown === null ? '—' : formatRate(shown)}</span>
             <span className="text-12 text-[var(--text-secondary)]">{t('rateUnit')}</span>
           </div>
+          {recent === null && shown !== null ? <div className="mt-1 text-11 text-[var(--text-tertiary)]">{t('ratePaused')}</div> : null}
         </div>
         <RateChart rate={rate} />
       </div>
@@ -79,6 +81,7 @@ function RateCard({ rate, outputTokens, now }: { rate: RateHistory; outputTokens
           </div>
         ))}
       </dl>
+      <p className="text-11 leading-snug text-[var(--text-tertiary)]">{t('rateNote')}</p>
     </div>
   );
 }
@@ -95,25 +98,13 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate,
   const [cycle, setCycle] = useState(0);
   const playing = useRef(false);
   const queued = useRef(false);
-  // Hovering shows the card. Clicking keeps it open until it is closed.
+  // Hovering or keyboard focus shows the card; it never stays open on its own.
   const [isHovered, setIsHovered] = useState(false);
-  const [isPinned, setIsPinned] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
   const root = useRef<HTMLDivElement>(null);
-  const open = isHovered || isPinned;
+  const open = isHovered || isFocused;
   // The card's bottom padding bridges hover from the trigger to its portaled content.
   const position = useAnchoredPosition(open, root, 320, 340, 'right', 'above', 0);
-
-  useEffect(() => {
-    if (!isPinned) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsPinned(false);
-        setIsHovered(false);
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [isPinned]);
 
   useEffect(() => {
     const clock = window.setInterval(() => setNow(Date.now()), 1000);
@@ -146,7 +137,8 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate,
           aria-label={t('rateCurrent')}
           aria-haspopup="dialog"
           aria-expanded={open}
-          onClick={() => setIsPinned((current) => !current)}
+          onFocus={(event) => setIsFocused(event.currentTarget.matches(':focus-visible'))}
+          onBlur={() => setIsFocused(false)}
           className="flex h-6 items-center gap-[6px] rounded-full px-1.5 text-13 font-medium tabular-nums text-[var(--status-bar-meta)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
         >
           <span>{formatElapsed(now - startedAt)}</span>
@@ -161,12 +153,6 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate,
         {open && position ? createPortal(
           <div role="dialog" aria-label={t('rateCurrent')} style={position} className="fixed z-50 overflow-y-auto pb-2">
             <div className="relative rounded-xl border border-[var(--border-default)] bg-[var(--surface-elevated)] px-4 py-3 shadow-[shadow:var(--shadow-menu)]">
-              {isPinned ? (
-                <button type="button" aria-label={t('rateClose')} onClick={() => { setIsPinned(false); setIsHovered(false); }}
-                  className="absolute right-2 top-2 flex size-6 items-center justify-center rounded-full text-[var(--text-secondary)] hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
-                  <X size={12} aria-hidden />
-                </button>
-              ) : null}
               <RateCard rate={rate} outputTokens={outputTokens} now={now} />
             </div>
           </div>, document.body,
@@ -175,7 +161,7 @@ export function RunningStatus({ status, startedAt, outputTokens, activity, rate,
     }>
       <div key={cycle} onAnimationEnd={onBreathEnd} className="status-bar-shimmer flex min-w-0 items-center gap-[6px]">
         <Sparkles size={14} aria-hidden className="shrink-0" />
-        <span role="status" title={label} className="truncate text-13 font-medium">
+        <span role="status" data-tooltip={label} className="truncate text-13 font-medium">
           {label}
         </span>
       </div>

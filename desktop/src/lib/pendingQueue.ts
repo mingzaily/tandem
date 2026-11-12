@@ -6,16 +6,20 @@ export function visibleQueueCount(count: number, expanded: boolean): number {
   return expanded || count <= 4 ? count : 3;
 }
 
-/** Measured centers keep pointer sorting aligned with the displayed font size. */
-export function queueInsertionIndex(rows: readonly { start: number; end: number }[], offset: number): number {
-  const index = rows.findIndex(({ start, end }) => offset < (start + end) / 2);
-  return index < 0 ? rows.length : index;
-}
+export {
+  listInsertionIndex as queueInsertionIndex, listDropTarget as queueDropTarget,
+  listPreviewStart as queuePreviewStart, listScrollStep as queueScrollStep,
+  type ListRowBounds as QueueRowBounds,
+} from './listDrag';
 
-/** Pointer insertion slots become final indices after the dragged row is removed. */
-export function queueDropTarget(count: number, from: number, insertion: number): number {
-  const target = insertion > from ? insertion - 1 : insertion;
-  return Math.max(0, Math.min(count - 1, target));
+/** Every exit path releases the acquired queue lock once, after any committed reorder. */
+export function queueDragTransaction(acquired: Promise<void>, release: () => Promise<void>) {
+  let finished: Promise<void> | undefined;
+  return (commit?: () => Promise<void>): Promise<void> => finished ??= (async () => {
+    await acquired;
+    try { await commit?.(); }
+    finally { await release(); }
+  })();
 }
 
 export function queueKeyboardTarget(count: number, from: number, key: string): number | null {

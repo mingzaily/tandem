@@ -1,5 +1,5 @@
 import type { Agent, TaskSummary } from './api';
-import { CONVERSATION_CWD, orderProjects } from './items';
+import { CONVERSATION_CWD, moveProject, orderProjects } from './items';
 
 export type SidebarSort = 'time' | 'type' | 'priority';
 export interface SidebarOptions { groupByCli: boolean; sort: SidebarSort }
@@ -64,6 +64,24 @@ export function orderSidebarProjects<T>(groups: [string, T][], order: string[], 
   const pins = new Set(pinned);
   const rank = (cwd: string) => (cwd === CONVERSATION_CWD ? 0 : pins.has(cwd) ? 1 : 2);
   return orderProjects(groups, order).sort(([a], [b]) => rank(a) - rank(b));
+}
+
+/** Manual moves stay within the same pin tier; the conversation group has a fixed position. */
+export function projectMoveRange(ids: readonly string[], pinned: readonly string[], cwd: string): { min: number; max: number } | null {
+  if (cwd === CONVERSATION_CWD || !ids.includes(cwd)) return null;
+  const isPinned = pinned.includes(cwd);
+  const peers = ids.flatMap((id, index) => id !== CONVERSATION_CWD && pinned.includes(id) === isPinned ? [index] : []);
+  return { min: peers[0], max: peers[peers.length - 1] };
+}
+
+export function moveSidebarProject(shown: string[], saved: string[], pinned: string[], cwd: string, target: number): string[] | null {
+  const range = projectMoveRange(shown, pinned, cwd);
+  if (!range) return null;
+  const from = shown.indexOf(cwd);
+  const to = Math.max(range.min, Math.min(range.max, target));
+  if (to === from) return null;
+  const next = moveProject(shown, cwd, from < to ? to + 1 : to);
+  return [...next, ...saved.filter((id) => !shown.includes(id))];
 }
 
 export const toggleProjectPin = (pins: string[], cwd: string): string[] => pins.includes(cwd) ? pins.filter((path) => path !== cwd) : [cwd, ...pins];

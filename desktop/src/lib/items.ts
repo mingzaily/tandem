@@ -2,7 +2,7 @@ import type { Message, TurnEvent } from './api';
 
 interface Timed {
   id: string;
-  /** Milliseconds since the epoch. Absent while a turn is live. */
+  /** Native record time, or the local send time for a live input. */
   at?: number;
 }
 
@@ -10,8 +10,9 @@ export interface AttachedFile {
   name: string;
   path?: string;
 }
-export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice'; text: string };
-export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; imageErrors?: string[]; files?: AttachedFile[] };
+export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice' | 'error'; text: string };
+/** `steered`: sent into a running turn, so it belongs to that turn rather than starting one. */
+export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; imageErrors?: string[]; files?: AttachedFile[]; steered?: boolean };
 export type ToolItem = Timed & {
   type: 'tool';
   name: string;
@@ -25,7 +26,7 @@ export type CompactionItem = Timed & { type: 'compaction' };
 export type Item = UserItem | TextItem | ToolItem | CompactionItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
-export type WorkGroup = { type: 'group'; id: string; items: Row[]; durationMs: number | null; isRunning: boolean; isSummary: boolean };
+export type WorkGroup = { type: 'group'; id: string; items: Row[]; durationMs: number | null; isRunning: boolean; isSummary: boolean; preview?: boolean };
 export type Row = Item | WorkGroup;
 
 const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
@@ -66,6 +67,11 @@ export function buildItems(messages: Message[]): Item[] {
   };
   for (const message of messages) {
     const at = timeOf(message.timestamp);
+    if (message.kind === 'assistant' && message.isError) {
+      flushImages();
+      items.push({ type: 'error', id: message.id, at, text: message.text });
+      continue;
+    }
     if (message.kind === 'compaction') {
       flushImages();
       items.push({ type: 'compaction', id: message.id, at });
@@ -152,6 +158,10 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
           truncated: false,
         },
       ];
+    case 'finished':
+      return event.isError && !event.cancelled
+        ? [...items, { type: 'error', id: `error-${items[0]?.id ?? items.length}`, text: event.message ?? '' }]
+        : items;
     case 'toolResult':
       return items.map((item) =>
         item.type === 'tool' && item.id === event.toolUseId
@@ -170,13 +180,19 @@ export type TurnStatus =
 /** What a running turn is doing now, for the line above the input box. */
 export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatus {
   if (isWaitingForUser) return { key: 'statusAwaitingYou' };
-  const last = items[items.length - 1];
+  let tail = items.length - 1;
+  while (tail >= 0) {
+    const item = items[tail];
+    if (item.type !== 'user' || !item.steered) break;
+    tail -= 1;
+  }
+  const last = items[tail];
   if (last?.type === 'assistant') return { key: 'statusReplying' };
   if (last?.type === 'tool') {
     // Parallel calls can finish out of order. Show the latest call still awaiting a result.
     for (let index = items.length - 1; index >= 0; index -= 1) {
       const item = items[index];
-      if (item.type === 'user') break;
+      if (item.type === 'user' && !item.steered) break;
       if (item.type === 'tool' && item.result === null) {
         return { key: 'statusCallingTool', toolName: item.name };
       }
@@ -198,24 +214,44 @@ function lastTime(items: Item[]): number | undefined {
 function actionGroups(items: Item[], startAt: number | undefined, isRunning: boolean): Row[] {
   const rows: Row[] = [];
   let actions: Item[] = [];
-  const flush = (endAt?: number) => {
-    if (actions.length) rows.push(workGroup(actions, startAt, endAt ?? lastTime(actions), isRunning));
+  const flush = (running: boolean, endAt?: number, preview = running) => {
+    if (actions.length) rows.push({ ...workGroup(actions, startAt, endAt ?? lastTime(actions), running), ...(preview && !running ? { preview: true } : {}) });
     actions = [];
   };
-  for (const item of items) {
+  let lastReply = items.length - 1;
+  while (lastReply >= 0 && items[lastReply].type !== 'assistant') lastReply -= 1;
+  let lastActivity = items.length - 1;
+  while (lastActivity >= 0 && items[lastActivity].type !== 'tool' && items[lastActivity].type !== 'thinking') lastActivity -= 1;
+  for (const [index, item] of items.entries()) {
     if (item.type === 'tool' || item.type === 'thinking') actions.push(item);
     else {
-      flush(item.at);
+      // A steer keeps prior work visible while only the current segment owns the spinner.
+      const keepPreview = isRunning && item.type === 'user' && Boolean(item.steered) && index > lastReply;
+      flush(keepPreview && index > lastActivity, item.at, keepPreview);
       rows.push(item);
       startAt = item.at;
     }
   }
-  flush();
+  flush(isRunning);
   return rows;
 }
 
 function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean) {
   if (isRunning) { rows.push(...actionGroups(turn, startAt, true)); return; }
+  // A completed turn folds only work; every steered user bubble stays in the timeline.
+  let segment: Item[] = [];
+  for (const item of turn) {
+    if (item.type === 'user') {
+      pushCompletedTurn(rows, segment, startAt);
+      rows.push(item);
+      startAt = item.at;
+      segment = [];
+    } else segment.push(item);
+  }
+  pushCompletedTurn(rows, segment, startAt);
+}
+
+function pushCompletedTurn(rows: Row[], turn: Item[], startAt: number | undefined) {
   const answerIndex = turn.at(-1)?.type === 'assistant' ? turn.length - 1 : -1;
   const work = answerIndex < 0 ? turn : turn.slice(0, answerIndex);
   if (work.length) {
@@ -232,7 +268,9 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
   let turn: Item[] = [];
   let startAt: number | undefined;
   for (const item of items) {
-    if (item.type === 'user' || item.type === 'compaction' || item.type === 'notice') {
+    // Newer models often stream thinking with no visible text, only a signature: nothing to show.
+    if (item.type === 'thinking' && !item.text.trim()) continue;
+    if ((item.type === 'user' && !item.steered) || item.type === 'compaction' || item.type === 'notice' || item.type === 'error') {
       if (turn.length) pushTurn(rows, turn, startAt, false);
       turn = [];
       startAt = item.at;
@@ -247,10 +285,55 @@ export function flattenRows(rows: Row[]): Item[] {
   return rows.flatMap((row) => row.type === 'group' ? flattenRows(row.items) : [row]);
 }
 
+/** The final visible reply of each completed work segment owns its copy action. */
+export function completedReplyIds(items: Item[], isRunning: boolean): Set<string> {
+  const replies = new Set<string>();
+  let tail: Item | undefined;
+  const finish = () => {
+    if (tail?.type === 'assistant' && tail.text.trim()) replies.add(tail.id);
+    tail = undefined;
+  };
+  for (const item of items) {
+    if (item.type === 'thinking' && !item.text.trim()) continue;
+    if ((item.type === 'user' && !item.steered) || item.type === 'notice' || item.type === 'compaction' || item.type === 'error') finish();
+    else tail = item;
+  }
+  if (!isRunning) finish();
+  return replies;
+}
+
+
+export interface TurnFailure {
+  prompt: string;
+  sentAt?: number;
+  endedAt?: number;
+  occurrence?: number;
+  error: TextItem & { type: 'error' };
+}
+
+/** Native errors take precedence; transport failures stay anchored while this window is open. */
+export function withTurnFailures(items: Item[], failures: TurnFailure[]): Item[] {
+  let result = items;
+  for (const failure of failures) {
+    if (result.some((item) => item.id === failure.error.id)) continue;
+    const candidates = result.flatMap((item, index) => item.type === 'user' && item.text === failure.prompt ? [{ item, index }] : []);
+    const timed = candidates.find(({ item }) => item.at !== undefined && failure.sentAt !== undefined && item.at >= failure.sentAt
+      && (failure.endedAt === undefined || item.at <= failure.endedAt));
+    const start = timed?.index ?? (failure.occurrence !== undefined ? candidates[failure.occurrence]?.index : undefined) ?? -1;
+    if (start < 0) continue;
+    const next = result.findIndex((item, index) => index > start && item.type === 'user' && !item.steered);
+    const end = next < 0 ? result.length : next;
+    if (result.slice(start + 1, end).some((item) => item.type === 'error')) continue;
+    result = [...result.slice(0, end), failure.error, ...result.slice(end)];
+  }
+  return result;
+}
+
 export const MAX_LIVE_ACTIVITIES = 5;
-export function visibleWorkItems(group: WorkGroup, expanded: boolean): Row[] {
-  if (expanded) return group.items;
-  return group.isRunning ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
+/** An untouched live group previews recent work; an explicit close hides all its children. */
+export function visibleWorkItems(group: WorkGroup, expanded?: boolean): Row[] {
+  if (expanded === true) return group.items;
+  return expanded === undefined && (group.preview ?? group.isRunning) ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
 }
 
 /** Saved projects keep their order. One the order has not seen yet comes first, so it gets noticed. */
@@ -300,4 +383,27 @@ export function lastEditablePrompt(items: Item[]): string | null {
   const last = prompts.at(-1);
   if (!last || prompts.length < 2 || !last.text.trim() || last.id.startsWith('live-')) return null;
   return last.images?.length || last.imageErrors?.length || last.files?.length ? null : last.id;
+}
+
+/**
+ * The history read from disk can already hold the start of the turn shown live: the file is read
+ * again while the turn runs, after the CLI has written the prompt. That part is dropped from the
+ * history, including accepted steering inputs in their delivery order, so the turn shows once.
+ */
+export function historyBeforeLiveTurn(history: Item[], live: Item[] | undefined): Item[] {
+  if (!live || live[0]?.type !== 'user') return history;
+  const first = live[0];
+  const inputs = live.filter((item): item is UserItem => item.type === 'user');
+  for (let at = 0; at < history.length; at += 1) {
+    const candidate = history[at];
+    if (candidate.type !== 'user' || candidate.text !== first.text) continue;
+    // A repeated prompt in an earlier completed turn keeps its own history.
+    if (first.at !== undefined && candidate.at !== undefined && candidate.at < first.at) continue;
+    const saved = history.slice(at).filter((item): item is UserItem => item.type === 'user');
+    if (saved.some((input, index) => !inputs[index] || input.text !== inputs[index].text)) continue;
+    const before = history[at - 1];
+    const withImages = before?.type === 'user' && !before.text && (before.images?.length ?? 0) > 0 && before.at === candidate.at;
+    return history.slice(0, withImages ? at - 1 : at);
+  }
+  return history;
 }

@@ -26,6 +26,8 @@
 | [decisions.md](decisions.md) | 权威 | 了解已定和待定的决策 |
 | [reviews/2026-11-05-desktop-ui-details.md](reviews/2026-11-05-desktop-ui-details.md) | 参考 | 复审 11 月 5 日下午至晚间的桌面样式、交互、实现细节与验证范围 |
 | [measurements/](measurements/2026-11-04-startup-and-memory.md) | 参考 | 比较启动和内存 |
+| [measurements/2026-11-11-desktop-updater.md](measurements/2026-11-11-desktop-updater.md) | 参考 | 查看桌面自动发布、主动更新、签名与版本绑定、任务保护和界面证据 |
+| [measurements/2026-11-12-about-updates.md](measurements/2026-11-12-about-updates.md) | 参考 | 查看关于页更新入口、自动更新与检查间隔、后台状态恢复和验证边界 |
 | [measurements/2026-11-06-tray-scroll.md](measurements/2026-11-06-tray-scroll.md) | 参考 | 查看菜单栏长列表、窗口高度、滚动终点和固定底栏的回归验证 |
 | [measurements/2026-11-05-message-queue.md](measurements/2026-11-05-message-queue.md) | 参考 | 查看消息队列验收、测试范围和性能抽样 |
 | [measurements/2026-11-05-task-titles.md](measurements/2026-11-05-task-titles.md) | 参考 | 查看标题生成、原生保存和 Codex 附件显示的验收范围 |

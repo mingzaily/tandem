@@ -7,19 +7,24 @@ mod cli_info;
 mod codex;
 mod commands;
 mod conversations;
+mod diagnostics;
 #[cfg(debug_assertions)]
 mod harness;
 mod git_info;
 mod login_env;
 mod local_files;
+mod notifications;
 mod pi;
 mod queue;
 mod remote;
 mod runner;
+mod session_titles;
 mod sessions;
 mod storage;
 mod tray;
 mod titles;
+mod token_speed;
+mod updater;
 mod writers;
 
 use std::time::{Duration, Instant};
@@ -49,16 +54,20 @@ fn main() {
         // No capability grants the page this plugin. Only the backend opens the dialog.
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::Updates::default())
         .manage(runner::Runs::default())
         .manage(attachments::Attachments::default())
         .manage(codex::Reader::default())
         .manage(agents::Jobs::default())
         .manage(tray::TrayState::default())
+        .manage(notifications::State::default())
         .manage(titles::Jobs::default())
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(drag) => attachments::on_drag(window.app_handle(), drag),
             // Running turns and notifications carry on with the window out of the way.
             tauri::WindowEvent::Focused(false) if window.label() == tray::PANEL_LABEL => tray::on_panel_blur(window.app_handle()),
+            tauri::WindowEvent::Focused(true) if window.label() == "main" => notifications::refresh(window.app_handle()),
             tauri::WindowEvent::CloseRequested { api, .. }
                 if window.label() == "main" && tray::should_hide_on_close(window.app_handle()) =>
             {
@@ -69,6 +78,10 @@ fn main() {
         })
         .manage(commands::StartedAt(started_at))
         .invoke_handler(tauri::generate_handler![
+            updater::update_state,
+            updater::check_update,
+            updater::download_update,
+            updater::install_update,
             commands::list_tasks,
             commands::read_task,
             commands::generate_task_title,
@@ -76,6 +89,8 @@ fn main() {
             commands::send_turn,
             commands::list_queues,
             commands::enqueue_turn,
+            commands::steer_turn,
+            commands::steer_queued_turn,
             commands::edit_queued_turn,
             commands::remove_queued_turn,
             commands::reorder_queued_turn,
@@ -101,6 +116,10 @@ fn main() {
             commands::resize_tray_panel,
             commands::tray_panel_action,
             commands::notify_user,
+            commands::update_app_badge,
+            commands::notification_status,
+            commands::request_notification_permission,
+            commands::open_notification_settings,
             commands::list_codex_tasks,
             commands::list_pi_tasks,
             commands::read_pi_task,
@@ -123,6 +142,9 @@ fn main() {
             commands::preferences,
             commands::update_preferences,
             commands::set_system_language,
+            commands::open_log_folder,
+            commands::clear_logs,
+            commands::log_page_error,
         ])
         .setup(|app| {
             let root = conversations::home_dir().map_err(std::io::Error::other)?.join(".tandem");
@@ -130,6 +152,12 @@ fn main() {
             let root = std::env::var_os("TANDEM_DRIVE_DATA_DIR").map(std::path::PathBuf::from).unwrap_or(root);
             let store = storage::Store::open(root);
             let preferences = store.snapshot();
+            if store.is_writable() {
+                diagnostics::start(store.root().join("logs"), &app.package_info().version.to_string(), preferences.config.debug_log);
+            }
+            for error in &preferences.errors {
+                diagnostics::error("storage", error.clone());
+            }
             let script = preferences.initialization_script();
             let theme = preferences.native_theme();
             let queue_dir = store.root().join("queues");
@@ -144,6 +172,7 @@ fn main() {
             let window = tauri::WebviewWindowBuilder::from_config(app, config)?.initialization_script(script).theme(theme).build()?;
             storage::publish(app.handle());
             storage::watch(app.handle().clone());
+            updater::start(app.handle().clone());
             #[cfg(debug_assertions)]
             harness::start(window.clone());
             tauri::async_runtime::spawn(async move {

@@ -16,11 +16,12 @@ const VARIANTS: Record<Variant, string> = {
   quiet: 'border-transparent bg-transparent enabled:hover:bg-[var(--button-secondary-hover)] enabled:active:bg-[var(--button-secondary-pressed)]',
 };
 
-export function SettingsButton({ variant = 'secondary', danger = false, busy = false, iconOnly = false, disabled, className = '', children, type = 'button', ...props }: SettingsButtonProps) {
+export function SettingsButton({ variant = 'secondary', danger = false, busy = false, iconOnly = false, disabled, className = '', children, type = 'button', title, ...props }: SettingsButtonProps) {
   const color = danger ? 'text-[var(--text-danger)]' : variant === 'quiet' ? 'text-[var(--text-secondary)]' : 'text-[var(--text-primary)]';
   return (
     <button
       {...props}
+      data-tooltip={title}
       type={type}
       disabled={disabled || busy}
       aria-busy={busy || undefined}

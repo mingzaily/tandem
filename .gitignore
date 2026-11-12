@@ -7,3 +7,4 @@ target/
 .env.*
 desktop/src-tauri/gen/
 docs/reference/repos/
+.pi/tasks/

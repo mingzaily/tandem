@@ -1,7 +1,8 @@
-import { ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
+import { Archive, ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import {
+  type Agent,
   agentStatus,
   agentResources,
   type AgentInventory,
@@ -9,6 +10,12 @@ import {
   installAgent,
   loginAgent,
   openExternal,
+  openLogFolder,
+  clearLogs,
+  notificationStatus,
+  requestNotificationPermission,
+  openNotificationSettings,
+  type NotificationStatus,
   pickProject,
   stopAgentJob,
   onRemoteChanged,
@@ -22,8 +29,9 @@ import {
   type RemoteState,
   type DiscoveredProject,
 } from '../lib/api';
-import { t, type StringKey } from '../lib/i18n';
+import { currentLanguage, t, type StringKey } from '../lib/i18n';
 import { projectName } from '../lib/items';
+import type { SidebarOptions, SidebarSort } from '../lib/sidebarModel';
 import { loadAgentStatus, saveAgentStatus } from '../lib/preferences';
 import { INITIAL_REMOTE_FORM, remoteFormDirty, remoteFormReducer } from '../lib/remoteSettings';
 import {
@@ -38,17 +46,19 @@ import {
 import { AgentMark } from './AgentMark';
 import { SettingsSelect } from './SettingsSelect';
 import { SettingsButton } from './SettingsButton';
+import { UpdateAction, UpdateDetails, useAppUpdate } from './AppUpdateControl';
 
 const AgentResources = lazy(() => import('./AgentResources'));
 const JOB_LINES = 8;
 
-type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'remote' | 'about';
+type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'archived' | 'remote' | 'about';
 
 const TABS: { id: TabId; label: StringKey; icon: LucideIcon }[] = [
   { id: 'general', label: 'settingsGeneral', icon: Settings },
   { id: 'appearance', label: 'settingsAppearance', icon: Palette },
   { id: 'agents', label: 'settingsAgents', icon: Bot },
   { id: 'projects', label: 'settingsProjects', icon: FolderOpen },
+  { id: 'archived', label: 'settingsArchived', icon: Archive },
   { id: 'remote', label: 'settingsRemote', icon: Smartphone },
   { id: 'about', label: 'settingsAbout', icon: Info },
 ];
@@ -159,6 +169,31 @@ function AppearanceTab({ settings, onChange }: TabProps) {
 }
 
 function GeneralTab({ settings, onChange }: TabProps) {
+  const [notification, setNotification] = useState<NotificationStatus | null>(null);
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  useEffect(() => {
+    let current = true;
+    const read = () => {
+      void notificationStatus().then((status) => { if (current) { setNotification(status); setNotificationError(null); } })
+        .catch((error) => { if (current) setNotificationError(String(error)); });
+    };
+    read();
+    window.addEventListener('focus', read);
+    return () => { current = false; window.removeEventListener('focus', read); };
+  }, []);
+  const allowNotifications = async () => {
+    setNotificationBusy(true);
+    setNotificationError(null);
+    try { setNotification(await requestNotificationPermission()); }
+    catch (error) { setNotificationError(String(error)); }
+    finally { setNotificationBusy(false); }
+  };
+  const notificationLabels = {
+    authorized: notification?.badgeEnabled ? 'notificationAllowed' : 'notificationBadgeOff',
+    denied: 'notificationDenied', notDetermined: 'notificationNotDetermined', unsupported: 'notificationUnsupported',
+  } as const;
+  const notificationLabel = notification ? notificationLabels[notification.authorization] : 'notificationChecking';
   const languages: { id: LanguageSetting; text: string }[] = [
     { id: 'system', text: t('languageSystem') },
     { id: 'zh', text: '简体中文' },
@@ -177,7 +212,22 @@ function GeneralTab({ settings, onChange }: TabProps) {
         </Row>
         <div className={DIVIDER} />
         <Row label={t('notifyLabel')} hint={t('notifyHint')}>
-          <Switch label={t('notifyLabel')} checked={settings.notifyWhenDone} onChange={(notifyWhenDone) => onChange({ ...settings, notifyWhenDone })} />
+          <Switch label={t('notifyLabel')} checked={settings.notifyWhenDone} onChange={(notifyWhenDone) => {
+            onChange({ ...settings, notifyWhenDone });
+            if (notifyWhenDone && notification?.authorization === 'notDetermined') void allowNotifications();
+          }} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('notificationSystemLabel')} hint={<>
+          <span>{t(notificationLabel)}<br />{t('notificationSystemHint')}</span>
+          {notificationError ? <span role="alert" className="mt-1 block text-[var(--text-danger)]">{notificationError}</span> : null}
+        </>}>
+          <div className="flex items-center gap-2">
+            {notification?.authorization === 'notDetermined' ? <SettingsButton busy={notificationBusy} onClick={() => void allowNotifications()}>{t('notificationAllow')}</SettingsButton> : null}
+            <SettingsButton disabled={notificationBusy || notification?.authorization === 'unsupported'} onClick={() => void openNotificationSettings().catch((error) => setNotificationError(String(error)))}>
+              <ExternalLink size={14} aria-hidden />{t('notificationSystemSettings')}
+            </SettingsButton>
+          </div>
         </Row>
       </Section>
       <Section title={t('inputSection')}>
@@ -215,8 +265,20 @@ function agentHint(agent: AgentStatus): string {
   return parts.filter(Boolean).join(' · ');
 }
 
-function AgentsTab({ currentProject, projects }: { currentProject: string | null; projects: string[] }) {
-  const [cwd, setCwd] = useState(currentProject ?? '');
+const AVATAR = 'flex shrink-0 items-center justify-center rounded-lg border border-[var(--settings-integration-avatar-border)] bg-[var(--settings-integration-avatar-bg)] text-[var(--settings-integration-avatar-icon)]';
+
+/** Ready means it runs here as it is: installed, and logged in where the CLI has a login. */
+const agentReady = (agent: AgentStatus | undefined) => !!agent?.installed && (!agent.login || agent.login.loggedIn);
+
+/**
+ * Laid out like the reference's provider settings: one card with the agents in a narrow rail
+ * and the chosen one's detail beside it. The detail header stays put; its MCP servers and skills
+ * scroll under a sticky toolbar.
+ */
+function AgentsTab({ currentProject, projects, hiddenAgents, onHiddenAgentsChange }: { currentProject: string | null; projects: string[] } & AgentListProps) {
+  const [selected, setSelected] = useState<AgentStatus['command']>('claude');
+  // Only a real folder has project config; the conversation space and drafts have none.
+  const [cwd, setCwd] = useState(currentProject?.startsWith('/') ? currentProject : '');
   const [inventories, setInventories] = useState<AgentInventory[]>([]);
   const [resourceError, setResourceError] = useState<string | null>(null);
   useEffect(() => {
@@ -266,66 +328,87 @@ function AgentsTab({ currentProject, projects }: { currentProject: string | null
     });
   };
 
+  const agent = agents?.find((item) => item.command === selected);
+  const jobHere = job?.command === selected ? job : null;
+  const link = jobHere?.lines.join('\n').match(LINK)?.[0];
+  const projectOptions = [{ id: '', text: t('resourceGlobalOnly') }, ...[...new Set([currentProject, ...projects].filter((path): path is string => !!path?.startsWith('/')))].map((path) => ({ id: path, text: projectName(path) }))];
+
   return (
-    <>
-    <Section title={t('agentsSection')}>
-      <Row label={t('resourceCurrentProject')} hint={t('resourceReadOnly')}>
-        <SettingsSelect label={t('resourceCurrentProject')} value={cwd} options={[{ id: '', text: t('resourceGlobalOnly') }, ...[...new Set([currentProject, ...projects].filter((path): path is string => !!path))].map((path) => ({ id: path, text: path }))]} onChange={setCwd} />
-      </Row>
-    </Section>
-      {error ? <p role="alert" className="pb-3 text-12 text-[var(--text-danger)]">{error}</p> : null}
-      {(['claude', 'codex', 'pi'] as const).map((command) => {
-          const agent = agents?.find((item) => item.command === command);
-          const jobHere = job?.command === command ? job : null;
-          const link = jobHere?.lines.join('\n').match(LINK)?.[0];
-          return (
-            <Section key={command} title={AGENT_NAMES[command]}>
-              <div className={ROW}>
-                <span className="flex min-w-0 items-center gap-3">
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--surface-chip)] text-[var(--text-primary)]">
-                    <AgentMark agent={command} size={16} />
-                  </span>
-                  <span className="flex min-w-0 flex-col gap-1">
-                    <span className={ROW_LABEL}>{AGENT_NAMES[command]}</span>
-                    <span className={`${ROW_HINT} selectable [overflow-wrap:anywhere]`}>{agent ? agentHint(agent) : t('agentsChecking')}</span>
-                  </span>
+    <div className="flex min-h-0 flex-1 flex-col gap-[14px]">
+      <p className="text-13 leading-[1.5] text-[var(--settings-section-desc)]">{t('resourceReadOnly')}</p>
+      {error ? <p role="alert" className="text-12 text-[var(--text-danger)]">{error}</p> : null}
+      <div className="flex min-h-[420px] flex-1 overflow-hidden rounded-xl border border-[var(--settings-theme-card-border)] bg-[var(--settings-theme-card-bg)]">
+        <div role="tablist" aria-orientation="vertical" aria-label={t('settingsAgents')} className="flex w-[224px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-[var(--settings-theme-card-border)] p-2">
+          {(['claude', 'codex', 'pi'] as const).map((command) => {
+            const item = agents?.find((entry) => entry.command === command);
+            const isSelected = selected === command;
+            return <button key={command} type="button" role="tab" aria-selected={isSelected} onClick={() => setSelected(command)}
+              className={`flex w-full items-center gap-2.5 rounded-lg py-2 pl-3 pr-2.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${
+                isSelected ? 'bg-[var(--settings-menu-bg-selected)]' : 'hover:bg-[var(--settings-menu-bg-hover)]'
+              }`}>
+              <span className={`${AVATAR} size-7`}><AgentMark agent={command} size={14} /></span>
+              <span className={`min-w-0 flex-1 truncate text-13 font-medium ${item && !item.installed ? 'text-[var(--text-tertiary)]' : 'text-[var(--settings-section-title)]'}`}>{AGENT_NAMES[command]}</span>
+              {item && !item.installed ? <span className="shrink-0 text-11 text-[var(--text-tertiary)]">{t('agentNotInstalled')}</span>
+                : item?.login && !item.login.loggedIn ? <span className="shrink-0 text-11 text-[var(--settings-integration-warning)]">{t('agentNotLoggedIn')}</span>
+                : hiddenAgents.includes(command) ? <span className="shrink-0 text-11 text-[var(--text-tertiary)]">{t('agentTasksHidden')}</span> : null}
+              <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${agentReady(item) ? 'bg-[var(--remote-status-ready)]' : 'bg-[var(--border-default)]'}`} />
+            </button>;
+          })}
+        </div>
+        <div key={selected} role="tabpanel" aria-label={AGENT_NAMES[selected]} className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div className="shrink-0 px-5 py-4">
+            <div className="flex flex-wrap items-center gap-3 gap-y-2">
+              <span className="flex min-w-0 flex-auto basis-[220px] items-center gap-3">
+                <span className={`${AVATAR} size-9`}><AgentMark agent={selected} size={18} /></span>
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="truncate text-14 font-medium leading-tight text-[var(--settings-section-title)]">{AGENT_NAMES[selected]}</span>
+                  <span data-tooltip={agent ? agentHint(agent) : undefined} className="selectable truncate text-13 leading-tight text-[var(--settings-integration-subtitle)]">{agent ? agentHint(agent) : t('agentsChecking')}</span>
                 </span>
-                <span className="flex shrink-0 items-center gap-2">
-                  {jobHere?.isRunning ? (
-                    <>
-                      {link ? (
-                        <SettingsButton type="button" onClick={() => void openExternal(link)}>
-                          {t('openLink')}
-                        </SettingsButton>
-                      ) : null}
-                      <SettingsButton type="button" onClick={() => void stopAgentJob()}>
-                        {t('agentStop')}
-                      </SettingsButton>
-                    </>
-                  ) : !agent ? null : !agent.installed ? (
-                    <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)}>
-                      {t('agentInstall')}
-                    </SettingsButton>
-                  ) : agent.login ? (
-                    <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, loginAgent)}>
-                      {agent.login.loggedIn ? t('agentRelogin') : t('agentLogin')}
-                    </SettingsButton>
-                  ) : null}
-                </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                {jobHere?.isRunning ? (
+                  <>
+                    {link ? <SettingsButton type="button" onClick={() => void openExternal(link)}>{t('openLink')}</SettingsButton> : null}
+                    <SettingsButton type="button" onClick={() => void stopAgentJob()}>{t('agentStop')}</SettingsButton>
+                  </>
+                ) : !agent ? null : !agent.installed ? (
+                  <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, installAgent)}>{t('agentInstall')}</SettingsButton>
+                ) : agent.login ? (
+                  <SettingsButton type="button" disabled={job?.isRunning} onClick={() => run(agent.command, loginAgent)}>
+                    {agent.login.loggedIn ? t('agentRelogin') : t('agentLogin')}
+                  </SettingsButton>
+                ) : null}
+              </span>
+            </div>
+            {jobHere && jobHere.lines.length + (jobHere.failed ? 1 : 0) > 0 ? (
+              <div className="selectable mt-3 rounded-lg bg-[var(--surface-chip)] px-3 py-2 font-mono text-12 leading-[1.5] text-[var(--text-secondary)] [overflow-wrap:anywhere]">
+                {jobHere.lines.map((line, lineIndex) => <div key={lineIndex}>{line}</div>)}
+                {jobHere.failed ? <div className="mt-1 font-sans text-[var(--text-danger)]">{t('agentJobFailed')}</div> : null}
               </div>
-              {jobHere && jobHere.lines.length + (jobHere.failed ? 1 : 0) > 0 ? (
-                <div className="selectable px-4 pb-4 font-mono text-12 leading-[1.5] text-[var(--text-secondary)] [overflow-wrap:anywhere]">
-                  {jobHere.lines.map((line, lineIndex) => (
-                    <div key={lineIndex}>{line}</div>
-                  ))}
-                  {jobHere.failed ? <div className="mt-1 font-sans text-[var(--text-danger)]">{t('agentJobFailed')}</div> : null}
-                </div>
-              ) : null}
-              <Suspense fallback={null}><AgentResources inventory={inventories.find((item) => item.agent === command) ?? null} error={resourceError} /></Suspense>
-            </Section>
-          );
-        })}
-    </>
+            ) : null}
+          </div>
+          <div className={`flex items-center justify-between gap-3 border-t border-[var(--settings-theme-card-border)] px-5 py-3`}>
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className={ROW_LABEL}>{t('agentListTasks')}</span>
+              <span className={ROW_HINT}>{t('agentListTasksHint')}</span>
+            </span>
+            <Switch label={t('agentListTasks')} checked={!hiddenAgents.includes(selected)}
+              // At least one CLI stays available for new tasks.
+              disabled={!hiddenAgents.includes(selected) && hiddenAgents.length >= 2}
+              onChange={(listed) => onHiddenAgentsChange(listed ? hiddenAgents.filter((agent) => agent !== selected) : [...hiddenAgents, selected])} />
+          </div>
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-contain border-t border-[var(--settings-theme-card-border)] [&>*]:shrink-0">
+            <Suspense fallback={null}>
+              <AgentResources
+                inventory={inventories.find((item) => item.agent === selected) ?? null}
+                error={resourceError}
+                projectPicker={<SettingsSelect compact label={t('resourceCurrentProject')} value={cwd} options={projectOptions} onChange={setCwd} />}
+              />
+            </Suspense>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -340,6 +423,14 @@ const REMOTE_STATUS: Record<RemoteLinkStatus, StringKey> = {
 };
 
 type RemoteOperation = 'save' | 'toggle' | 'pair' | 'cancelPair' | `revoke:${string}`;
+
+export function RelayVersionRow({ state }: { state: Pick<RemoteState, 'status' | 'relayVersion'> }) {
+  const version = state.status === 'online'
+    ? state.relayVersion ?? t('remoteRelayVersionUnknown') : t('remoteRelayVersionOffline');
+  return <Row label={t('remoteRelayVersion')}>
+    <span className={"selectable text-13 text-[var(--text-secondary)]"}>{version}</span>
+  </Row>;
+}
 
 function RemoteTab() {
   const relayFormId = useId();
@@ -483,6 +574,8 @@ function RemoteTab() {
               placeholder={state.hasHostToken ? t('remoteTokenSaved') : ''} disabled={busy}
               onChange={(event) => edit('editToken', event.target.value)} className={REMOTE_INPUT} />
           </Row>
+          <div className={DIVIDER} />
+          <RelayVersionRow state={state} />
           {configurationError ? <p role="alert" className="selectable px-4 pb-3 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{configurationError}</p> : null}
           {loadError ? <div className="flex items-center justify-between gap-3 px-4 pb-3">
             <p role="alert" className="selectable min-w-0 text-12 text-[var(--text-danger)] [overflow-wrap:anywhere]">{loadError}</p>
@@ -520,7 +613,7 @@ function RemoteTab() {
   );
 }
 
-function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir }: TabProps & ProjectsProps) {
+function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, sidebarOptions, onSidebarOptionsChange }: TabProps & ProjectsProps) {
   const [discovered, setDiscovered] = useState<DiscoveredProject[] | null>(null);
   const [picking, setPicking] = useState<'project' | 'directory' | null>(null);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -564,6 +657,15 @@ function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange,
   };
   return (
     <>
+      <Section title={t('sidebarListSection')}>
+        <Row label={t('sidebarGroupCli')} hint={t('sidebarGroupCliHint')}>
+          <Switch label={t('sidebarGroupCli')} checked={sidebarOptions.groupByCli} onChange={(groupByCli) => onSidebarOptionsChange({ ...sidebarOptions, groupByCli })} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('sidebarSorting')} hint={t('sidebarSortHint')}>
+          <SettingsSelect label={t('sidebarSorting')} value={sidebarOptions.sort} options={SIDEBAR_SORTS.map(({ id, label }) => ({ id, text: t(label) }))} onChange={(sort) => onSidebarOptionsChange({ ...sidebarOptions, sort })} />
+        </Row>
+      </Section>
       <Section title={t('addedProjects')} action={
         <SettingsButton busy={picking === 'project'} disabled={picking !== null} onClick={() => void chooseFolder('project')}>
           <FolderPlus size={14} strokeWidth={1.8} aria-hidden />{t('settingsAddProject')}
@@ -613,17 +715,30 @@ function ProjectsTab({ settings, onChange, extraProjects, onExtraProjectsChange,
   );
 }
 
-function AboutTab({ version }: { version: string }) {
+export function AboutTab({ version, settings, onChange }: { version: string } & TabProps) {
+  const update = useAppUpdate();
   return (
     <>
       <Section title="Tandem">
-        <div className="flex items-center gap-3 px-4 py-4">
+        <div className="flex flex-wrap items-center gap-3 px-4 py-4">
           <img src={iconUrl} alt="" draggable={false} className="size-11 shrink-0" />
-          <span className="flex flex-col gap-0.5">
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
             <span className={ROW_LABEL}>Tandem</span>
             <span className={ROW_HINT}>{t('aboutVersion', { version })}</span>
           </span>
+          <UpdateAction {...update} />
         </div>
+        <UpdateDetails state={update.state} />
+        <div className={DIVIDER} />
+        <Row label={t('updateAutomatic')} hint={t('updateAutomaticHint')}>
+          <Switch label={t('updateAutomatic')} checked={settings.autoUpdate} onChange={(autoUpdate) => onChange({ ...settings, autoUpdate })} />
+        </Row>
+        <div className={DIVIDER} />
+        <Row label={t('updateInterval')} hint={settings.autoUpdate ? t('updateIntervalHint') : t('updateIntervalDisabled')}>
+          <SettingsSelect compact label={t('updateInterval')} value={String(settings.updateCheckIntervalHours)}
+            options={[1, 6, 12, 24].map((hours) => ({ id: String(hours), text: t('updateIntervalHours', { count: String(hours) }) }))}
+            onChange={(hours) => onChange({ ...settings, updateCheckIntervalHours: Number(hours) })} />
+        </Row>
         <div className={DIVIDER} />
         <Row label={t('aboutDataLabel')} hint={t('aboutDataHint')} />
         <div className={DIVIDER} />
@@ -631,7 +746,45 @@ function AboutTab({ version }: { version: string }) {
         <div className={DIVIDER} />
         <Row label={t('aboutLicenseLabel')} hint="Apache-2.0" />
       </Section>
+      <DiagnosticsSection settings={settings} onChange={onChange} />
     </>
+  );
+}
+
+function DiagnosticsSection({ settings, onChange }: TabProps) {
+  const [pending, setPending] = useState<'open' | 'clear' | null>(null);
+  const [result, setResult] = useState<{ text: string; isError: boolean } | null>(null);
+  const run = async (kind: 'open' | 'clear') => {
+    setPending(kind);
+    setResult(null);
+    try {
+      await (kind === 'open' ? openLogFolder() : clearLogs());
+      if (kind === 'clear') setResult({ text: t('logCleared'), isError: false });
+    } catch (error) {
+      setResult({ text: t('logFailed', { error: String(error) }), isError: true });
+    } finally {
+      setPending(null);
+    }
+  };
+  return (
+    <Section title={t('diagnostics')}>
+      <Row label={t('debugLog')} hint={t('debugLogHint')}>
+        <Switch label={t('debugLog')} checked={settings.debugLog} onChange={(debugLog) => onChange({ ...settings, debugLog })} />
+      </Row>
+      <div className={DIVIDER} />
+      <Row label={t('logFiles')} hint={t('logFilesHint')}>
+        <span className="flex items-center gap-2">
+          <SettingsButton busy={pending === 'clear'} disabled={pending !== null} onClick={() => void run('clear')}>{t('logClear')}</SettingsButton>
+          <SettingsButton busy={pending === 'open'} disabled={pending !== null} onClick={() => void run('open')}>{t('logOpen')}</SettingsButton>
+        </span>
+      </Row>
+      {result ? (
+        <p role={result.isError ? 'alert' : 'status'}
+          className={`selectable px-4 pb-3 text-12 [overflow-wrap:anywhere] ${result.isError ? 'text-[var(--text-danger)]' : 'text-[var(--text-secondary)]'}`}>
+          {result.text}
+        </p>
+      ) : null}
+    </Section>
   );
 }
 
@@ -644,16 +797,79 @@ interface ProjectsProps {
   extraProjects: string[];
   onExtraProjectsChange: (projects: string[]) => void;
   defaultConversationDir: string;
+  sidebarOptions: SidebarOptions;
+  onSidebarOptionsChange: (options: SidebarOptions) => void;
 }
 
-interface SettingsViewProps extends TabProps, ProjectsProps {
+const SIDEBAR_SORTS: { id: SidebarSort; label: StringKey }[] = [
+  { id: 'time', label: 'sidebarSortTime' },
+  { id: 'type', label: 'sidebarSortType' },
+  { id: 'priority', label: 'sidebarSortPriority' },
+];
+
+export interface ArchivedTask {
+  id: string;
+  title: string;
+  agent: Agent;
+  updatedAtMs: number;
+}
+
+export interface ArchivedGroup {
+  /** The project or the conversation space the tasks belong to. */
+  name: string;
+  tasks: ArchivedTask[];
+}
+
+interface AgentListProps {
+  /** CLIs whose tasks stay out of the lists. */
+  hiddenAgents: Agent[];
+  onHiddenAgentsChange: (agents: Agent[]) => void;
+}
+
+interface ArchivedProps {
+  archivedGroups: ArchivedGroup[];
+  onUnarchive: (id: string) => void;
+}
+
+const archivedDate = (ms: number) =>
+  new Date(ms).toLocaleString(currentLanguage() === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+/** Archived tasks stay out of the sidebar; this is the one place to see them and bring them back. */
+function ArchivedTab({ archivedGroups, onUnarchive }: ArchivedProps) {
+  if (archivedGroups.length === 0) {
+    return <Section title={t('settingsArchived')}><Row label={t('archivedNone')} hint={t('archivedHint')} /></Section>;
+  }
+  return <>
+    {archivedGroups.map(({ name, tasks }) => (
+      <Section key={name} title={name} action={<span className="text-12 text-[var(--text-tertiary)]">{t('archivedTaskCount', { count: String(tasks.length) })}</span>}>
+        {tasks.map((task, index) => (
+          <div key={task.id}>
+            {index > 0 ? <div className={DIVIDER} /> : null}
+            <div className={ROW}>
+              <span className="flex min-w-0 items-center gap-2.5">
+                <span className="flex w-[15px] shrink-0 justify-center text-[var(--text-tertiary)]"><AgentMark agent={task.agent} /></span>
+                <span className="flex min-w-0 flex-col gap-1">
+                  <span className={`${ROW_LABEL} truncate`}>{task.title || t('untitled')}</span>
+                  <span className={ROW_HINT}>{archivedDate(task.updatedAtMs)}</span>
+                </span>
+              </span>
+              <SettingsButton onClick={() => onUnarchive(task.id)}>{t('taskUnarchive')}</SettingsButton>
+            </div>
+          </div>
+        ))}
+      </Section>
+    ))}
+  </>;
+}
+
+interface SettingsViewProps extends TabProps, ProjectsProps, ArchivedProps, AgentListProps {
   initialTab?: TabId;
   currentProject: string | null;
   version: string;
   onBack: () => void;
 }
 
-export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, version, onBack, currentProject, initialTab = 'general' }: SettingsViewProps) {
+export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, sidebarOptions, onSidebarOptionsChange, archivedGroups, onUnarchive, hiddenAgents, onHiddenAgentsChange, version, onBack, currentProject, initialTab = 'general' }: SettingsViewProps) {
   const [tab, setTab] = useState<TabId>(initialTab);
   const active = TABS.find(({ id }) => id === tab) ?? TABS[0];
   return (
@@ -665,7 +881,7 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
             type="button"
             onClick={onBack}
             aria-label={t('settingsBack')}
-            title={t('settingsBack')}
+            data-tooltip={t('settingsBack')}
             className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--settings-back-icon)] transition-colors hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]"
           >
             <ArrowLeft size={20} aria-hidden />
@@ -693,16 +909,17 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
         </nav>
       </aside>
       <div className="z-10 flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto pl-4 pr-6 pt-[46px] [scrollbar-gutter:stable]">
-        <div role="tabpanel" aria-label={t(active.label)} className="mx-auto w-full min-w-0 max-w-[920px] px-1 pb-32">
+        <div role="tabpanel" aria-label={t(active.label)} className={`mx-auto w-full min-w-0 max-w-[920px] px-1 ${tab === 'agents' ? 'flex min-h-0 flex-1 flex-col pb-6' : 'pb-32'}`}>
           <h2 className="pb-6 text-20 font-medium leading-[1.3] text-[var(--settings-section-title)]">{t(active.label)}</h2>
           {tab === 'general' ? <GeneralTab settings={settings} onChange={onChange} /> : null}
           {tab === 'appearance' ? <AppearanceTab settings={settings} onChange={onChange} /> : null}
-          {tab === 'agents' ? <AgentsTab currentProject={currentProject} projects={extraProjects} /> : null}
+          {tab === 'agents' ? <AgentsTab currentProject={currentProject} projects={extraProjects} hiddenAgents={hiddenAgents} onHiddenAgentsChange={onHiddenAgentsChange} /> : null}
           {tab === 'remote' ? <RemoteTab /> : null}
           {tab === 'projects' ? (
-            <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} />
+            <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} sidebarOptions={sidebarOptions} onSidebarOptionsChange={onSidebarOptionsChange} />
           ) : null}
-          {tab === 'about' ? <AboutTab version={version} /> : null}
+          {tab === 'archived' ? <ArchivedTab archivedGroups={archivedGroups} onUnarchive={onUnarchive} /> : null}
+          {tab === 'about' ? <AboutTab version={version} settings={settings} onChange={onChange} /> : null}
         </div>
       </div>
     </div>

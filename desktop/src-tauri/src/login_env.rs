@@ -13,23 +13,30 @@ pub async fn login_env() -> &'static HashMap<String, String> {
 async fn read_login_env() -> HashMap<String, String> {
     let fallback = || std::env::vars().collect::<HashMap<_, _>>();
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let output = Command::new(shell)
+    let output = Command::new(&shell)
         .args(["-ilc", &format!("printf {MARKER}; env -0")])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true)
         .output();
-    match tokio::time::timeout(Duration::from_secs(10), output).await {
+    // Only PATH is logged: the rest of the environment can hold tokens.
+    let failure = match tokio::time::timeout(Duration::from_secs(10), output).await {
         Ok(Ok(output)) => {
             let parsed = parse_env_output(&String::from_utf8_lossy(&output.stdout));
-            if parsed.contains_key("PATH") {
-                parsed
-            } else {
-                fallback()
+            if let Some(path) = parsed.get("PATH") {
+                crate::diagnostics::debug("login-env", || format!("{shell} PATH={path}"));
+                return parsed;
             }
+            format!("{shell} printed no PATH ({})", output.status)
         }
-        _ => fallback(),
-    }
+        Ok(Err(error)) => format!("{shell} could not start: {error}"),
+        Err(_) => format!("{shell} took longer than 10s"),
+    };
+    let env = fallback();
+    crate::diagnostics::error("login-env", format!(
+        "{failure}; using the app's own PATH={}", env.get("PATH").map_or("(none)", String::as_str),
+    ));
+    env
 }
 
 /// Shell startup files may print text, so only what follows the marker is read.

@@ -1,6 +1,9 @@
-//! Other processes that have a task open. The CLI lists each running session in
-//! `<config>/sessions/<pid>.json`. Two writers on one task split its history into branches, and
-//! the file format cannot prevent that, so Tandem has to look first.
+//! Other processes that have a task open: Claude's PID registry, Codex's native locks and
+//! Pi's explicit session arguments. Two writers can branch one task, so Tandem checks before
+//! sending and follows the active external writer's native file.
+
+mod pi;
+pub use pi::read_pi_writers;
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -16,6 +19,7 @@ struct RegistryEntry {
     session_id: String,
     status: Option<String>,
     entrypoint: Option<String>,
+    kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -27,7 +31,8 @@ pub struct ExternalWriter {
     pub is_busy: bool,
     /// Started by a person in a terminal, rather than by another program.
     pub from_terminal: bool,
-    /// Claude lets a second process write anyway. Codex refuses, so offering would be pointless.
+    /// Claude and Pi allow a second writer; Codex holds a native file lock.
+    /// An explicit override remains a user choice.
     pub can_override: bool,
 }
 
@@ -56,7 +61,8 @@ pub fn read_writers(sessions_dir: &Path) -> Vec<ExternalWriter> {
             task_id: entry.session_id,
             pid: entry.pid,
             is_busy: entry.status.as_deref() == Some("busy"),
-            from_terminal: entry.entrypoint.as_deref() == Some("cli"),
+            // Wrappers can start the interactive CLI through the SDK entry point; `kind` still says a person has it open.
+            from_terminal: entry.entrypoint.as_deref() == Some("cli") || entry.kind.as_deref() == Some("interactive"),
             can_override: true,
         })
         .collect()
@@ -158,14 +164,16 @@ mod tests {
         write("1.json", json!({"pid": me, "sessionId": "busy-cli", "status": "busy", "entrypoint": "cli"}));
         write("2.json", json!({"pid": me, "sessionId": "idle-sdk", "status": "idle", "entrypoint": "sdk-cli"}));
         write("3.json", json!({"pid": dead_pid(), "sessionId": "gone", "status": "busy", "entrypoint": "cli"}));
+        write("5.json", json!({"pid": me, "sessionId": "wrapped-cli", "status": "busy", "entrypoint": "sdk-cli", "kind": "interactive"}));
         write("1.abc.key", json!({"pid": me, "sessionId": "key-file"}));
         fs::write(dir.path().join("4.json"), "{half").unwrap();
 
         let mut writers = read_writers(dir.path());
         writers.sort_by(|a, b| a.task_id.cmp(&b.task_id));
-        assert_eq!(writers.len(), 2);
+        assert_eq!(writers.len(), 3);
         assert_eq!(writers[0], ExternalWriter { task_id: "busy-cli".into(), pid: me, is_busy: true, from_terminal: true, can_override: true });
         assert_eq!(writers[1], ExternalWriter { task_id: "idle-sdk".into(), pid: me, is_busy: false, from_terminal: false, can_override: true });
+        assert_eq!(writers[2], ExternalWriter { task_id: "wrapped-cli".into(), pid: me, is_busy: true, from_terminal: true, can_override: true });
     }
 
     #[test]
@@ -183,7 +191,13 @@ mod tests {
         assert_eq!(writers[0].task_id, "held");
         assert!(!writers[0].can_override);
         assert!(!writers[0].is_busy);
+        // A cloned descriptor also models the copy briefly inherited by a concurrent child
+        // before exec. Unlock the shared file description explicitly before checking release.
+        let inherited = holder.try_clone().unwrap();
         drop(holder);
+        assert_eq!(read_codex_writers(dir.path()).len(), 1);
+        assert_eq!(unsafe { libc::flock(inherited.as_raw_fd(), libc::LOCK_UN) }, 0);
+        drop(inherited);
         assert!(read_codex_writers(dir.path()).is_empty());
     }
 

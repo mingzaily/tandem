@@ -3,6 +3,28 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+fn update_settings_survive_restart_and_accept_valid_hand_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_owned();
+    let store = Store::open(root.clone());
+    store.update("config", json!({"auto_update":true,"update_check_interval_hours":12}).as_object().unwrap().clone()).unwrap();
+    drop(store);
+    let store = Store::open(root.clone());
+    assert!(store.snapshot().config.auto_update);
+    assert_eq!(store.snapshot().config.update_check_interval_hours, 12);
+    let text = fs::read_to_string(root.join("config.toml")).unwrap();
+    fs::write(root.join("config.toml"), text.replace("auto_update = true", "auto_update = false").replace("update_check_interval_hours = 12", "update_check_interval_hours = 24")).unwrap();
+    assert!(store.poll().is_some());
+    assert!(!store.snapshot().config.auto_update);
+    assert_eq!(store.snapshot().config.update_check_interval_hours, 24);
+    fs::write(root.join("config.toml"), "auto_update = true\nupdate_check_interval_hours = 0").unwrap();
+    assert!(store.poll().is_some());
+    assert!(!store.snapshot().config.auto_update);
+    assert_eq!(store.snapshot().config.update_check_interval_hours, 24);
+    assert!(!store.snapshot().errors.is_empty());
+}
+
+#[test]
 fn damaged_state_is_preserved_and_keeps_sending_available() {
     for unreadable in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -143,7 +165,7 @@ fn gitignore_keeps_user_entries_and_adds_private_paths_once() {
     drop(Store::open(dir.path().to_owned()));
     let text = fs::read_to_string(dir.path().join(".gitignore")).unwrap();
     assert!(text.starts_with("# user entry\nnotes/\n"));
-    for line in ["/remote.json", "/cache/", "/.storage.lock", ".tmp*"] {
+    for line in ["/remote.json", "/cache/", "/logs/", "/.storage.lock", ".tmp*"] {
         assert_eq!(text.lines().filter(|value| *value == line).count(), 1);
     }
 }

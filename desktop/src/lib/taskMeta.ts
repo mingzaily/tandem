@@ -22,6 +22,10 @@ export const toggleArchived = (meta: TaskMeta, id: string): TaskMeta => ({
   pins: meta.pins.filter((item) => item !== id),
 });
 
+/** Sending to an archived task brings it back, as in the reference. */
+export const unarchive = (meta: TaskMeta, id: string): TaskMeta =>
+  meta.archived.includes(id) ? { ...meta, archived: meta.archived.filter((item) => item !== id) } : meta;
+
 export function renameTask(meta: TaskMeta, id: string, title: string): TaskMeta {
   const { [id]: _removed, ...titles } = meta.titles;
   const trimmed = title.trim();

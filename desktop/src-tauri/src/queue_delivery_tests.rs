@@ -32,7 +32,14 @@ for line in sys.stdin:
         elif q['type'] == 'prompt':
             if mode == 'exit-before-ack': sys.exit(9)
             out({'type':'response','id':'prompt','command':'prompt','success':mode != 'reject','error':'prompt rejected','data':{'disposition':'started'}})
-            if mode == 'accepted-success': out({'type':'agent_settled','aborted':False})
+            if mode == 'accepted-retry-success':
+                out({'type':'message_end','message':{'role':'assistant','stopReason':'error','errorMessage':'input_image image_url must be valid base64'}})
+                out({'type':'message_end','message':{'role':'assistant','stopReason':'toolUse','content':[],'usage':{'output':4}}})
+                out({'type':'message_end','message':{'role':'assistant','stopReason':'stop','content':[],'usage':{'output':1}}})
+            if mode == 'accepted-request-error':
+                out({'type':'message_end','message':{'role':'assistant','stopReason':'error','errorMessage':'terminal image failure'}})
+            if mode in ['accepted-success','accepted-retry-success','accepted-request-error']:
+                out({'type':'agent_settled','aborted':False})
             sys.exit(0)
     elif q.get('type') == 'user':
         if mode == 'exit-before-ack':
@@ -64,6 +71,8 @@ fn cli_receipts_control_queue_retention() {
             .into_iter()
             .chain((agent == "codex").then_some("notification-first"))
             .chain((agent == "claude").then_some("writer-blocked"))
+            .chain((agent == "pi").then_some("accepted-retry-success"))
+            .chain((agent == "pi").then_some("accepted-request-error"))
         {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path();
@@ -230,6 +239,11 @@ fn exercise_cli(mode: &str) {
         observed.accepted, accepted,
         "receipt must follow the CLI acknowledgment"
     );
+    let success = matches!(mode, "accepted-success" | "accepted-retry-success");
+    assert_eq!(observed.success, success, "the final CLI outcome must determine queue progress");
+    if mode == "accepted-retry-success" {
+        assert!(observed.error.is_none(), "recovered request errors must be cleared");
+    }
     let snapshot = store
         .finish_claim(&id, head, result, observed)
         .unwrap()
@@ -247,7 +261,15 @@ fn exercise_cli(mode: &str) {
             .collect::<Vec<_>>(),
         expected
     );
-    assert_eq!(snapshot.paused, mode != "accepted-success");
+    assert_eq!(snapshot.paused, !success);
+    if mode == "accepted-retry-success" {
+        assert!(snapshot.error.is_none());
+        let (_, next, _) = store.claim(&id).unwrap().expect("successful retry must let the next queued message start");
+        assert_eq!(next.prompt, "tail");
+    }
+    if mode == "accepted-request-error" {
+        assert_eq!(snapshot.error.as_deref(), Some("terminal image failure"));
+    }
     drop(store);
     let restarted = Store::new(root.join("queues"));
     let snapshot = restarted.list().unwrap().remove(0);

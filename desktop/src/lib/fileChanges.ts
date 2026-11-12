@@ -30,7 +30,11 @@ function fileIdentity(path: string, cwd: string | null): string {
 /** Successful file tools in the latest turn, with cumulative native patch counts when complete. */
 export function summarizeFileChanges(items: Item[], cwd: string | null): FileChanges {
   let start = items.length - 1;
-  while (start >= 0 && items[start].type !== 'user') start -= 1;
+  while (start >= 0) {
+    const item = items[start];
+    if (item.type === 'user' && !item.steered) break;
+    start -= 1;
+  }
   const files = new Map<string, ChangedFile>();
   for (let index = start + 1; index < items.length; index += 1) {
     const item = items[index];
@@ -61,7 +65,7 @@ export function buildMessageRows(items: Item[], isRunning: boolean, cwd: string 
     turn = [];
   };
   for (const row of buildRows(items, isRunning)) {
-    if (row.type === 'user') appendChanges();
+    if (row.type === 'user' && !row.steered) appendChanges();
     rows.push(row);
     turn.push(...flattenRows([row]));
   }

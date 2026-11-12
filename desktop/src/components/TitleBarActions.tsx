@@ -22,7 +22,7 @@ export function TitleBarActions({ canGoBack, canGoForward, onToggleSidebar, onBa
   return (
     <div className="absolute left-[78px] top-[9px] z-30 flex items-center gap-1">
       {actions.map(({ label, icon: Icon, onClick, disabled }) => (
-        <button key={label} type="button" aria-label={label} title={label} disabled={disabled} onClick={onClick} className={BUTTON}>
+        <button key={label} type="button" aria-label={label} data-tooltip={label} disabled={disabled} onClick={onClick} className={BUTTON}>
           <Icon size={15} aria-hidden />
         </button>
       ))}

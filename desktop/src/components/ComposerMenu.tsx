@@ -4,6 +4,8 @@ import { useAnchoredPosition } from '../lib/useAnchoredPosition';
 
 const TRIGGER =
   'inline-flex h-[30px] min-w-0 items-center gap-1 rounded-full border border-transparent bg-transparent px-2.5 text-13 transition-colors duration-[var(--motion-fast)] enabled:hover:border-[var(--border-default)] enabled:hover:bg-[var(--composer-pill-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50';
+const PLAIN_TRIGGER =
+  'inline-flex min-w-0 items-center rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:opacity-50';
 const PANEL =
   'fixed z-50 rounded-[12px] border border-[var(--cmd-palette-border)] bg-[var(--cmd-palette-bg)] shadow-[shadow:var(--shadow-menu)]';
 const PANEL_BODY = 'overflow-y-auto p-2';
@@ -21,6 +23,8 @@ interface ComposerMenuProps {
   title?: string;
   trigger: ReactNode;
   triggerClassName?: string;
+  /** A bare trigger without the pill's padding, border and hover fill, styled wholly by `triggerClassName`. */
+  plainTrigger?: boolean;
   align?: 'left' | 'right';
   side?: 'above' | 'below';
   allowFlip?: boolean;
@@ -37,6 +41,7 @@ export function ComposerMenu({
   title,
   trigger,
   triggerClassName = 'text-[var(--text-primary)]',
+  plainTrigger = false,
   align = 'left',
   side = 'above',
   allowFlip = true,
@@ -77,12 +82,12 @@ export function ComposerMenu({
       <button
         type="button"
         aria-label={label}
-        title={title}
+        data-tooltip={title}
         aria-haspopup="dialog"
         aria-expanded={open}
         disabled={disabled}
         onClick={() => setOpen((current) => !current)}
-        className={`${TRIGGER} ${triggerClassName}`}
+        className={`${plainTrigger ? PLAIN_TRIGGER : TRIGGER} ${triggerClassName}`}
       >
         {trigger}
       </button>

@@ -1,4 +1,5 @@
-// Builds the signed release into its own target directory and installs it to /Applications.
+// Development install: builds the current source as a local release build in its own target
+// directory and installs it to /Applications. Official releases come from CI and the updater.
 // The project's own target directory is never touched, and a running Tandem keeps its bundle:
 // it would otherwise keep running old code from a bundle that now holds another build.
 import { spawnSync } from 'node:child_process';
@@ -27,15 +28,15 @@ if (!process.argv.includes('--no-build')) {
   run('pnpm', ['tauri', 'build', '--bundles', 'app'], { cwd: desktop, env: { ...process.env, CARGO_TARGET_DIR: target } });
 }
 if (!existsSync(built)) {
-  console.error(`没有找到构建结果：${built}`);
+  console.error(`没有找到开发构建：${built}`);
   process.exit(1);
 }
 run('codesign', ['--verify', '--deep', '--strict', built]);
 if (running()) {
-  console.log(`Tandem 正在运行，没有替换。新版本在 ${built}`);
-  console.log('退出 Tandem 后运行 pnpm install:app --no-build 完成安装。');
+  console.log(`Tandem 正在运行，没有替换。开发构建在 ${built}`);
+  console.log('退出 Tandem 后运行 pnpm dev:install --no-build 完成安装。');
   process.exit(0);
 }
 run('rm', ['-rf', installed]);
 run('ditto', [built, installed]);
-console.log(`已安装到 ${installed}`);
+console.log(`开发构建已安装到 ${installed}`);

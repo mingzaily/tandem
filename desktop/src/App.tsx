@@ -10,6 +10,7 @@ import { HomeSuggestions } from './components/HomeSuggestions';
 import { PermissionPrompt } from './components/PermissionPrompt';
 import { QuestionPrompt } from './components/QuestionPrompt';
 import { RunningStatus } from './components/RunningStatus';
+import { promptRecorded } from './lib/stoppedPrompt';
 import { QueuePauseStatus } from './components/QueuePauseStatus';
 import { ComposerStatusRow } from './components/ComposerStatusRow';
 import { RemoteAccessIndicator, RemoteAccessNotice, RemoteRevokeDialog } from './components/RemoteAccessNotice';
@@ -258,6 +259,8 @@ export function App() {
   const [queuesLoaded, setQueuesLoaded] = useState(false);
   const queueListening = useRef<Promise<unknown>>(Promise.resolve());
   const [queues, setQueues] = useState<Record<string, TaskQueue>>({});
+  /** Prompts of stopped turns the CLI never recorded, waiting to go back into the input box. */
+  const [restoredDrafts, setRestoredDrafts] = useState<Record<string, { id: string; text: string }>>({});
   const queuesRef = useRef(queues);
   queuesRef.current = queues;
   /** Hands the next queued message to an agent that is idle while its background tasks run. */
@@ -558,6 +561,7 @@ export function App() {
       let taskId = knownId;
       const isNew = knownId === null;
       let ended = false;
+      let turnStartedAt = Date.now();
       let isListed = !isNew;
       const generation = crypto.randomUUID();
       let streamed: Item[] = [userItem];
@@ -575,6 +579,7 @@ export function App() {
             return next;
           });
           const startedAt = Date.now();
+          turnStartedAt = startedAt;
           touchListTask(id, startedAt);
           setProgress((current) => ({
             ...current,
@@ -709,6 +714,14 @@ export function App() {
           void (async () => {
             if (selectedIdRef.current === id) await loadHistory(agent, id, () => turnGenerations.current.get(id) === generation);
             await refreshTasks(agent === 'codex');
+            // A stop can beat the CLI to writing the prompt. Tandem keeps no copy of sent messages,
+            // so an unrecorded prompt goes back to the input box instead of being lost.
+            if (event.cancelled && !isNew && prompt.trim()) {
+              const native = await readTask(agent, id).catch(() => null);
+              if (native && !promptRecorded(native.messages, prompt, turnStartedAt)) {
+                setRestoredDrafts((current) => ({ ...current, [id]: { id: crypto.randomUUID(), text: prompt } }));
+              }
+            }
           })();
           return;
         }
@@ -1567,6 +1580,8 @@ export function App() {
                 onSend={send}
                 onStop={() => void cancelTurn(selectedId).catch((error) => setNotices((current) => ({ ...current, [selectedId]: { text: String(error), isError: true } })))}
                 stopLabel={selectedProgress?.background?.tasks ? t('stopBackground') : undefined}
+                restored={restoredDrafts[selectedId]}
+                onRestored={() => setRestoredDrafts(({ [selectedId]: _done, ...rest }) => rest)}
               />
             </div>
             <ComposerFooter

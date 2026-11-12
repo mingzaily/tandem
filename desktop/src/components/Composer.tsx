@@ -69,6 +69,9 @@ interface ComposerProps {
   onStop: () => void;
   /** What stopping ends, when it is more than the reply being written. */
   stopLabel?: string;
+  /** Text to put back, such as a stopped prompt the CLI never recorded. An existing draft wins. */
+  restored?: { id: string; text: string };
+  onRestored?: () => void;
 }
 
 export function Composer({
@@ -90,6 +93,8 @@ export function Composer({
   onSend,
   onStop,
   stopLabel = t('stop'),
+  restored,
+  onRestored,
 }: ComposerProps) {
   const [value, setValue] = useState(() => drafts.get(draftKey)?.value ?? '');
   const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.get(draftKey)?.attachments ?? []);
@@ -97,6 +102,11 @@ export function Composer({
     if (value || attachments.length) drafts.set(draftKey, { value, attachments });
     else drafts.delete(draftKey);
   }, [draftKey, value, attachments]);
+  useEffect(() => {
+    if (!restored) return;
+    if (!value.trim() && !editing) setValue(restored.text);
+    onRestored?.();
+  }, [restored?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const [attachError, setAttachError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [submitting, setSubmitting] = useState(false);

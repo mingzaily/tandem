@@ -869,16 +869,18 @@ impl Store {
         observed: Observed,
     ) -> Result<Option<Snapshot>, String> {
         let success = observed.accepted && result.is_ok() && observed.success;
-        let error = observed.error.or_else(|| result.err()).or_else(|| {
-            (!observed.accepted).then(|| "CLI 未确认接收，消息已保留在队首".to_owned())
-        });
-        self.complete(
-            id,
-            success,
-            observed.cancelled,
-            error,
-            (!observed.accepted).then_some(entry),
-        )
+        // Stopping is the user's own decision: the message ends with the interrupted turn, as in
+        // the reference's stopSession, and only messages still waiting stay paused. An unexplained
+        // end without a receipt keeps the message at the head for another try.
+        let restore = !observed.accepted && !observed.cancelled;
+        let error = if observed.cancelled {
+            None
+        } else {
+            observed.error.or_else(|| result.err()).or_else(|| {
+                restore.then(|| "CLI 未确认接收，消息已保留在队首".to_owned())
+            })
+        };
+        self.complete(id, success, observed.cancelled, error, restore.then_some(entry))
     }
 }
 
@@ -1869,6 +1871,24 @@ mod tests {
             .unwrap();
         assert!(snapshot.paused);
         assert_eq!(snapshot.entries[0].prompt, "unconfirmed");
+    }
+
+    #[test]
+    fn stopping_before_the_receipt_ends_the_message_with_the_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.enqueue(&task, Agent::Claude, entry("stopped at once")).unwrap();
+        queue.enqueue(&task, Agent::Claude, entry("still waiting")).unwrap();
+        let (_, head, _) = queue.claim(&task).unwrap().unwrap();
+        let mut observed = Observed::default();
+        observed.record(&TurnEvent::Started { task_id: task.clone() });
+        observed.record(&TurnEvent::Finished { is_error: false, cancelled: true, message: None });
+        let snapshot = queue.finish_claim(&task, head, Ok(()), observed).unwrap().unwrap();
+        let prompts: Vec<_> = snapshot.entries.iter().map(|entry| entry.prompt.as_str()).collect();
+        assert_eq!(prompts, ["still waiting"]);
+        assert!(snapshot.paused, "messages still waiting stay paused after a stop");
+        assert_eq!(snapshot.error, None);
     }
 
     #[test]

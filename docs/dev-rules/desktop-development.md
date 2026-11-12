@@ -25,7 +25,7 @@ pnpm test
 | `pnpm tauri build --debug --bundles app` | 带脚本驱动的调试版，页面与正式版相同 |
 | `pnpm install:app` | 构建正式版并安装到 `/Applications/Tandem.app`；Tandem 正在运行时只构建，退出后用 `pnpm install:app --no-build` 安装 |
 
-日常使用 `/Applications/Tandem.app`，不要打开 `target/` 里的产物：`target/release/tandem` 是未打包的程序，没有系统通知和 Dock 角标；`target/.../Tandem.app` 会被下一次构建原地替换，替换正在运行的应用包同样会让它退出。`pnpm install:app` 在 `~/Library/Caches/tandem-install-target` 单独构建，只在 Tandem 未运行时替换已安装的应用。
+日常使用 `/Applications/Tandem.app`，不要打开 `target/` 里的产物：`target/release/tandem` 是未打包的程序，没有系统通知和 Dock 角标；`target/.../Tandem.app` 会被下一次构建原地替换，正在运行的应用会和磁盘上的应用包对不上。`pnpm install:app` 在 `~/Library/Caches/tandem-install-target` 单独构建，只在 Tandem 未运行时替换已安装的应用。
 
 构建目录会被 Spotlight 收录，搜索时出现多个 Tandem 和编译缓存文件夹。在“系统设置 → Spotlight → 搜索隐私”中加入 `desktop/src-tauri/target` 即可，只留下“应用程序”里的那一个。
 

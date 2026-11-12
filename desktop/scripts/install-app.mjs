@@ -1,6 +1,6 @@
 // Builds the signed release into its own target directory and installs it to /Applications.
-// The project's own target directory and a running Tandem are never touched: replacing the
-// bundle under a running app makes macOS abort it at its next notification call.
+// The project's own target directory is never touched, and a running Tandem keeps its bundle:
+// it would otherwise keep running old code from a bundle that now holds another build.
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -17,8 +17,10 @@ function run(command, args, options = {}) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
+/** `pgrep -f` misses this process on macOS, so the full command lines are read from `ps`. */
 function running() {
-  return spawnSync('pgrep', ['-f', `${installed}/Contents/MacOS/tandem`], { stdio: 'ignore' }).status === 0;
+  const { stdout } = spawnSync('ps', ['-axo', 'command='], { encoding: 'utf8' });
+  return stdout.split('\n').some((line) => line.startsWith(`${installed}/Contents/MacOS/tandem`));
 }
 
 if (!process.argv.includes('--no-build')) {

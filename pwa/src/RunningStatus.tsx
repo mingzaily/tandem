@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { ArrowDown, Sparkles } from 'lucide-react';
 import { t } from './lib/i18n';
 import type { TurnEvent } from './lib/types';
 import { duration } from './Stream';
+import { applyTurnEvent, turnStatus, type Item } from './lib/items';
 export function RunningStatus({
   events,
   startedAt,
@@ -17,9 +18,8 @@ export function RunningStatus({
     const timer = setInterval(() => setNow(performance.now()), 1000);
     return () => clearInterval(timer);
   }, []);
-  const last = events
-    .filter((e) => ['textDelta', 'thinkingDelta', 'toolUse', 'toolResult'].includes(e.type))
-    .at(-1);
+  const items = useMemo(() => events.reduce<Item[]>(applyTurnEvent, []), [events]);
+  const status = turnStatus(items, waiting);
   const output = events.filter((e) => e.type === 'outputTokens').at(-1);
   const tokens = output?.type === 'outputTokens' ? output.total : 0;
   return (
@@ -27,13 +27,7 @@ export function RunningStatus({
       <span className="status-breath">
         <Sparkles size={14} />
         <span role="status">
-          {waiting
-            ? t('statusAwaitingYou')
-            : last?.type === 'toolUse'
-              ? t('statusCallingTool')
-              : last?.type === 'textDelta'
-                ? t('statusReplying')
-                : t('statusThinking')}
+          {status.key === 'statusCallingTool' ? `${status.toolName} ${t('toolRunning')}` : t(status.key)}
         </span>
       </span>
       <span className="run-meta">

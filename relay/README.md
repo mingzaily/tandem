@@ -63,7 +63,7 @@ docker build -f relay/Dockerfile -t tandem-relay:local .
 
 多阶段构建使用 Node 构建 PWA、Rust/musl 构建静态二进制。最终使用 scratch 镜像，以 UID/GID `65532` 运行，包含二进制、PWA 和 `/licenses/` 中的 LICENSE / NOTICE，没有 Node、nginx、证书或 TLS。`relay/Dockerfile.dockerignore` 将构建上下文限制到源码和设计 token。
 
-部署时使用[compose.yaml](./compose.yaml)，在同目录的 `.env` 设置随机的 `TANDEM_RELAY_HOST_TOKEN`。默认镜像地址为 `ghcr.io/mingzaily/tandem-relay:latest`，首次发布需要 `relay-v*` tag 工作流成功。也可将 compose 的 image 换为本地构建的 tag。
+部署时使用[compose.yaml](./compose.yaml)，在同目录的 `.env` 设置随机的 `TANDEM_RELAY_HOST_TOKEN`。默认镜像地址为 `ghcr.io/mingzaily/tandem-relay:latest`，relay 及镜像依赖改动进入 `main` 后自动发布，首次使用需要该工作流成功。也可将 compose 的 image 换为本地构建的 tag。
 
 ```sh
 cd relay
@@ -76,7 +76,9 @@ curl http://127.0.0.1:8787/healthz
 
 容器内部使用 HTTP 和 WS；网关对外提供 HTTPS 和 WSS。WebCrypto 要求安全上下文，桌面端也只接受本机地址的 `ws://`。反向代理应转发 WebSocket 升级头，读超时大于 90 秒。只有入口受保护并正确传递来源地址时，才启用 `TANDEM_RELAY_TRUST_PROXY=1`。[用户文档](../site/src/guide/proxy.md)提供 nginx 和 Caddy 完整配置。
 
-`.github/workflows/relay-image.yml` 由 `relay-v*` tag 触发，先运行共享验证，再启动 amd64 待发布镜像完成健康检查、PWA 配对、数据持久化及退出验收，成功后构建并发布 `linux/amd64` 与 `linux/arm64`。版本 tag 生成同名镜像标签及 SHA 标签；正式 `relay-vX.Y.Z` 在高于当前已发布版本时，串行晋升 `latest`。预发布与旧版本重跑保留版本标签，手动分支构建生成 SHA 标签。桌面端使用 `v*` tag，独立于中转镜像发布。文档站发布配置位于 `.github/workflows/site-pages.yml`，目标入口为 `https://mingzaily.github.io/tandem/guide/`。
+`.github/workflows/relay-image.yml` 在 relay、镜像内 PWA / 共享 token 及构建工具改动进入 `main` 后自动触发，手动执行也只接受 `main`。CI 使用北京时间生成独立的 `major.minor.YYYYMMDDNN`，预留 `relay-v<版本>` tag；同提交重跑复用版本和已经发布的完整双架构镜像。先运行共享验证，再启动 amd64 待发布镜像完成健康检查、PWA 配对、数据持久化及退出验收，成功后构建并发布 `linux/amd64` 与 `linux/arm64`，生成同名版本标签与 SHA 标签，并在高于当前版本时串行晋升 `latest`。桌面端使用自己的 `v<版本>` 命名空间，两者规则相同、序号各自递增。
+
+日期版本同步写入构建工作区的 Cargo.toml / Cargo.lock，二进制通过 `/healthz.version` 和 `hello-ack.relayVersion` 自报。桌面“设置 → 远程 → 中转服务”连接后显示该版本，与桌面应用版本分别呈现。文档站发布配置位于 `.github/workflows/site-pages.yml`，目标入口为 `https://mingzaily.github.io/tandem/guide/`。
 
 PR 和 main 的相关改动由 `.github/workflows/ci.yml` 自动验证。本地在仓库根目录运行 `node .github/scripts/verify.mjs --image`，使用同一套检查且不推送；完整命令、依赖和验证边界见 [CI 与本地验证](../docs/dev-rules/ci-validation.md)。
 

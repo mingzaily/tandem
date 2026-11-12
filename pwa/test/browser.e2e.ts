@@ -71,10 +71,26 @@ try {
         await task.waitFor();
         assert.equal(await page.locator('.connection-status').count(), 0, '正常连接不占状态行');
         await shot('list');
-        assert.deepEqual(await page.locator('.project-heading span').allTextContents(), ['我的笔记', '对话', 'Tandem']);
-        assert.equal(await page.locator('.project-heading').filter({ hasText: '对话' }).locator('small').innerText(), '2');
+        assert.deepEqual(await page.locator('.project-heading span').allTextContents(), [
+          '我的笔记',
+          '对话',
+          'Tandem',
+        ]);
+        assert.equal(
+          await page.locator('.project-heading').filter({ hasText: '对话' }).locator('small').innerText(),
+          '2',
+        );
         assert.equal(await page.locator('.task-running').count(), 1);
+        await page.getByRole('searchbox', { name: '搜索任务、项目或 CLI' }).fill('阅读笔记');
+        await page.getByRole('button', { name: /整理本周的阅读笔记/ }).waitFor();
+        assert.equal(await page.locator('.task').count(), 1);
+        await page.getByRole('button', { name: '清除搜索' }).click();
+        const conversations = page.locator('.project-toggle').filter({ hasText: '对话' });
+        await conversations.click();
+        assert.equal(await conversations.getAttribute('aria-expanded'), 'false');
+        await conversations.click();
         await task.click();
+        assert.equal(await page.locator('.composer .composer-controls').count(), 1);
         await page.locator('.md').waitFor();
         assert.equal(await page.locator('.md img').count(), 0);
         assert.equal(await page.evaluate(() => 'tandemInjected' in window), false);
@@ -94,7 +110,7 @@ try {
           return { actual: getComputedStyle(notice).color, expected };
         });
         assert.equal(pauseColors.actual, pauseColors.expected, '中断标记使用暂停颜色');
-        const work = page.getByRole('button', { name: /已工作/ });
+        const work = page.getByRole('button', { name: /已处理/ });
         await work.click();
         await page.getByRole('button', { name: /Bash/ }).click();
         assert.equal(await page.locator('.tool-detail').count(), 1);
@@ -113,7 +129,9 @@ try {
         await page.getByRole('button', { name: '允许一次' }).waitFor();
         assert.equal(await page.locator('.running-status [role="status"]').innerText(), '等你确认…');
         assert.match(await page.locator('.run-meta').innerText(), /\d[\d,]* tok$/);
-        assert.equal(await page.getByRole('textbox', { name: '发送消息' }).count(), 0);
+        assert.equal(await page.getByRole('textbox', { name: '发送消息' }).count(), 1);
+        assert.equal(await page.getByRole('button', { name: '停止生成', exact: true }).count(), 1);
+        await page.getByRole('textbox', { name: '发送消息' }).fill('确认期间保留的草稿');
         await shot('permission');
         const elapsedSeconds = async () => {
           const label = await page.locator('.run-meta').innerText();
@@ -132,13 +150,17 @@ try {
             configurable: true,
             get: message.get,
             set(handler: WebSocket['onmessage']) {
-              message.set!.call(this, handler && ((event: MessageEvent) => {
-                if (JSON.parse(String(event.data)).t === 'hello-ack') {
-                  window.setTimeout(() => handler.call(this, event), 600);
-                } else {
-                  handler.call(this, event);
-                }
-              }));
+              message.set!.call(
+                this,
+                handler &&
+                  ((event: MessageEvent) => {
+                    if (JSON.parse(String(event.data)).t === 'hello-ack') {
+                      window.setTimeout(() => handler.call(this, event), 600);
+                    } else {
+                      handler.call(this, event);
+                    }
+                  }),
+              );
             },
           });
         });
@@ -152,10 +174,16 @@ try {
         await shot('permission-recovered');
         await page.getByRole('button', { name: '允许一次' }).click();
         await page.getByText('下一步做什么？', { exact: true }).waitFor();
+        await page.getByRole('textbox', { name: '发送消息' }).fill('提问期间保留的草稿');
+        assert.equal(await page.getByRole('button', { name: '停止生成', exact: true }).count(), 1);
         await shot('question');
         await page.getByRole('radio').first().check();
-        await page.getByRole('button', { name: '提交回答' }).click();
+        await page.getByText('下一步做什么？', { exact: true }).waitFor({ state: 'hidden' });
         await page.getByRole('button', { name: '发送消息', exact: true }).waitFor();
+        assert.equal(
+          await page.getByRole('textbox', { name: '发送消息' }).inputValue(),
+          '提问期间保留的草稿',
+        );
         await page.getByRole('button', { name: '新建任务', exact: true }).click();
         await page.getByRole('button', { name: '选择模型', exact: true }).click();
         await page.getByRole('heading', { name: 'Codex', exact: true }).waitFor();
@@ -165,6 +193,8 @@ try {
         await page.getByRole('textbox', { name: '发送消息' }).fill('从手机新建的任务');
         await page.getByRole('button', { name: '发送消息', exact: true }).click();
         await page.getByRole('button', { name: '允许一次' }).waitFor();
+        assert.equal(await page.locator('.header-title strong').innerText(), '从手机新建的任务');
+        assert.equal(await page.locator('.composer .composer-controls').count(), 1);
         await page.getByRole('button', { name: '拒绝', exact: true }).click();
         await page.getByRole('button', { name: '发送消息', exact: true }).waitFor();
         await page.reload();

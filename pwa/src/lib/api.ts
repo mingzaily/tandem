@@ -1,14 +1,5 @@
 import { Client } from './client';
-import type {
-  Agent,
-  Decision,
-  Message,
-  ModelOption,
-  Run,
-  TaskContext,
-  TaskSummary,
-  UsageWindows,
-} from './types';
+import type { Agent, Decision, ModelOption, Run, TaskContent, TaskSummary, UsageWindows } from './types';
 export const client = new Client();
 export const api = {
   host: () =>
@@ -22,7 +13,7 @@ export const api = {
   tasks: () =>
     client.request<{ tasks: TaskSummary[]; external: { taskId: string; isBusy: boolean }[] }>('tasks.list'),
   read: (agent: Agent, id: string, before?: number) =>
-    client.request<{ messages: Message[]; context: TaskContext; total: number }>('task.read', {
+    client.request<TaskContent & { total: number }>('task.read', {
       agent,
       id,
       before,

@@ -28,9 +28,16 @@ export interface TaskContext {
   model?: string | null;
 }
 
+export interface TaskModel {
+  model: string;
+  effort: string | null;
+}
+
 export interface TaskContent {
   messages: Message[];
   context: TaskContext | null;
+  modelSelection?: TaskModel | null;
+  permissionMode?: string | null;
 }
 
 export interface UsageWindow {
@@ -75,17 +82,32 @@ export interface QuestionOption {
 }
 
 export interface Question {
+  /** Original native text; also the key used when submitting an answer. */
   question: string;
+  /** Main question and background, separated for presentation. */
+  displayQuestion?: string;
+  context?: string;
   header?: string;
   options?: QuestionOption[];
   multiSelect?: boolean;
+  /** Normalized native capability for the localized free-text entry. */
+  allowCustom?: boolean;
 }
 
 export type Decision =
   | { kind: 'allow' }
   | { kind: 'allowForTask' }
   | { kind: 'deny' }
-  | { kind: 'answer'; answers: Record<string, string> };
+  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean };
+
+export interface GenerationSpeed {
+  rate: number | null;
+  average: number | null;
+  peak: number | null;
+  generationMs: number;
+  measuredTokens: number;
+  streaming: boolean;
+}
 
 export type TurnEvent =
   | { type: 'started'; taskId: string }
@@ -104,6 +126,7 @@ export type TurnEvent =
   | { type: 'question'; requestId: string; questions: Question[] }
   | { type: 'requestSettled'; requestId: string }
   | { type: 'outputTokens'; total: number }
+  | { type: 'generationSpeed'; speed: GenerationSpeed }
   | { type: 'contextUsage'; usedTokens: number; model: string | null }
   | { type: 'contextWindow'; model: string; tokens: number }
   | { type: 'rateLimits'; windows: UsageWindows }
@@ -115,6 +138,8 @@ export interface Run {
   runId: string;
   taskId: string | null;
   agent: Agent;
+  /** The original input anchors the live turn within the CLI's history. */
+  prompt: string;
   startedAtMs: number;
   elapsedMs: number;
   events: TurnEvent[];

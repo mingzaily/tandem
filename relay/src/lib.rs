@@ -75,7 +75,7 @@ pub async fn serve(
         hello_timeout: config.hello_timeout,
     });
     let mut app = Router::new()
-        .route("/healthz", get(|| async { Json(json!({"ok":true,"v":1})) }))
+        .route("/healthz", get(|| async { Json(json!({"ok":true,"v":1,"version":env!("CARGO_PKG_VERSION")})) }))
         .route("/ws", get(upgrade));
     if let Some(directory) = config.static_dir {
         // The PWA uses root-relative assets and keeps its CSP in index.html.

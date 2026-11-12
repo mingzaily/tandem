@@ -1,4 +1,5 @@
 import { WebSocket } from "ws";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import {
   aes,
@@ -30,7 +31,11 @@ export async function fakeHost(
     console.info(`开发设备 ${name}，核对码 ${code}，自动允许`);
     return true;
   },
-  options: { unavailableAgents?: string[]; disconnectFirstHandshake?: boolean } = {},
+  options: {
+    unavailableAgents?: string[];
+    disconnectFirstHandshake?: boolean;
+    newTaskReady?: Promise<void>;
+  } = {},
 ) {
   const signing = await generate("ECDSA");
   const room = b64(random(16));
@@ -206,6 +211,8 @@ export async function fakeHost(
     ...tasks.slice(1).map((task) => [task.id, []] as [string, Frame[]]),
   ]);
   const runs = new Map<string, Frame>();
+  const starts = new Set<ReturnType<typeof setTimeout>>();
+  const taskOptions = new Map<string, Frame>();
   let seq = 0;
   async function event(run: Frame, e: Frame) {
     run.events.push(e);
@@ -217,6 +224,10 @@ export async function fakeHost(
           p: {
             runId: run.runId,
             taskId: run.taskId,
+            agent: run.agent,
+            ...(["started", "finished"].includes(e.type)
+              ? { prompt: run.prompt }
+              : {}),
             startedAtMs: run.startedAtMs,
             elapsedMs: performance.now() - run.started,
             seq,
@@ -257,7 +268,12 @@ export async function fakeHost(
             before,
           ),
           total: messages.length,
-          context: { usedTokens: 120 },
+          context: { usedTokens: 120, model: "demo" },
+          modelSelection: {
+            model: taskOptions.get(p.id)?.model ?? "demo",
+            effort: taskOptions.get(p.id)?.effort ?? null,
+          },
+          permissionMode: taskOptions.get(p.id)?.permissionMode ?? "default",
         };
         break;
       }
@@ -301,55 +317,75 @@ export async function fakeHost(
           )
         )
           return error("NOT_ALLOWED", "权限必须使用允许范围");
-        if (p.taskId === null && !["/demo", "/notes", "tandem:conversation"].includes(p.cwd))
+        if (
+          p.taskId === null &&
+          !["/demo", "/notes", "tandem:conversation"].includes(p.cwd)
+        )
           return error("NOT_ALLOWED", "请选择已添加的项目");
         if (p.taskId !== null && !task) return error("NOT_FOUND", "任务不存在");
         if ([...runs.values()].some((r) => r.taskId === p.taskId))
           return error("BUSY_ELSEWHERE", "任务正在生成");
         const taskId = p.taskId ?? b64(random(16));
-        if (!task) {
-          tasks.push({
-            id: taskId,
-            title: p.prompt.slice(0, 30),
-            cwd: p.cwd === "tandem:conversation" ? "/conversations/" + taskId : p.cwd,
-            agent: p.agent,
-            updatedAtMs: Date.now(),
-          });
-          history.set(taskId, []);
-        }
-        history.get(taskId)!.push({
-          id: b64(random(8)),
-          kind: "user",
-          text: p.prompt,
-          isError: false,
-          truncated: false,
-        });
         const run = {
-          runId: b64(random(16)),
-          taskId,
+          runId: "run-" + randomUUID(),
+          taskId: p.taskId,
           agent: p.agent,
+          prompt: p.prompt,
           startedAtMs: Date.now(),
           started: performance.now(),
           events: [] as Frame[],
         };
         runs.set(run.runId, run);
-        result = { runId: run.runId };
-        await encrypted(conn, { id, ok: true, r: result });
-        await event(run, { type: "started", taskId });
-        for (const text of ["收到：", p.prompt, "\n准备执行演示操作。"])
-          await event(run, { type: "textDelta", text });
-        await event(run, { type: "outputTokens", total: 48 });
-        await event(run, {
-          type: "permissionRequest",
-          requestId: "permission-" + run.runId,
-          toolName: "Bash",
-          input: "echo Tandem",
-          description: "运行演示命令",
-          rules: ["echo"],
-        });
-        for (const [c, s] of sessions)
-          if (s.phase === "ready")
-            await encrypted(c, { ev: "tasks.changed", p: {} });
+        await encrypted(conn, { id, ok: true, r: { runId: run.runId } });
+        const begin = async () => {
+          if (!task) {
+            tasks.push({
+              id: taskId,
+              title: p.prompt.slice(0, 30),
+              cwd:
+                p.cwd === "tandem:conversation"
+                  ? "/conversations/" + taskId
+                  : p.cwd,
+              agent: p.agent,
+              updatedAtMs: Date.now(),
+            });
+            history.set(taskId, []);
+          }
+          taskOptions.set(taskId, p);
+          history.get(taskId)!.push({
+            id: b64(random(8)),
+            kind: "user",
+            text: p.prompt,
+            isError: false,
+            truncated: false,
+          });
+          run.taskId = taskId;
+          await event(run, { type: "started", taskId });
+          for (const text of ["收到：", p.prompt, "\n准备执行演示操作。"])
+            await event(run, { type: "textDelta", text });
+          await event(run, { type: "outputTokens", total: 48 });
+          await event(run, {
+            type: "permissionRequest",
+            requestId: "permission-" + run.runId,
+            toolName: "Bash",
+            input: "echo Tandem",
+            description: "运行演示命令",
+            rules: ["echo"],
+          });
+          for (const [c, s] of sessions)
+            if (s.phase === "ready")
+              await encrypted(c, { ev: "tasks.changed", p: {} });
+        };
+        if (task) await begin();
+        else {
+          const timer = setTimeout(() => {
+            starts.delete(timer);
+            void (options.newTaskReady ?? Promise.resolve())
+              .then(begin)
+              .catch((error) => console.error(error));
+          }, 100);
+          starts.add(timer);
+        }
         return;
       }
       case "request.answer": {
@@ -597,6 +633,8 @@ export async function fakeHost(
       sessions.clear();
     },
     async close() {
+      for (const timer of starts) clearTimeout(timer);
+      starts.clear();
       if (ws.readyState === WebSocket.CLOSED) return;
       await new Promise<void>((r) => {
         ws.once("close", () => r());

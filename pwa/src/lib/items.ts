@@ -10,7 +10,7 @@ export interface AttachedFile {
   name: string;
   path?: string;
 }
-export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice'; text: string };
+export type TextItem = Timed & { type: 'assistant' | 'thinking' | 'notice' | 'error'; text: string };
 export type UserItem = Timed & { type: 'user'; text: string; images?: string[]; files?: AttachedFile[] };
 export type ToolItem = Timed & {
   type: 'tool';
@@ -25,7 +25,14 @@ export type CompactionItem = Timed & { type: 'compaction' };
 export type Item = UserItem | TextItem | ToolItem | CompactionItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
-export type WorkGroup = { type: 'group'; id: string; items: Item[]; durationMs: number | null };
+export type WorkGroup = {
+  type: 'group';
+  id: string;
+  items: Row[];
+  durationMs: number | null;
+  isRunning: boolean;
+  isSummary: boolean;
+};
 export type Row = Item | WorkGroup;
 
 const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
@@ -56,18 +63,29 @@ export function buildItems(messages: Message[]): Item[] {
   // A message's images come before its text. With no text, they stand as a message of their own.
   let images: string[] = [];
   let imagesId = '';
+  let imagesAt: number | undefined;
   const flushImages = () => {
-    if (images.length > 0) items.push({ type: 'user', id: imagesId, text: '', images });
+    if (images.length > 0) items.push({ type: 'user', id: imagesId, at: imagesAt, text: '', images });
     images = [];
+    imagesAt = undefined;
   };
   for (const message of messages) {
     const at = timeOf(message.timestamp);
+    if (message.kind === 'assistant' && message.isError) {
+      flushImages();
+      items.push({ type: 'error', id: message.id, at, text: message.text });
+      continue;
+    }
     if (message.kind === 'compaction') {
+      flushImages();
       items.push({ type: 'compaction', id: message.id, at });
       continue;
     }
     if (message.kind === 'user' && message.image) {
-      if (images.length === 0) imagesId = message.id;
+      if (images.length === 0) {
+        imagesId = message.id;
+        imagesAt = at;
+      }
       images.push(message.image);
       continue;
     }
@@ -76,12 +94,13 @@ export function buildItems(messages: Message[]): Item[] {
       items.push({
         type: 'user',
         id: message.id,
-        at,
+        at: at ?? imagesAt,
         text,
         ...(files.length > 0 ? { files } : {}),
         ...(images.length > 0 ? { images } : {}),
       });
       images = [];
+      imagesAt = undefined;
       continue;
     }
     flushImages();
@@ -143,6 +162,10 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
           truncated: false,
         },
       ];
+    case 'finished':
+      return event.isError && !event.cancelled
+        ? [...items, { type: 'error', id: `error-${items[0]?.id ?? items.length}`, text: event.message ?? '' }]
+        : items;
     case 'toolResult':
       return items.map((item) =>
         item.type === 'tool' && item.id === event.toolUseId
@@ -154,85 +177,107 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
   }
 }
 
-export type TurnStatusKey = 'statusAwaitingYou' | 'statusCallingTool' | 'statusReplying' | 'statusThinking';
+export type TurnStatus =
+  | { key: 'statusAwaitingYou' | 'statusReplying' | 'statusThinking' }
+  | { key: 'statusCallingTool'; toolName: string };
 
 /** What a running turn is doing now, for the line above the input box. */
-export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatusKey {
-  if (isWaitingForUser) return 'statusAwaitingYou';
-  const last = items[items.length - 1];
-  if (last?.type === 'tool' && last.result === null) return 'statusCallingTool';
-  if (last?.type === 'assistant') return 'statusReplying';
-  return 'statusThinking';
+export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatus {
+  if (isWaitingForUser) return { key: 'statusAwaitingYou' };
+  const last = items.at(-1);
+  if (last?.type === 'assistant') return { key: 'statusReplying' };
+  if (last?.type === 'tool') {
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item = items[index];
+      if (item.type === 'user') break;
+      if (item.type === 'tool' && item.result === null) {
+        return { key: 'statusCallingTool', toolName: item.name };
+      }
+    }
+  }
+  return { key: 'statusThinking' };
 }
 
-function workGroup(items: Item[], startAt: number | undefined, endAt: number | undefined): WorkGroup {
+function workGroup(
+  items: Row[],
+  startAt: number | undefined,
+  endAt: number | undefined,
+  isRunning = false,
+  isSummary = false,
+): WorkGroup {
   const durationMs =
     startAt !== undefined && endAt !== undefined && endAt >= startAt ? endAt - startAt : null;
-  return { type: 'group', id: `group-${items[0].id}`, items, durationMs };
+  return {
+    type: 'group',
+    id: `${isSummary ? 'summary' : 'group'}-${items[0].id}`,
+    items,
+    durationMs,
+    isRunning,
+    isSummary,
+  };
 }
 
 function lastTime(items: Item[]): number | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    if (items[index].at !== undefined) return items[index].at;
-  }
-  return undefined;
+  return [...items].reverse().find((item) => item.at !== undefined)?.at;
 }
 
-function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined) {
-  let answerIndex = -1;
-  for (let index = turn.length - 1; index >= 0; index -= 1) {
-    if (turn[index].type === 'assistant') {
-      answerIndex = index;
-      break;
+/** Assistant progress closes the preceding action group, even while the turn is running. */
+function actionGroups(items: Item[], startAt: number | undefined, isRunning: boolean): Row[] {
+  const rows: Row[] = [];
+  let actions: Item[] = [];
+  const flush = (running: boolean, endAt?: number) => {
+    if (actions.length) rows.push(workGroup(actions, startAt, endAt ?? lastTime(actions), running));
+    actions = [];
+  };
+  for (const item of items) {
+    if (item.type === 'tool' || item.type === 'thinking') actions.push(item);
+    else {
+      flush(false, item.at);
+      rows.push(item);
+      startAt = item.at;
     }
   }
-  if (answerIndex < 0) {
-    // Without an answer there is nothing to fold towards, except a longer run of work.
-    if (turn.length >= 2) rows.push(workGroup(turn, startAt, lastTime(turn)));
-    else rows.push(...turn);
-    return;
-  }
-  const work = turn.slice(0, answerIndex);
-  const answer = turn[answerIndex];
-  if (work.length > 0) rows.push(workGroup(work, startAt, answer.at ?? lastTime(work)));
-  rows.push(answer);
-  rows.push(...turn.slice(answerIndex + 1));
+  flush(isRunning);
+  return rows;
 }
 
-/**
- * Folds the work before each turn's final answer. While a turn runs, its rows stay flat so
- * progress is visible as it happens.
- */
+function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean) {
+  if (isRunning) {
+    rows.push(...actionGroups(turn, startAt, true));
+    return;
+  }
+  const answerIndex = turn.at(-1)?.type === 'assistant' ? turn.length - 1 : -1;
+  const work = answerIndex < 0 ? turn : turn.slice(0, answerIndex);
+  if (work.length) {
+    const children = work.some((item) => item.type === 'assistant')
+      ? actionGroups(work, startAt, false)
+      : work;
+    rows.push(workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true));
+  }
+  if (answerIndex >= 0) rows.push(turn[answerIndex]);
+}
+
+/** Live actions preview their latest five; completed progress folds toward the final answer. */
 export function buildRows(items: Item[], isRunning: boolean): Row[] {
   const rows: Row[] = [];
   let turn: Item[] = [];
   let startAt: number | undefined;
-  let liveStart = items.length;
-  if (isRunning) {
-    for (let index = items.length - 1; index >= 0; index -= 1) {
-      if (items[index].type === 'user') {
-        liveStart = index;
-        break;
-      }
-    }
+  for (const item of items) {
+    if (item.type === 'thinking' && !item.text.trim()) continue;
+    if (item.type === 'user' || item.type === 'compaction' || item.type === 'notice' || item.type === 'error') {
+      if (turn.length) pushTurn(rows, turn, startAt, false);
+      turn = [];
+      startAt = item.at;
+      rows.push(item);
+    } else turn.push(item);
   }
-  items.slice(0, liveStart).forEach((item) => {
-    if (item.type === 'user') {
-      if (turn.length > 0) pushTurn(rows, turn, startAt);
-      turn = [];
-      startAt = item.at;
-      rows.push(item);
-    } else if (item.type === 'compaction' || item.type === 'notice') {
-      // Work on either side stays apart, so these are never folded away.
-      if (turn.length > 0) pushTurn(rows, turn, startAt);
-      turn = [];
-      startAt = item.at;
-      rows.push(item);
-    } else {
-      turn.push(item);
-    }
-  });
-  if (turn.length > 0) pushTurn(rows, turn, startAt);
-  rows.push(...items.slice(liveStart));
+  if (turn.length) pushTurn(rows, turn, startAt, isRunning);
   return rows;
+}
+
+export const MAX_LIVE_ACTIVITIES = 5;
+/** An untouched live group previews recent work; an explicit close hides all its children. */
+export function visibleWorkItems(group: WorkGroup, expanded?: boolean): Row[] {
+  if (expanded === true) return group.items;
+  return expanded === undefined && group.isRunning ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
 }

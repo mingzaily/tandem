@@ -192,7 +192,7 @@ impl Hub {
             }
         }
         peer.out.send(
-            json!({"t":"hello-ack","conn":peer.id,"hostOnline":self.hosts.contains_key(room)}),
+            json!({"t":"hello-ack","conn":peer.id,"hostOnline":self.hosts.contains_key(room),"relayVersion":env!("CARGO_PKG_VERSION")}),
         );
         if !host && let Some(host) = self.host(room) {
             host.out

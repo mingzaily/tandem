@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
@@ -9,6 +16,7 @@ import { startRelay } from "../dev/rust-relay.ts";
 import { tokenHash } from "../dev/tokens.ts";
 import { fakeHost } from "../dev/fake-host.ts";
 import { Client } from "../../pwa/src/lib/client.ts";
+import { TaskCreation } from "../../pwa/src/lib/creation.ts";
 import { parsePairCode } from "../../pwa/src/lib/pairing.ts";
 
 async function fixture(t: any, helloMs = 10_000) {
@@ -48,6 +56,23 @@ async function socket(url: string) {
 }
 const room = Buffer.alloc(16, 1).toString("base64url"),
   token = Buffer.alloc(32, 2).toString("base64url");
+test("握手和健康检查报告 relay 版本，协议版本保持独立", { timeout: 5000 }, async (t) => {
+  const { url } = await fixture(t);
+  const host = await socket(url);
+  t.after(() => host.ws.close());
+  host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+  const ack = await host.next();
+  const healthUrl = new URL(url.replace(/^ws:/, "http:"));
+  healthUrl.pathname = "/healthz";
+  const health = await (await fetch(healthUrl)).json();
+  const cargo = await readFile(new URL("../Cargo.toml", import.meta.url), "utf8");
+  const version = /^version = "([^"]+)"/m.exec(cargo)![1];
+  assert.equal(ack.t, "hello-ack");
+  assert.equal(ack.relayVersion, version);
+  assert.equal(health.version, version);
+  assert.equal(health.v, 1);
+});
+
 test(
   "相对配对期限支持完整五分钟，并按中转时间过期",
   { timeout: 5000 },
@@ -249,7 +274,10 @@ test(
       return ws;
     });
     t.after(() => client.close());
-    const identity = await client.pair(parsePairCode(host.pairCode), "重连测试手机");
+    const identity = await client.pair(
+      parsePairCode(host.pairCode),
+      "重连测试手机",
+    );
     const statuses: string[] = [];
     await new Promise<void>((resolve, reject) => {
       client.onError = reject;
@@ -259,41 +287,71 @@ test(
       };
       client.connect(identity);
     });
-    assert.equal(sockets.length, 3, "一次配对、首次握手和自动重连各使用一条连接");
+    assert.equal(
+      sockets.length,
+      3,
+      "一次配对、首次握手和自动重连各使用一条连接",
+    );
     assert.ok(closeCodes.includes(4411));
-    assert.deepEqual(statuses, ["closed", "connecting", "offline", "connecting", "ready"]);
+    assert.deepEqual(statuses, [
+      "closed",
+      "connecting",
+      "offline",
+      "connecting",
+      "ready",
+    ]);
     assert.equal((await client.request("tasks.list")).tasks[0].id, "demo");
   },
 );
-test("fake-host 对未知身份关闭 4410，其他已配对连接继续可用", { timeout: 5000 }, async (t) => {
-  const { url } = await fixture(t);
-  const host = await fakeHost(url, "test-host", async () => true);
-  t.after(() => host.close());
-  const client = new Client();
-  t.after(() => client.close());
-  const identity = await client.pair(parsePairCode(host.pairCode), "身份测试手机");
-  const codes: number[] = [];
-  const unknown = new Client((address) => {
-    const socket = new globalThis.WebSocket(address);
-    socket.addEventListener("close", (event) => codes.push(event.code));
-    return socket;
-  });
-  t.after(() => unknown.close());
-  await new Promise<void>((resolve, reject) => {
-    unknown.onError = reject;
-    unknown.onStatus = (status) => { if (status === "revoked") resolve(); };
-    unknown.connect({ ...identity, clientId: Buffer.alloc(16, 42).toString("base64url") });
-  });
-  assert.deepEqual(codes, [4410]);
-  await new Promise<void>((resolve, reject) => {
-    client.onError = reject;
-    client.onStatus = (status) => { if (status === "ready") resolve(); };
-    client.connect(identity);
-  });
-  const info = await client.request("host.info");
-  assert.deepEqual(info.projects.map((project: any) => project.cwd), ["/notes", "tandem:conversation", "/demo"]);
-  assert.deepEqual(info.conversationRoots, ["/conversations", "/past-conversations"]);
-});
+test(
+  "fake-host 对未知身份关闭 4410，其他已配对连接继续可用",
+  { timeout: 5000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    const host = await fakeHost(url, "test-host", async () => true);
+    t.after(() => host.close());
+    const client = new Client();
+    t.after(() => client.close());
+    const identity = await client.pair(
+      parsePairCode(host.pairCode),
+      "身份测试手机",
+    );
+    const codes: number[] = [];
+    const unknown = new Client((address) => {
+      const socket = new globalThis.WebSocket(address);
+      socket.addEventListener("close", (event) => codes.push(event.code));
+      return socket;
+    });
+    t.after(() => unknown.close());
+    await new Promise<void>((resolve, reject) => {
+      unknown.onError = reject;
+      unknown.onStatus = (status) => {
+        if (status === "revoked") resolve();
+      };
+      unknown.connect({
+        ...identity,
+        clientId: Buffer.alloc(16, 42).toString("base64url"),
+      });
+    });
+    assert.deepEqual(codes, [4410]);
+    await new Promise<void>((resolve, reject) => {
+      client.onError = reject;
+      client.onStatus = (status) => {
+        if (status === "ready") resolve();
+      };
+      client.connect(identity);
+    });
+    const info = await client.request("host.info");
+    assert.deepEqual(
+      info.projects.map((project: any) => project.cwd),
+      ["/notes", "tandem:conversation", "/demo"],
+    );
+    assert.deepEqual(info.conversationRoots, [
+      "/conversations",
+      "/past-conversations",
+    ]);
+  },
+);
 test(
   "转发隔离、覆盖 from、超大帧保持连接、host 替换",
   { timeout: 10_000 },
@@ -526,73 +584,116 @@ test(
   },
 );
 
-test("disconnect 区分可重连会话与需要重新配对的设备", { timeout: 5000 }, async (t) => {
-  const { url } = await fixture(t);
-  const host = await socket(url);
-  host.send({ t: "host-hello", v: 1, room, token: "test-host" });
-  await host.next();
-  host.send({ t: "allow", id: "grant", tokenHash: tokenHash(token), oneTime: false, expiresAt: null });
-  await host.next();
-  for (const code of [4411, 4410]) {
-    const client = await socket(url);
-    client.send({ t: "client-hello", v: 1, room, token });
-    const ack = await client.next();
-    while ((await host.next()).online !== true) {}
-    const closed = once(client.ws, "close");
-    host.send({ t: "disconnect", conn: ack.conn, code });
-    assert.equal((await closed)[0], code);
-  }
-});
-
-test("损坏的准入文件在启动日志中报告路径与恢复办法", { timeout: 5000 }, async (t) => {
-  const dir = await mkdtemp(join(tmpdir(), "tandem-corrupt-grants-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const file = join(dir, "tokens.json");
-  for (const content of ['{"secret":"private-fixture"', '[{"secret":"private-fixture"}]']) {
-    await writeFile(file, content);
-    await assert.rejects(startRelay({ hostToken: "test-host", dataFile: file }), (error: Error) => {
-      assert.ok(error.message.includes(file));
-      assert.match(error.message, /备份/);
-      assert.match(error.message, /重新登记/);
-      assert.equal(error.message.includes("private-fixture"), false);
-      return true;
+test(
+  "disconnect 区分可重连会话与需要重新配对的设备",
+  { timeout: 5000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    const host = await socket(url);
+    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+    await host.next();
+    host.send({
+      t: "allow",
+      id: "grant",
+      tokenHash: tokenHash(token),
+      oneTime: false,
+      expiresAt: null,
     });
-  }
-});
+    await host.next();
+    for (const code of [4411, 4410]) {
+      const client = await socket(url);
+      client.send({ t: "client-hello", v: 1, room, token });
+      const ack = await client.next();
+      while ((await host.next()).online !== true) {}
+      const closed = once(client.ws, "close");
+      host.send({ t: "disconnect", conn: ack.conn, code });
+      assert.equal((await closed)[0], code);
+    }
+  },
+);
 
-test("准入文件读取失败有恢复提示，改名后重连可重新登记原令牌", { timeout: 10000 }, async (t) => {
-  for (const unreadable of [false, true]) {
-    const dir = await mkdtemp(join(tmpdir(), "tandem-grants-recovery-"));
+test(
+  "损坏的准入文件在启动日志中报告路径与恢复办法",
+  { timeout: 5000 },
+  async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "tandem-corrupt-grants-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const file = join(dir, "tokens.json");
-    if (unreadable) await mkdir(file);
-    else await writeFile(file, "{broken grants");
-    await assert.rejects(startRelay({ hostToken: "test-host", dataFile: file }), (error: Error) => {
-      assert.ok(error.message.includes(file));
-      assert.match(error.message, /重新登记/);
-      if (unreadable) assert.match(error.message, /改名.*重启/);
-      return true;
-    });
-    await rename(file, `${file}.corrupt`);
-    if (!unreadable) assert.equal(await readFile(`${file}.corrupt`, "utf8"), "{broken grants");
-    const relay = await startRelay({ hostToken: "test-host", dataFile: file });
-    t.after(() => relay.close());
-    const host = await socket(relay.url);
-    host.send({ t: "host-hello", v: 1, room, token: "test-host" });
-    assert.equal((await host.next()).t, "hello-ack");
-    // The desktop's restore_clients sends this registration on every reconnect.
-    host.send({ t: "allow", id: "restore", tokenHash: tokenHash(token), oneTime: false, expiresAt: null });
-    assert.deepEqual(await host.next(), { t: "allow-ack", id: "restore" });
-    host.send({ t: "allow-sync", tokenHashes: [tokenHash(token)] });
-    const client = await socket(relay.url);
-    client.send({ t: "client-hello", v: 1, room, token });
-    const ack = await client.next();
-    assert.equal(ack.t, "hello-ack");
-    assert.equal(ack.hostOnline, true);
-    assert.equal(JSON.parse(await readFile(file, "utf8"))[0][0], tokenHash(token));
-    await relay.close();
-  }
-});
+    for (const content of [
+      '{"secret":"private-fixture"',
+      '[{"secret":"private-fixture"}]',
+    ]) {
+      await writeFile(file, content);
+      await assert.rejects(
+        startRelay({ hostToken: "test-host", dataFile: file }),
+        (error: Error) => {
+          assert.ok(error.message.includes(file));
+          assert.match(error.message, /备份/);
+          assert.match(error.message, /重新登记/);
+          assert.equal(error.message.includes("private-fixture"), false);
+          return true;
+        },
+      );
+    }
+  },
+);
+
+test(
+  "准入文件读取失败有恢复提示，改名后重连可重新登记原令牌",
+  { timeout: 10000 },
+  async (t) => {
+    for (const unreadable of [false, true]) {
+      const dir = await mkdtemp(join(tmpdir(), "tandem-grants-recovery-"));
+      t.after(() => rm(dir, { recursive: true, force: true }));
+      const file = join(dir, "tokens.json");
+      if (unreadable) await mkdir(file);
+      else await writeFile(file, "{broken grants");
+      await assert.rejects(
+        startRelay({ hostToken: "test-host", dataFile: file }),
+        (error: Error) => {
+          assert.ok(error.message.includes(file));
+          assert.match(error.message, /重新登记/);
+          if (unreadable) assert.match(error.message, /改名.*重启/);
+          return true;
+        },
+      );
+      await rename(file, `${file}.corrupt`);
+      if (!unreadable)
+        assert.equal(
+          await readFile(`${file}.corrupt`, "utf8"),
+          "{broken grants",
+        );
+      const relay = await startRelay({
+        hostToken: "test-host",
+        dataFile: file,
+      });
+      t.after(() => relay.close());
+      const host = await socket(relay.url);
+      host.send({ t: "host-hello", v: 1, room, token: "test-host" });
+      assert.equal((await host.next()).t, "hello-ack");
+      // The desktop's restore_clients sends this registration on every reconnect.
+      host.send({
+        t: "allow",
+        id: "restore",
+        tokenHash: tokenHash(token),
+        oneTime: false,
+        expiresAt: null,
+      });
+      assert.deepEqual(await host.next(), { t: "allow-ack", id: "restore" });
+      host.send({ t: "allow-sync", tokenHashes: [tokenHash(token)] });
+      const client = await socket(relay.url);
+      client.send({ t: "client-hello", v: 1, room, token });
+      const ack = await client.next();
+      assert.equal(ack.t, "hello-ack");
+      assert.equal(ack.hostOnline, true);
+      assert.equal(
+        JSON.parse(await readFile(file, "utf8"))[0][0],
+        tokenHash(token),
+      );
+      await relay.close();
+    }
+  },
+);
 
 test(
   "host data 必须带 to，配对令牌存活至多五分钟",
@@ -684,5 +785,94 @@ test(
       expiresAt: null,
     });
     assert.equal((await host.next()).id, "still-open");
+  },
+);
+
+test(
+  "新建应答早于原生登记时手机从 started 进入任务并保留确认卡",
+  { timeout: 10_000 },
+  async (t) => {
+    const { url } = await fixture(t);
+    let release!: () => void;
+    const registered = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const host = await fakeHost(url, "test-host", async () => true, {
+      newTaskReady: registered,
+    });
+    t.after(() => host.close());
+    const client = new Client();
+    t.after(() => client.close());
+    const identity = await client.pair(
+      parsePairCode(host.pairCode),
+      "new-task-phone",
+    );
+    await new Promise<void>((resolve, reject) => {
+      client.onError = reject;
+      client.onStatus = (status) => {
+        if (status === "ready") resolve();
+      };
+      client.connect(identity);
+    });
+    const creation = new TaskCreation();
+    creation.begin({ agent: "pi", cwd: "/demo", prompt: "new task" });
+    let started!: () => void;
+    let waiting!: (frame: any) => void;
+    const began = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const permission = new Promise<any>((resolve) => {
+      waiting = resolve;
+    });
+    client.onEvent = (frame) => {
+      if (frame.ev !== "turn.event") return;
+      creation.receive(frame.p);
+      if (frame.p.event.type === "started") {
+        assert.equal(frame.p.agent, "pi");
+        assert.equal(frame.p.prompt, "new task");
+        started();
+      }
+      if (frame.p.event.type === "permissionRequest") waiting(frame.p);
+    };
+    const { runId } = await client.request("turn.send", {
+      agent: "pi",
+      taskId: null,
+      cwd: "/demo",
+      prompt: "new task",
+      model: "demo",
+      effort: "high",
+      permissionMode: null,
+    });
+    creation.accept(runId);
+    const early = await client.request("tasks.list");
+    const snapshot = await client.request("live.snapshot");
+    assert.equal(
+      snapshot.runs.find((run: any) => run.runId === runId).taskId,
+      null,
+    );
+    assert.deepEqual(creation.resolve(early.tasks), {});
+    release();
+    await began;
+    const result = creation.resolve(early.tasks);
+    assert.equal(result.task?.agent, "pi");
+    assert.equal(result.task?.title, "new task");
+    assert.equal(
+      result.readHistory,
+      false,
+      "首屏展示实时内容，不提前读尚未登记的原生记录",
+    );
+    const card = await permission;
+    assert.equal(card.taskId, result.task?.id);
+    const content = await client.request("task.read", {
+      agent: "pi",
+      id: card.taskId,
+    });
+    assert.deepEqual(content.modelSelection, { model: "demo", effort: "high" });
+    assert.equal(content.permissionMode, "default");
+    await client.request("request.answer", {
+      taskId: card.taskId,
+      requestId: card.event.requestId,
+      decision: { kind: "deny" },
+    });
   },
 );

@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   CirclePause,
+  CircleAlert,
   Check,
   ChevronRight,
   FileText,
@@ -11,8 +12,9 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
-import { buildRows, type Item, type WorkGroup } from './lib/items';
+import { buildRows, visibleWorkItems, type Item, type Row } from './lib/items';
 import { t } from './lib/i18n';
+import { toolPresentation } from './lib/tools';
 const Markdown = lazy(() => import('./Markdown').then((m) => ({ default: m.Markdown })));
 
 export const duration = (ms: number) => {
@@ -22,12 +24,25 @@ export const duration = (ms: number) => {
     : `${Math.floor(seconds / 60)}${t('minutes')}${seconds % 60}${t('seconds')}`;
 };
 
-export default function Stream({ items, isRunning }: { items: Item[]; isRunning: boolean }) {
+type Toggle = (id: string, defaultOpen?: boolean) => void;
+const expandedMemory = new Map<string, Map<string, boolean>>();
+
+export default function Stream({
+  taskId,
+  items,
+  isRunning,
+  isLoading,
+}: {
+  taskId: string;
+  items: Item[];
+  isRunning: boolean;
+  isLoading: boolean;
+}) {
   const scroll = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
   const rows = useMemo(() => buildRows(items, isRunning), [items, isRunning]);
-  // Rows unmount outside the viewport, so expansion belongs to the stream.
-  const [expanded, setExpanded] = useState(new Set<string>());
+  // Explicit open and closed choices survive virtualized rows; absent entries use their default.
+  const [expanded, setExpanded] = useState(() => expandedMemory.get(taskId) ?? new Map<string, boolean>());
   const virtual = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scroll.current,
@@ -36,13 +51,14 @@ export default function Stream({ items, isRunning }: { items: Item[]; isRunning:
     getItemKey: (i) => rows[i].id,
   });
   const total = virtual.getTotalSize();
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (follow.current && rows.length) virtual.scrollToIndex(rows.length - 1, { align: 'end' });
   }, [rows, total, virtual]);
-  function toggle(id: string) {
+  function toggle(id: string, defaultOpen = false) {
     setExpanded((old) => {
-      const next = new Set(old);
-      if (!next.delete(id)) next.add(id);
+      const next = new Map(old);
+      next.set(id, !(old.get(id) ?? defaultOpen));
+      expandedMemory.set(taskId, next);
       return next;
     });
   }
@@ -56,9 +72,9 @@ export default function Stream({ items, isRunning }: { items: Item[]; isRunning:
       }}
     >
       {!rows.length && (
-        <div className="empty-task">
-          <Sparkles size={24} />
-          <p>{t('startPrompt')}</p>
+        <div className="empty-task" role={isLoading ? 'status' : undefined}>
+          {isLoading ? <LoaderCircle size={20} className="spin" /> : <Sparkles size={24} />}
+          <p>{t(isLoading ? 'loadingTask' : 'startPrompt')}</p>
         </div>
       )}
       <div style={{ height: total, position: 'relative' }}>
@@ -67,7 +83,7 @@ export default function Stream({ items, isRunning }: { items: Item[]; isRunning:
             key={row.key}
             data-index={row.index}
             ref={virtual.measureElement}
-            className="message-row"
+            className={'message-row message-' + rows[row.index].type}
             style={{ transform: `translateY(${row.start}px)` }}
           >
             <ItemRow item={rows[row.index]} expanded={expanded} toggle={toggle} />
@@ -78,16 +94,8 @@ export default function Stream({ items, isRunning }: { items: Item[]; isRunning:
   );
 }
 
-function ItemRow({
-  item,
-  expanded,
-  toggle,
-}: {
-  item: Item | WorkGroup;
-  expanded: Set<string>;
-  toggle: (id: string) => void;
-}) {
-  const open = expanded.has(item.id);
+function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, boolean>; toggle: Toggle }) {
+  const open = expanded.get(item.id) ?? (item.type === 'group' && item.isRunning);
   switch (item.type) {
     case 'user':
       return (
@@ -95,7 +103,9 @@ function ItemRow({
           {item.images?.length || item.files?.length ? (
             <div className="attachments">
               <FileText size={14} />
-              {item.images?.length ? t('image') : item.files?.map((f) => f.name).join('、')}
+              {[...(item.images?.length ? [t('image')] : []), ...(item.files?.map((f) => f.name) ?? [])].join(
+                '、',
+              )}
             </div>
           ) : null}
           {item.text && <div className="user-bubble">{item.text}</div>}
@@ -109,10 +119,17 @@ function ItemRow({
           </Suspense>
         </div>
       );
+    case 'error':
+      return <div className="reply-error">
+        <div><CircleAlert size={14} aria-hidden /><span>{t('replyFailed')}</span></div>
+        {item.text ? <details><summary>{t('showDetails')}</summary><pre>{item.text}</pre></details> : null}
+      </div>;
     case 'notice':
       return (
         <div className="notice">
-          <span className="notice-icon" aria-hidden="true"><CirclePause size={13} /></span>
+          <span className="notice-icon" aria-hidden="true">
+            <CirclePause size={13} />
+          </span>
           {t('interrupted')}
         </div>
       );
@@ -127,27 +144,33 @@ function ItemRow({
           <span />
         </div>
       );
-    case 'group':
+    case 'group': {
+      const visible = visibleWorkItems(item, expanded.get(item.id));
+      const label = item.isRunning
+        ? t('workRunning')
+        : item.durationMs === null
+          ? t('workDetails')
+          : t(item.isSummary ? 'processed' : 'worked').replace('{duration}', duration(item.durationMs));
       return (
         <div className="work-group">
-          <button className="work-toggle" aria-expanded={open} onClick={() => toggle(item.id)}>
-            <Layers size={14} />
-            <span>
-              {item.durationMs === null
-                ? t('workDetails')
-                : t('worked').replace('{duration}', duration(item.durationMs))}
-            </span>
+          <button
+            className="work-toggle"
+            data-work-group={item.isRunning ? 'running' : 'completed'}
+            aria-expanded={open}
+            onClick={() => toggle(item.id, item.isRunning)}
+          >
+            {item.isRunning ? <LoaderCircle size={14} className="spin" /> : <Layers size={14} />}
+            <span>{label}</span>
             <ChevronRight size={14} className={open ? 'turned' : ''} />
           </button>
-          {open && (
+          {visible.length > 0 && (
             <div className="work-rail">
-              {item.items.map((child) => (
-                <ItemRow key={child.id} item={child} expanded={expanded} toggle={toggle} />
-              ))}
+              <WorkChildren rows={visible} expanded={expanded} toggle={toggle} />
             </div>
           )}
         </div>
       );
+    }
     case 'thinking':
       return (
         <button
@@ -161,10 +184,17 @@ function ItemRow({
           <ChevronRight size={13} className={open ? 'turned' : ''} />
         </button>
       );
-    case 'tool':
+    case 'tool': {
+      const display = toolPresentation(item.name, item.input);
       return (
         <div className="tool-row">
-          <button className="activity-row" aria-expanded={open} onClick={() => toggle(item.id)}>
+          <button
+            className="activity-row"
+            title={display.title}
+            aria-label={`${item.name} ${display.label} ${display.detail}`}
+            aria-expanded={open}
+            onClick={() => toggle(item.id)}
+          >
             {item.result === null ? (
               <LoaderCircle size={13} className="spin" aria-label={t('running')} />
             ) : item.isError ? (
@@ -173,8 +203,8 @@ function ItemRow({
               <Check size={13} />
             )}
             <span>
-              {item.name}
-              <small>{toolDetail(item.input)}</small>
+              {display.label}
+              {display.detail && <small>{display.detail}</small>}
             </span>
             <ChevronRight size={13} className={open ? 'turned' : ''} />
           </button>
@@ -191,14 +221,52 @@ function ItemRow({
           )}
         </div>
       );
+    }
   }
 }
 
-function toolDetail(input: string) {
-  try {
-    const value = JSON.parse(input);
-    return value.command ?? value.file_path ?? value.pattern ?? value.description ?? '';
-  } catch {
-    return input;
-  }
+function WorkChildren({
+  rows,
+  expanded,
+  toggle,
+}: {
+  rows: Row[];
+  expanded: Map<string, boolean>;
+  toggle: Toggle;
+}) {
+  const scroll = useRef<HTMLDivElement>(null);
+  const virtualized = rows.length > 80;
+  const virtual = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scroll.current,
+    estimateSize: () => 36,
+    overscan: 5,
+    getItemKey: (index) => rows[index].id,
+    enabled: virtualized,
+  });
+  if (!virtualized)
+    return (
+      <>
+        {rows.map((row) => (
+          <ItemRow key={row.id} item={row} expanded={expanded} toggle={toggle} />
+        ))}
+      </>
+    );
+  return (
+    <div ref={scroll} className="work-scroll">
+      <div style={{ position: 'relative', height: virtual.getTotalSize() }}>
+        {virtual.getVirtualItems().map((row) => (
+          <div
+            key={row.key}
+            data-index={row.index}
+            ref={virtual.measureElement}
+            className="work-virtual-row"
+            style={{ transform: `translateY(${row.start}px)` }}
+          >
+            <ItemRow item={rows[row.index]} expanded={expanded} toggle={toggle} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

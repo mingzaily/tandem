@@ -36,7 +36,7 @@
 
 ## 4. 中转层
 
-地址：`wss://<域名>/ws`。健康检查：`GET /healthz` 返回 `{"ok":true,"v":1}`。
+地址：`wss://<域名>/ws`。健康检查：`GET /healthz` 返回 `{"ok":true,"v":1,"version":"<relay 产品版本>"}`。`v` 是通信协议版本，`version` 是 CI 写入二进制的独立发布版本。
 
 ### 连接
 
@@ -48,8 +48,10 @@
 // 手机。token 是客户端令牌，配对时用配对令牌
 {"t":"client-hello","v":1,"room":"<b64 16字节>","token":"<b64 32字节>"}
 // 中转回复
-{"t":"hello-ack","conn":"<连接号>","hostOnline":true}
+{"t":"hello-ack","conn":"<连接号>","hostOnline":true,"relayVersion":"0.1.2026111101"}
 ```
+
+`relayVersion` 是可选的服务端产品版本，仅供桌面“中转服务”展示，不参与协议兼容判断。旧中转省略该字段时连接语义保持原样，桌面显示“当前中转未提供版本”；断开后清除版本读数。桌面与 relay 的日期版本各自分配，通信协议继续使用 `v: 1`。
 
 部署令牌比较要用定时安全比较。
 
@@ -221,7 +223,7 @@ c2h = okm[0..32]，h2c = okm[32..64]
 |---|---|---|
 | `host.info` | 无 | `{name, version, agents: Agent[], projects: {cwd, name}[], conversationRoots: string[]}` |
 | `tasks.list` | 无 | `{tasks: TaskSummary[], external: {taskId, isBusy}[]}`，不含已归档任务 |
-| `task.read` | `{agent, id, before?: number, limit?: number}` | `{messages: Message[], context, total: number}` |
+| `task.read` | `{agent, id, before?: number, limit?: number}` | `{messages: Message[], context, modelSelection: {model, effort} \| null, permissionMode: string \| null, total: number}` |
 | `agent.info` | `{agent}` | `{models: ModelOption[], usage: UsageWindows \| null}` |
 | `turn.send` | `{agent, taskId: string \| null, cwd: string \| null, prompt, model, effort, permissionMode}` | `{runId}`，随后是事件 |
 | `turn.cancel` | `{taskId}` | `{}` |
@@ -237,6 +239,7 @@ interface Run {
   runId: string;
   taskId: string | null;   // 新任务在 started 事件之前是 null
   agent: Agent;
+  prompt: string;         // 本轮原始输入，用于合并原生历史与实时进展
   startedAtMs: number;    // 桌面端记录的 Unix 毫秒开始时间
   elapsedMs: number;      // 单调时钟计算的已运行时长
   /** 本轮到目前为止的事件，手机重连后据此补齐。 */
@@ -245,7 +248,12 @@ interface Run {
 ```
 
 - `task.read` 从末尾倒着分页：`before` 是消息序号的上界（不含），默认总数；`limit` 默认 200，上限 500。`Message.image` 在 v1 里不传，改成 `image: "omitted"`，页面显示“图片”占位。
-- `seq` 由桌面端全局递增。快照里的 `seq` 是取快照那一刻的值，手机丢弃 `seq` 不大于它的事件，等快照期间到达的更大的事件要留到快照之后再应用，这样不重也不漏。
+- 终态失败归一化为 `Message.kind: assistant`、`isError: true`，`text` 保存原始错误详情；工具失败继续使用 `tool_result`，与轮次失败分别呈现。手机在所属轮次结尾显示摘要和可展开详情，保留到后续轮次。
+- `task.read.modelSelection` 使用各 CLI 原生记录的模型 ID 和强度，`permissionMode` 使用原生记录的权限模式；手机按任务恢复选择，模型列表的读取与新建页默认值各自独立。旧版本桌面端缺少这些字段时，手机从 `context.model` 恢复已知模型，其余选项交给 CLI 决定。
+- `seq` 由桌面端全局递增。快照里的 `seq` 是取快照那一刻的值，手机合并已包含的事件，等快照期间到达的更大的事件在快照后应用。缓冲中已结束且快照已移除的轮次继续处理其结束事件，保留失败和中断结果。新握手重新建立序号边界，迟到的旧连接结果保持隔离；`runId` 使用每轮独立的 UUID，桌面重启后继续保持唯一。
+- `Question.question` 保留原生完整问题并作为 `Decision.answer.answers` 的键。可选的 `displayQuestion` 与 `context` 分别用于主问题和背景说明的展示；字段省略时直接显示 `question`。Pi 的固定 `Context:` 拼接在宿主归一化，旧客户端仍可按完整 `question` 显示和回答。
+- 提问中的 `Question.allowCustom` 控制页面自定义入口：省略时允许；有选项时点击入口后展开输入框，“返回选项”或 Esc 回到选择入口并保留草稿，纯输入题直接显示。Claude 沿用默认行为，Codex 从原生 `isOther` 映射。Pi 普通 `select` 为 `false`；`pi-ask-user` 固定的自定义选项转换为 `allowCustom: true` 与本地化入口。`Decision` 的 `answer` 可带可选 `custom: boolean`（默认 `false`），表示答案来自自由输入；宿主在 Pi 自定义场景桥接原生选择与紧随输入，其他 CLI 沿用原始答案字段。
+- `prompt` 保存在本轮内存快照中，消息流据此识别历史文件里已包含的当前提示词。实时 `started` 和 `finished` 帧携带 `prompt`；其他增量保持紧凑。事件始终携带实际执行的 `agent`。已知任务在启动 CLI 前就登记 `taskId`，启动失败也能归到正确任务。
 - 快照和实时事件使用同一个 `startedAtMs`；`elapsedMs` 在各自生成时取值。手机用收到的 `elapsedMs` 与本机单调时钟延续计时，重连后保持已运行时长，手机和桌面端的系统时间可以不同。
 - 桌面端和手机同时看到同一轮：不论轮次从哪边发起，事件都推给所有已握手的手机，桌面界面也同步显示。
 
@@ -253,8 +261,10 @@ interface Run {
 
 | 事件 | 内容 |
 |---|---|
-| `turn.event` | `{runId, taskId, startedAtMs, elapsedMs, seq: number, event: TurnEvent}` |
+| `turn.event` | `{runId, taskId, agent, prompt?: string, startedAtMs, elapsedMs, seq: number, event: TurnEvent}`，`prompt` 随开始和结束事件发送 |
 | `tasks.changed` | 无。任务或页面上下文变化后，手机重新取 `tasks.list` 和 `host.info`，更新目录分组与项目顺序 |
+
+`TurnEvent` 新增展示事件 `generationSpeed`，内容为 `{speed: {rate: number | null, average: number | null, peak: number | null, generationMs: number, measuredTokens: number, streaming: boolean}}`。它将真实 usage 校准后的速度与主机计时成对传递；`measuredTokens` 是参与计速的校准份额，累计输出仍取 `outputTokens.total`。手机端当前保留协议类型并忽略该展示事件，消息合并与提问状态沿用原处理。
 
 ## 8. PWA 范围
 

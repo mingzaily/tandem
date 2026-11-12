@@ -123,16 +123,20 @@ export class Client {
       let ephemeral: CryptoKeyPair;
       let keys: Awaited<ReturnType<typeof sessionKeys>>;
       let queue = Promise.resolve();
+      let incoming = 0;
       const start = async () => {
         this.clear();
         phase = 1;
         ephemeral = await generate('ECDH');
-        this.data({ k: 'hello1', v: 1, clientId: identity.clientId, e: b64(await pub(ephemeral)) });
+        const point = b64(await pub(ephemeral));
+        if (ws !== this.ws || this.stopped) return;
+        this.data({ k: 'hello1', v: 1, clientId: identity.clientId, e: point });
         this.handshakeTimer = setTimeout(() => ws.close(), 10_000);
       };
       ws.onopen = () =>
         ws.send(JSON.stringify({ t: 'client-hello', v: 1, room: identity.room, token: identity.token }));
       ws.onmessage = (event) => {
+        incoming++;
         queue = queue
           .then(async () => {
             if (ws !== this.ws || this.stopped) return;
@@ -164,10 +168,9 @@ export class Client {
                 unb64(m.e),
               );
               await verify(unb64(identity.host), m.sig, cat(utf8('host'), keys.th));
-              this.data({
-                k: 'hello3',
-                sig: await sign(identity.signing.privateKey, cat(utf8('client'), keys.th)),
-              });
+              const signature = await sign(identity.signing.privateKey, cat(utf8('client'), keys.th));
+              if (ws !== this.ws || this.stopped) return;
+              this.data({ k: 'hello3', sig: signature });
               this.cipher = new Cipher(keys.okm.slice(0, 32), keys.okm.slice(32));
               phase = 2;
               delay = FIRST_RETRY_MS;
@@ -177,7 +180,7 @@ export class Client {
             }
             if (phase !== 2 || m.k !== 'm') throw new Error('握手消息顺序错误');
             const value = (await this.cipher!.decode(m)) as Frame | undefined;
-            if (!value) return;
+            if (!value || ws !== this.ws || this.stopped) return;
             if (typeof value.id === 'number') {
               const p = this.pending.get(value.id);
               if (!p) return;
@@ -193,28 +196,36 @@ export class Client {
             if (ws !== this.ws || this.stopped) return;
             this.onError(e);
             ws.close();
+          })
+          .finally(() => {
+            incoming--;
           });
       };
       ws.onerror = () => {
         if (ws === this.ws && !this.stopped) this.onError(new Error('连接中转失败'));
       };
       ws.onclose = (e) => {
-        if (ws !== this.ws || this.stopped) return;
-        this.clear();
-        if (e.code === 4410) {
-          this.stopped = true;
-          this.onStatus('revoked');
-          return;
-        }
-        if ([4400, 4401].includes(e.code)) {
-          this.stopped = true;
-          this.onError(new Error('中转拒绝连接，请检查协议版本与配对信息'));
-          this.onStatus('closed');
-          return;
-        }
-        this.onStatus('offline');
-        this.retry = setTimeout(open, delay);
-        delay = Math.min(delay * 2, MAX_RETRY_MS);
+        const finish = () => {
+          if (ws !== this.ws || this.stopped) return;
+          this.clear();
+          if (e.code === 4410) {
+            this.stopped = true;
+            this.onStatus('revoked');
+            return;
+          }
+          if ([4400, 4401].includes(e.code)) {
+            this.stopped = true;
+            this.onError(new Error('中转拒绝连接，请检查协议版本与配对信息'));
+            this.onStatus('closed');
+            return;
+          }
+          this.onStatus('offline');
+          this.retry = setTimeout(open, delay);
+          delay = Math.min(delay * 2, MAX_RETRY_MS);
+        };
+        // Finish decrypting the final accepted frame before rejecting pending operations.
+        if (incoming > 0) void queue.then(finish);
+        else finish();
       };
     };
     open();
@@ -232,7 +243,9 @@ export class Client {
       this.outgoing = this.outgoing
         .then(async () => {
           if (this.cipher !== cipher) return;
-          for (const frame of await cipher.encode({ id, op, p })) this.data(frame);
+          const frames = await cipher.encode({ id, op, p });
+          if (this.cipher !== cipher) return;
+          for (const frame of frames) this.data(frame);
         })
         .catch((e) => {
           clearTimeout(timer);

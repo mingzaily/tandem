@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { ChevronDown, Folder, Gauge, Hand, ShieldAlert, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, CodeXml, Folder, Gauge, Hand, ShieldCheck, TriangleAlert } from 'lucide-react';
 import type { Agent, ModelOption } from './lib/types';
 import { t } from './lib/i18n';
 import { Sheet } from './Sheet';
 import { AgentMark } from './AgentMark';
 import { agentName } from './TaskList';
+import { selectedModel } from './lib/composer';
 
 export function ComposerControls({
   agent,
@@ -41,7 +42,13 @@ export function ComposerControls({
 }) {
   const [sheet, setSheet] = useState<'model' | 'effort' | 'permission' | 'project' | null>(null);
   const [confirming, setConfirming] = useState(false);
-  const chosen = choices[agent]?.find((m) => m.value === model);
+  const chosen = selectedModel(model, choices[agent] ?? []);
+  const chosenName =
+    chosen?.value === 'default'
+      ? (choices[agent]?.find(
+          (option) => option.value !== 'default' && option.resolvedModel === chosen.resolvedModel,
+        )?.displayName ?? chosen.displayName)
+      : (chosen?.displayName ?? (model || agentName(agent)));
   const level = effort || chosen?.defaultEffort || '';
   const close = () => {
     setSheet(null);
@@ -54,6 +61,14 @@ export function ComposerControls({
       auto: t('auto'),
       bypassPermissions: t('fullAccess'),
     }[permission] ?? t('default');
+  const PermissionIcon =
+    permission === 'bypassPermissions'
+      ? TriangleAlert
+      : permission === 'auto'
+        ? ShieldCheck
+        : permission === 'acceptEdits'
+          ? CodeXml
+          : Hand;
   return (
     <>
       <div className="composer-controls">
@@ -61,10 +76,12 @@ export function ComposerControls({
           disabled={disabled}
           className="control model-control"
           aria-label={t('modelMenu')}
+          aria-haspopup="dialog"
+          aria-expanded={sheet === 'model'}
           onClick={() => setSheet('model')}
         >
           <AgentMark agent={agent} size={15} />
-          <span>{chosen?.displayName ?? agentName(agent)}</span>
+          <span>{chosenName}</span>
           <ChevronDown size={12} />
         </button>
         {chosen?.supportsEffort && (
@@ -72,6 +89,8 @@ export function ComposerControls({
             disabled={disabled}
             className="control"
             aria-label={t('effortMenu')}
+            aria-haspopup="dialog"
+            aria-expanded={sheet === 'effort'}
             onClick={() => setSheet('effort')}
           >
             <Gauge size={14} />
@@ -86,15 +105,23 @@ export function ComposerControls({
             'control permission-control ' + (permission === 'bypassPermissions' ? 'full-access' : '')
           }
           aria-label={t('permissionMenu')}
+          aria-haspopup="dialog"
+          aria-expanded={sheet === 'permission'}
           onClick={() => setSheet('permission')}
         >
-          <Hand size={14} />
-          <span>{agent === 'pi' ? 'Pi' : permissionLabel}</span>
+          <PermissionIcon size={15} />
+          <span>{agent === 'pi' ? t('piManaged') : permissionLabel}</span>
           <ChevronDown size={12} />
         </button>
       </div>
       {creating && (
-        <button disabled={disabled} className="project-control" onClick={() => setSheet('project')}>
+        <button
+          disabled={disabled}
+          className="project-control"
+          aria-haspopup="dialog"
+          aria-expanded={sheet === 'project'}
+          onClick={() => setSheet('project')}
+        >
           <Folder size={13} />
           <span>{projects.find((p) => p.cwd === cwd)?.name ?? t('projectMenu')}</span>
           <ChevronDown size={12} />
@@ -129,7 +156,7 @@ export function ComposerControls({
                   {choices[a]?.map((m) => (
                     <button
                       role="option"
-                      aria-selected={a === agent && m.value === model}
+                      aria-selected={a === agent && m === chosen}
                       className="sheet-option"
                       key={m.value}
                       onClick={() => {
@@ -141,6 +168,8 @@ export function ComposerControls({
                         <strong>{m.displayName}</strong>
                         {m.description && <small>{m.description}</small>}
                       </span>
+                      {m.value === 'default' && <span className="model-default">{t('effortDefault')}</span>}
+                      {a === agent && m === chosen && <Check size={14} aria-hidden />}
                     </button>
                   ))}
                 </section>
@@ -168,6 +197,7 @@ export function ComposerControls({
                     <strong>{effortLabel(value)}</strong>
                     {value === chosen?.defaultEffort && <small>{t('effortDefault')}</small>}
                   </span>
+                  {value === level && <Check size={14} aria-hidden />}
                 </button>
               ))}
             </div>
@@ -175,7 +205,7 @@ export function ComposerControls({
           {sheet === 'permission' &&
             (confirming ? (
               <div className="full-confirm">
-                <ShieldAlert size={24} />
+                <TriangleAlert size={24} />
                 <h3>{t('fullConfirm')}</h3>
                 <p>{t('fullHint')}</p>
                 <div className="actions">
@@ -199,13 +229,13 @@ export function ComposerControls({
                     ? [{ value: 'acceptEdits', label: t('acceptEdits'), hint: t('editHint'), icon: Folder }]
                     : []),
                   ...(chosen?.supportsAutoMode
-                    ? [{ value: 'auto', label: t('auto'), hint: t('autoHint'), icon: Sparkles }]
+                    ? [{ value: 'auto', label: t('auto'), hint: t('autoHint'), icon: ShieldCheck }]
                     : []),
                   {
                     value: 'bypassPermissions',
                     label: t('fullAccess'),
                     hint: t('fullHint'),
-                    icon: ShieldAlert,
+                    icon: TriangleAlert,
                   },
                 ].map((p) => (
                   <button
@@ -227,6 +257,7 @@ export function ComposerControls({
                       <strong>{p.label}</strong>
                       <small>{p.hint}</small>
                     </span>
+                    {permission === p.value && <Check size={14} aria-hidden />}
                   </button>
                 ))}
               </div>
@@ -248,6 +279,7 @@ export function ComposerControls({
                   <span>
                     <strong>{p.name}</strong>
                   </span>
+                  {cwd === p.cwd && <Check size={14} aria-hidden />}
                 </button>
               ))}
             </div>

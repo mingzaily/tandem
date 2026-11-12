@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Hand, MessageCircle, Terminal } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, Hand, MessageCircle, Terminal } from 'lucide-react';
 import type { Decision, PendingRequest } from './lib/types';
 import { t } from './lib/i18n';
 
@@ -15,18 +15,37 @@ export function Prompt({
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  const compositionEnded = useRef(Number.NEGATIVE_INFINITY);
   const [index, setIndex] = useState(0);
+  const [customOpen, setCustomOpen] = useState(false);
+  const customInput = useRef<HTMLInputElement>(null);
+  const customEntry = useRef<HTMLButtonElement>(null);
+  const restoreOptions = useRef(false);
+  const q = request.type === 'question' ? request.questions[index] : undefined;
+  const showCustom = Boolean(q && (!q.options?.length || customOpen));
+  useEffect(() => {
+    if (showCustom) customInput.current?.focus();
+    else if (restoreOptions.current) { restoreOptions.current = false; customEntry.current?.focus(); }
+  }, [index, showCustom]);
   const answer = async (d: Decision) => {
+    if (disabled || inFlight.current) return;
+    inFlight.current = true;
     setSending(true);
+    setError('');
     try {
       await onAnswer(d);
-    } finally {
+      // The settled event or the next snapshot removes the card.
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+      inFlight.current = false;
       setSending(false);
     }
   };
   if (request.type === 'permissionRequest')
     return (
-      <section className="prompt-card permission-card" aria-label={t('confirmTool')}>
+      <section className="prompt-card permission-card" aria-label={t('confirmTool')} aria-busy={sending}>
         <fieldset disabled={disabled || sending}>
           <div className="prompt-eyebrow">
             <Hand size={13} />
@@ -51,27 +70,48 @@ export function Prompt({
             </button>
           </div>
         </fieldset>
+        {error && (
+          <p className="prompt-error" role="alert">
+            {error}
+          </p>
+        )}
       </section>
     );
-  const q = request.questions[index];
+  if (!q) return null;
   const isLast = index === request.questions.length - 1;
+  const closeCustom = () => { restoreOptions.current = true; setCustomOpen(false); };
+  const advance = (value: string, custom = false) => {
+    if (!value || disabled || inFlight.current) return;
+    if (!isLast) {
+      setAnswers((old) => ({ ...old, [q.question]: value }));
+      setCustomOpen(false);
+      setIndex(index + 1);
+    } else void answer({ kind: 'answer', answers: { ...answers, [q.question]: value }, ...(custom ? { custom: true } : {}) });
+  };
   const value = [
     ...(selected[q.question] ?? []),
-    ...(answers[q.question]?.trim() ? [answers[q.question].trim()] : []),
+    ...(showCustom && answers[q.question]?.trim() ? [answers[q.question].trim()] : []),
   ].join(', ');
+  const customAnswer = showCustom && Boolean(answers[q.question]?.trim());
   return (
-    <section className="prompt-card question-card" aria-label={t('answerQuestion')}>
+    <section className="prompt-card question-card" aria-label={t('answerQuestion')} aria-busy={sending}>
       <fieldset disabled={disabled || sending}>
         <form
+          onCompositionEnd={() => {
+            compositionEnded.current = performance.now();
+          }}
+          onKeyDown={(event) => {
+            if (
+              event.key === 'Enter' &&
+              (event.nativeEvent.isComposing ||
+                event.nativeEvent.keyCode === 229 ||
+                performance.now() - compositionEnded.current < 80)
+            )
+              event.preventDefault();
+          }}
           onSubmit={(e) => {
             e.preventDefault();
-            if (!value) return;
-            if (!isLast) {
-              setAnswers((old) => ({ ...old, [q.question]: value }));
-              setIndex(index + 1);
-              return;
-            }
-            void answer({ kind: 'answer', answers: { ...answers, [q.question]: value } });
+            advance(value, customAnswer);
           }}
         >
           <div className="question-meta">
@@ -85,7 +125,11 @@ export function Prompt({
               </small>
             )}
           </div>
-          <h3>{q.question}</h3>
+          <h3>{q.displayQuestion ?? q.question}</h3>
+          {q.context ? <div className="question-context">
+            <span>{t('questionContext')}</span>
+            <p>{q.context}</p>
+          </div> : null}
           <div className="question-options">
             {q.options?.map((o, i) => (
               <label
@@ -98,7 +142,7 @@ export function Prompt({
                   type={q.multiSelect ? 'checkbox' : 'radio'}
                   name={q.question}
                   checked={(selected[q.question] ?? []).includes(o.label)}
-                  onChange={(e) =>
+                  onChange={(e) => {
                     setSelected((old) => ({
                       ...old,
                       [q.question]: q.multiSelect
@@ -106,8 +150,9 @@ export function Prompt({
                           ? [...(old[q.question] ?? []), o.label]
                           : old[q.question].filter((x) => x !== o.label)
                         : [o.label],
-                    }))
-                  }
+                    }));
+                    if (!q.multiSelect) advance(o.label);
+                  }}
                 />
                 <span className="option-number" aria-hidden>
                   {i + 1}
@@ -119,15 +164,43 @@ export function Prompt({
                 <span className="option-indicator" aria-hidden />
               </label>
             ))}
-            <input
-              className="custom-answer"
-              aria-label={q.question}
-              placeholder={t('custom')}
-              value={answers[q.question] ?? ''}
-              onChange={(e) => setAnswers((old) => ({ ...old, [q.question]: e.target.value }))}
-            />
+            {!showCustom && q.allowCustom !== false && (
+              <button
+                ref={customEntry}
+                type="button"
+                className="question-option"
+                aria-expanded={false}
+                onClick={() => {
+                  if (!q.multiSelect) setSelected((old) => ({ ...old, [q.question]: [] }));
+                  setCustomOpen(true);
+                }}
+              >
+                <span className="option-number" aria-hidden>
+                  {(q.options?.length ?? 0) + 1}
+                </span>
+                <span className="option-copy">
+                  <strong>{t('custom')}</strong>
+                </span>
+              </button>
+            )}
+            {showCustom && (
+              <input
+                ref={customInput}
+                className="custom-answer"
+                aria-label={q.displayQuestion ?? q.question}
+                placeholder={t('custom')}
+                value={answers[q.question] ?? ''}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape' && customOpen && q.options?.length && !event.nativeEvent.isComposing) {
+                    event.preventDefault(); event.stopPropagation(); closeCustom();
+                  }
+                }}
+                onChange={(e) => setAnswers((old) => ({ ...old, [q.question]: e.target.value }))}
+              />
+            )}
           </div>
           <div className="prompt-actions">
+            {customOpen && Boolean(q.options?.length) ? <button type="button" onClick={closeCustom}><ArrowLeft size={14} aria-hidden />{t('backOptions')}</button> : null}
             <button type="button" onClick={() => void answer({ kind: 'deny' })}>
               {t('cancel')}
             </button>
@@ -138,6 +211,11 @@ export function Prompt({
           </div>
         </form>
       </fieldset>
+      {error && (
+        <p className="prompt-error" role="alert">
+          {error}
+        </p>
+      )}
     </section>
   );
 }

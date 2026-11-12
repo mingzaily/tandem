@@ -79,7 +79,7 @@ async fn healthcheck(host: &str, port: u16) -> io::Result<()> {
         let mut bytes = Vec::new();
         stream.take(4096).read_to_end(&mut bytes).await?;
         let response = String::from_utf8_lossy(&bytes);
-        if response.starts_with("HTTP/1.1 200 ") && response.contains("{\"ok\":true,\"v\":1}") {
+        if valid_health_response(&response) {
             Ok(())
         } else {
             Err(io::Error::other("健康检查失败"))
@@ -87,4 +87,45 @@ async fn healthcheck(host: &str, port: u16) -> io::Result<()> {
     })
     .await
     .map_err(io::Error::other)?
+}
+
+fn valid_health_response(response: &str) -> bool {
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else { return false };
+    headers.starts_with("HTTP/1.1 200 ") && serde_json::from_str::<serde_json::Value>(body)
+        .is_ok_and(|value| value.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+            && value.get("v").and_then(serde_json::Value::as_u64) == Some(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn health_response_checks_status_and_json_fields_independently_of_formatting() {
+        for body in [r#"{"ok":true,"v":1}"#, r#"{ "v": 1, "ok": true, "version": "0.1.2026111101" }"#] {
+            assert!(valid_health_response(&format!("HTTP/1.1 200 OK\r\n\r\n{body}")));
+        }
+        for response in ["HTTP/1.1 503 Unavailable\r\n\r\n{\"ok\":true,\"v\":1}",
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":false,\"v\":1}", "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"v\":2}",
+            "HTTP/1.1 200 OK\r\n\r\ninvalid", "HTTP/1.1 200 OK"] {
+            assert!(!valid_health_response(response));
+        }
+    }
+
+    #[tokio::test]
+    async fn healthcheck_accepts_a_valid_health_response_with_the_product_version() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 256];
+            let amount = stream.read(&mut request).await.unwrap();
+            assert!(amount > 0);
+            let body = r#"{"ok":true,"v":1,"version":"0.1.2026111101"}"#;
+            stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).as_bytes()).await.unwrap();
+        });
+        let result = healthcheck("127.0.0.1", port).await;
+        server.await.unwrap();
+        assert!(result.is_ok(), "{result:?}");
+    }
 }

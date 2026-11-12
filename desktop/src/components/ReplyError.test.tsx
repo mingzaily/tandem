@@ -9,6 +9,9 @@ describe('failed reply timeline record', () => {
   it('shows a short turn outcome and keeps raw protocol details collapsed', () => {
     const html = renderToStaticMarkup(<ReplyError details={'{"error":"provider rejected"}\nrequest id: 123'} />);
     expect(html).toContain('回复异常，本轮已结束');
+    expect(html).toContain('rounded-xl');
+    expect(html).toContain('bg-[var(--surface-elevated)]');
+    expect(html).toContain('text-[var(--text-primary)]');
     expect(html).toContain('查看错误详情');
     expect(html).toContain('<details');
     expect(html).not.toContain('open=""');

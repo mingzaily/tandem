@@ -36,6 +36,14 @@ describe('composer text alignment', () => {
     expect(gutter + pixels(more, rootSize)).toBe(queueInset);
   });
 
+  it('gives fenced input a distinct input surface and keeps the editor and measuring mirror in the same code font', () => {
+    const surface = declarations('.composer-code-surface');
+    expect(surface.get('background')).toBe('color-mix(in srgb, var(--chat-input-bg) 94%, var(--chat-input-text))');
+    expect(surface.get('box-shadow')).toBe('inset 0 0 0 1px var(--chat-input-chip-border)');
+    expect(declarations('.composer-code-only .composer-editor').get('font-family')).toBe('var(--app-font-code-default)');
+    expect(declarations('.composer-code-only .composer-code-mirror').get('font-family')).toBe('var(--app-font-code-default)');
+  });
+
   it('uses the reference input inset without inheriting the queue handle space', () => {
     const editorInset = pixels(declarations('.composer-content-inset').get('padding-inline')!, 16);
     expect(editorInset).toBe(11);

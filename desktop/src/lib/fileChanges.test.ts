@@ -6,6 +6,7 @@ const tool = (path: string, input: object = {}, overrides: Partial<ToolItem> = {
   type: 'tool', id: path, name: 'Edit', input: JSON.stringify({ file_path: path, ...input }), result: 'ok', isError: false, truncated: false, ...overrides,
 });
 const prompt: Item = { type: 'user', id: 'user', text: '修改文件' };
+const changeCards = (rows: ReturnType<typeof buildMessageRows>) => rows.flatMap((row) => row.type === 'reply' ? [row.changes] : row.type === 'changes' ? [row] : []);
 
 describe('latest turn file changes', () => {
   it('counts completed successful file tools and excludes reads, commands, failures and pending tools', () => {
@@ -56,14 +57,33 @@ describe('latest turn file changes', () => {
 });
 
 describe('file changes in the message stream', () => {
+  it('groups the final reply and its file card in one stable row for a footer below both', () => {
+    const rows = buildMessageRows([prompt, tool('/a'), { type: 'assistant', id: 'final', text: '原始 **回复**', at: 1234 }, { ...prompt, id: 'next' }], true, null);
+    expect(rows.map(({ type }) => type)).toEqual(['user', 'group', 'reply', 'user']);
+    expect(rows[2]).toMatchObject({ type: 'reply', id: 'final', text: '原始 **回复**', at: 1234, changes: { id: 'changes-user', files: [{ path: '/a' }] } });
+  });
+
+  it('uses an ordinary reply when no files changed and keeps the active turn free of completed cards', () => {
+    const final: Item = { type: 'assistant', id: 'final', text: 'done' };
+    expect(buildMessageRows([prompt, final], false, null).map(({ type }) => type)).toEqual(['user', 'assistant']);
+    expect(buildMessageRows([prompt, tool('/a'), final], true, null).some((row) => row.type === 'reply' || row.type === 'changes')).toBe(false);
+  });
+
+  it('retains a standalone change card when a turn ends with an error or only tool output', () => {
+    for (const tail of [[], [{ type: 'error' as const, id: 'error', text: 'failed' }]]) {
+      const rows = buildMessageRows([prompt, tool('/a'), ...tail], false, null);
+      expect(rows.at(-1)).toMatchObject({ type: 'changes', files: [{ path: '/a' }] });
+      expect(rows.some((row) => row.type === 'reply')).toBe(false);
+    }
+  });
   it('keeps each turn summary beside its result after another user message arrives', () => {
     const rows = buildMessageRows([
       prompt, tool('src/a.ts', { added: 3, removed: 1 }), { type: 'assistant', id: 'answer-1', text: '完成第一轮' },
       { ...prompt, id: 'user-2' }, tool('src/a.ts', { added: 2, removed: 0 }), { type: 'assistant', id: 'answer-2', text: '完成第二轮' },
       { ...prompt, id: 'user-3' },
     ], false, '/project');
-    expect(rows.map(({ type }) => type)).toEqual(['user', 'group', 'assistant', 'changes', 'user', 'group', 'assistant', 'changes', 'user']);
-    const summaries = rows.filter((row) => row.type === 'changes');
+    expect(rows.map(({ type }) => type)).toEqual(['user', 'group', 'reply', 'user', 'group', 'reply', 'user']);
+    const summaries = changeCards(rows);
     expect(summaries.map(({ id, stats }) => ({ id, stats }))).toEqual([
       { id: 'changes-user', stats: { added: 3, removed: 1 } },
       { id: 'changes-user-2', stats: { added: 2, removed: 0 } },
@@ -78,8 +98,8 @@ describe('file changes in the message stream', () => {
 
   it('keeps edits before and after a steer in the same active turn without a premature change card', () => {
     const items: Item[] = [prompt, tool('/a'), { type: 'user', id: 'steer', text: 'also b', steered: true }, tool('/b'), { type: 'assistant', id: 'answer', text: 'done' }];
-    expect(buildMessageRows(items, true, null).filter((row) => row.type === 'changes')).toEqual([]);
-    const completed = buildMessageRows(items, false, null).filter((row) => row.type === 'changes');
+    expect(changeCards(buildMessageRows(items, true, null))).toEqual([]);
+    const completed = changeCards(buildMessageRows(items, false, null));
     expect(completed).toHaveLength(1);
     expect(completed[0].files.map(({ path }) => path)).toEqual(['/a', '/b']);
     expect(summarizeFileChanges(items, null).files.map(({ path }) => path)).toEqual(['/a', '/b']);

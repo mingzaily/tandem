@@ -38,6 +38,23 @@ describe('backend-owned preferences', () => {
     expect(loadSettings()).toMatchObject({ debugLog: true });
   });
 
+  it('reads saved sidebar folds before first render and writes them through the backend state patch', async () => {
+    const initial = snapshot();
+    initial.state.collapsedSidebarGroups = ['/code/alpha'];
+    initial.state.pinnedProjects = ['/code/beta'];
+    vi.stubGlobal('window', { __TANDEM_PREFERENCES__: initial });
+    vi.stubGlobal('localStorage', { getItem: () => { throw new Error('sidebar folds belong to state.json'); } });
+    const write = vi.fn(async (_target: string, patch: object) => ({ ...initial, revision: 1, state: { ...initial.state, ...patch } }));
+    vi.doMock('./api', () => ({ updatePreferences: write }));
+    vi.resetModules();
+    const { preferencesSnapshot, saveViewState } = await import('./storage');
+    expect(preferencesSnapshot().state.collapsedSidebarGroups).toEqual(['/code/alpha']);
+    saveViewState({ collapsedSidebarGroups: ['/code/alpha', '/code/beta:pi'] });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledExactlyOnceWith('state', { collapsedSidebarGroups: ['/code/alpha', '/code/beta:pi'] }));
+    expect(preferencesSnapshot().state.pinnedProjects).toEqual(['/code/beta']);
+    expect(preferencesSnapshot().state.collapsedSidebarGroups).toEqual(['/code/alpha', '/code/beta:pi']);
+  });
+
   it('removes a local alias while preserving other aliases and shared state', () => {
     const before = { taskMeta: { pins: ['a'], archived: [], titles: { a: 'old', b: 'keep' } }, sidebarWidth: 260 };
     const after = { ...before, taskMeta: { ...before.taskMeta, titles: { b: 'keep' } } };

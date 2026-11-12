@@ -24,7 +24,21 @@ pnpm test
 | `pnpm tauri build --bundles app` | 正式版，产物在 `src-tauri/target/release/bundle/macos/` |
 | `pnpm tauri build --debug --bundles app` | 带脚本驱动的调试版，页面与正式版相同 |
 
-正式分发由 `main` 的 push 自动触发 CI：分配日期版本、执行检查、构建 Apple Silicon / Intel 通用 `.dmg`，再发布 GitHub Release。使用免费 ad hoc 签名，产物与重跑规则见 [CI 与本地验证](ci-validation.md#桌面自动发布)。本机命令用于开发验证，CI 构建使用独立的临时工作区。
+正式分发由 `main` 的 push 自动触发 CI：分配递增版本、执行检查、分别构建 Apple Silicon 和 Intel 安装包，再发布 GitHub Release。本机和 CI 都用 Tandem 自签名证书签名，产物与重跑规则见 [CI 与本地验证](ci-validation.md#桌面自动发布)。本机命令用于开发验证，CI 构建使用独立的临时工作区。
+
+### 本机签名
+
+`tauri.conf.json` 指定签名身份 `Tandem`，本机构建需要登录钥匙串里有这张证书，并信任它用于代码签名：
+
+```bash
+security import tandem-signing.p12 -k ~/Library/Keychains/login.keychain-db -T /usr/bin/codesign
+security add-trusted-cert -r trustRoot -p codeSign -k ~/Library/Keychains/login.keychain-db tandem-signing.pem
+security set-key-partition-list -S apple-tool:,apple:,codesign: -s -l "Tandem" ~/Library/Keychains/login.keychain-db
+```
+
+后两条会要求输入登录密码。第三条只放行这把签名钥匙，之后 codesign 使用它不再弹窗；跳过它时，每次签名都会询问是否允许访问钥匙。证书只能从已经导入的电脑用“钥匙串访问 → 我的证书 → 导出”取得 `.p12`，GitHub Secret 无法读回。
+
+没有证书的电脑可以临时用 ad hoc 签名构建：`APPLE_SIGNING_IDENTITY=- pnpm tauri build --bundles app`。这样的构建每次都会让 macOS 重新询问录屏等权限。证书遗失时生成新证书，同时更新两个 Secret、`tauri.conf.json` 和 `desktop.yml` 里的证书 SHA-1；之后每台电脑需要重新授权一次。
 
 ## 驱动窗口
 

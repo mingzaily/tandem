@@ -167,6 +167,8 @@ export type TurnEvent =
   | { type: 'contextWindow'; model: string; tokens: number }
   | { type: 'rateLimits'; windows: UsageWindows }
   | { type: 'steerRefused'; prompt: string }
+  /** Claude's background tasks; `idle` means the agent has answered and only waits for them. */
+  | { type: 'background'; tasks: number; idle: boolean }
   | { type: 'finished'; isError: boolean; cancelled: boolean; message: string | null };
 
 export type PendingRequest = Extract<TurnEvent, { type: 'permissionRequest' | 'question' }>;

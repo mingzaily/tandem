@@ -76,6 +76,14 @@
   background: var(--msg-code-block-bg);
   line-height: 1.5;
 }
+.md-code-block {
+  position: relative;
+  margin: 12px 0;
+}
+.md .md-code-block > pre {
+  margin: 0;
+  padding-top: 40px;
+}
 .md blockquote {
   padding-left: 12px;
   border-left: 2px solid var(--msg-blockquote-border);

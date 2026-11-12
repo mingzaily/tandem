@@ -254,6 +254,10 @@ body.sidebar-dragging * {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.composer-code-only .composer-editor,
+.composer-code-only .composer-code-mirror {
+  font-family: var(--app-font-code-default);
+}
 .composer-code-backdrop {
   position: absolute;
   inset: 0;
@@ -270,22 +274,10 @@ body.sidebar-dragging * {
   left: calc(var(--composer-content-inset) - var(--space-1_5));
   right: calc(var(--composer-content-inset) - var(--space-1_5));
   border-radius: var(--radius);
-  background: var(--msg-code-block-bg);
+  background: color-mix(in srgb, var(--chat-input-bg) 94%, var(--chat-input-text));
+  box-shadow: inset 0 0 0 1px var(--chat-input-chip-border);
 }
 
-.composer-resize-handle::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 12px;
-  right: 12px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--chat-input-border-focus);
-  opacity: 0;
-}
-.composer-resize-handle:hover::after,
-.composer-resize-handle:focus-visible::after { opacity: 0.65; }
 body.composer-resizing,
 body.composer-resizing * { cursor: ns-resize !important; user-select: none !important; }
 

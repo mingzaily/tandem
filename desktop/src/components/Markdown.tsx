@@ -7,6 +7,7 @@ import { openExternal, openTaskPath, resolveTaskPath, type Agent } from '../lib/
 import { localFileTarget, shouldRenderFileChip } from '../lib/fileLinks';
 import { t } from '../lib/i18n';
 import { FloatingMenu } from './FloatingMenu';
+import { CodeBlock } from './CodeBlock';
 import { MENU_ROW } from './ComposerMenu';
 import '../styles/markdown.css';
 
@@ -48,6 +49,7 @@ function MarkdownLink({ href, children }: { href?: string; children?: ReactNode 
 
 const components: Components = {
   a: MarkdownLink,
+  pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
   // Task content must not trigger network requests, so remote images show as text.
   img: ({ alt }) => <span>{alt}</span>,
 };

@@ -7,7 +7,7 @@ import { t } from '../lib/i18n';
 import { CONVERSATION_CWD, groupRoot, isUnder, projectName, worktreeName } from '../lib/items';
 import { renameTask, taskTitle, togglePin, type TaskMeta } from '../lib/taskMeta';
 import { formatAge } from '../lib/tools';
-import { advanceHold, cliTaskGroups, moveSidebarProject, orderSidebarProjects, projectMoveRange, toggleProjectPin, type PriorityContext, type SidebarOptions } from '../lib/sidebarModel';
+import { advanceHold, CLI_ORDER, cliTaskGroups, moveSidebarProject, orderSidebarProjects, projectMoveRange, toggleProjectPin, type PriorityContext, type SidebarOptions } from '../lib/sidebarModel';
 import { useSidebarDrag } from '../lib/useSidebarDrag';
 import { AGENT_NAMES } from '../lib/modelRows';
 import { FloatingMenu } from './FloatingMenu';
@@ -27,6 +27,8 @@ const SECTION_TITLE = 'flex h-8 items-center pl-3 text-sm leading-5 font-medium 
 
 interface SidebarProps {
   tasks: TaskSummary[];
+  /** Shared minute clock; list activity and elapsed labels use the same snapshot. */
+  now?: number;
   /** Started tasks whose native metadata has not arrived yet. */
   pendingTaskIds?: ReadonlySet<string>;
   loaded: boolean;
@@ -43,6 +45,8 @@ interface SidebarProps {
   projectOrder: string[];
   pinnedProjects: string[];
   onPinnedProjectsChange: (paths: string[]) => void;
+  collapsedGroups: string[];
+  onCollapsedGroupsChange: (keys: string[]) => void;
   options: SidebarOptions;
   menuAnchor: TaskMenuAnchor | null;
   generatingTitles: Set<string>;
@@ -202,15 +206,15 @@ export function TaskRow(props: TaskRowProps) {
 }
 
 export function Sidebar(props: SidebarProps) {
-  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, projectOrder, onProjectOrderChange, pinnedProjects, onPinnedProjectsChange, options, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
+  const { tasks, loaded, selectedId, meta, extraProjects, conversationRoots, projectOrder, onProjectOrderChange, pinnedProjects, onPinnedProjectsChange, collapsedGroups, onCollapsedGroupsChange, options, width, renamingId, version, onWidthChange, onNewTask, onOpenSettings } = props;
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const collapsed = useMemo(() => new Set(collapsedGroups), [collapsedGroups]);
   const [projectMenu, setProjectMenu] = useState<{ cwd: string; x: number; y: number } | null>(null);
   const [query, setQuery] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const searchInput = useRef<HTMLInputElement>(null);
   const nav = useRef<HTMLElement>(null);
-  const now = Date.now();
+  const now = props.now ?? Date.now();
   const holdState = useRef<{ viewed: string | null }>({ viewed: null });
   const holds = useRef({ held: new Map<string, number>(), leftAt: new Map<string, number>() });
   const priority: PriorityContext = {
@@ -259,7 +263,12 @@ export function Sidebar(props: SidebarProps) {
   const { drag } = sorting;
 
   const allCollapsed = groups.length > 0 && groups.every(([cwd]) => collapsed.has(cwd));
-  const toggle = (set: typeof setCollapsed, cwd: string) =>
+  const toggleCollapsed = (key: string) => onCollapsedGroupsChange(collapsed.has(key) ? collapsedGroups.filter((item) => item !== key) : [...collapsedGroups, key]);
+  const toggleAll = () => {
+    const keys = new Set(groups.flatMap(([cwd]) => [cwd, ...CLI_ORDER.map((agent) => `${cwd}:${agent}`)]));
+    onCollapsedGroupsChange(allCollapsed ? collapsedGroups.filter((key) => !keys.has(key)) : [...new Set([...collapsedGroups, ...projectIds])]);
+  };
+  const toggle = (set: typeof setExpanded, cwd: string) =>
     set((current) => {
       const next = new Set(current);
       if (!next.delete(cwd)) next.add(cwd);
@@ -342,7 +351,7 @@ export function Sidebar(props: SidebarProps) {
           <h2 className={SECTION_TITLE}>{t('projects')}</h2>
           {groups.length > 0 && !needle ? (
             <button type="button" aria-label={t(allCollapsed ? 'projectsExpandAll' : 'projectsCollapseAll')} data-tooltip={t(allCollapsed ? 'projectsExpandAll' : 'projectsCollapseAll')}
-              onClick={() => setCollapsed((current) => allCollapsed ? new Set() : new Set([...current, ...groups.map(([cwd]) => cwd)]))}
+              onClick={toggleAll}
               className="pointer-events-none flex size-7 items-center justify-center rounded-md text-[var(--sidebar-list-muted)] opacity-0 transition-[color,opacity] duration-[var(--motion-fast)] hover:text-[var(--sidebar-nav-text)] focus-visible:pointer-events-auto focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] group-hover/projects-header:pointer-events-auto group-hover/projects-header:opacity-100">
               {allCollapsed ? <ChevronsUpDown size={14} strokeWidth={2} aria-hidden /> : <ChevronsDownUp size={14} strokeWidth={2} aria-hidden />}
             </button>
@@ -372,7 +381,7 @@ export function Sidebar(props: SidebarProps) {
                   aria-expanded={!isCollapsed}
                   aria-keyshortcuts={canDrag ? 'Alt+ArrowUp Alt+ArrowDown Alt+Home Alt+End' : undefined}
                   data-tooltip={cwd === CONVERSATION_CWD ? undefined : cwd}
-                  onClick={() => toggle(setCollapsed, cwd)}
+                  onClick={() => toggleCollapsed(cwd)}
                   onKeyDown={(event) => {
                     if (!event.altKey || !canDrag || isImeKey(event)) return;
                     if (event.key === 'ArrowUp') reorderProject(cwd, groupIndex - 1);
@@ -414,7 +423,7 @@ export function Sidebar(props: SidebarProps) {
                 const visible = showAll ? cliTasks : cliTasks.slice(0, PREVIEW_COUNT);
                 const cliCollapsed = agent !== null && collapsed.has(key) && !needle;
                 return <div key={key} className="flex flex-col gap-0.5">
-                  {agent ? <button type="button" aria-expanded={!cliCollapsed} onClick={() => toggle(setCollapsed, key)}
+                  {agent ? <button type="button" aria-expanded={!cliCollapsed} onClick={() => toggleCollapsed(key)}
                     className="flex h-7 items-center gap-1.5 rounded-full pl-5 pr-2 text-xs font-medium text-[var(--sidebar-list-muted)] transition-colors hover:text-[var(--sidebar-nav-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)]">
                     {/* The reference's group header: mark, name, then the fold chevron; its tasks sit one level deeper. */}
                     <AgentMark agent={agent} size={12} />{AGENT_NAMES[agent]}<ChevronRight size={12} strokeWidth={2} aria-hidden className={cliCollapsed ? '' : 'rotate-90'} />

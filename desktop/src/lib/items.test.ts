@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from './api';
-import { applyTurnEvent, buildItems, flattenRows, visibleWorkItems, groupRoot, moveProject, orderProjects, projectRoot, worktreeName, splitAttachedFiles, buildRows, historyBeforeLiveTurn, lastEditablePrompt, projectName, turnStatus, withTurnFailures, type Item } from './items';
+import { applyTurnEvent, buildItems, flattenRows, visibleWorkItems, groupRoot, moveProject, orderProjects, projectRoot, worktreeName, splitAttachedFiles, buildRows, historyBeforeLiveTurn, lastEditablePrompt, projectName, turnStatus, withTurnFailures, type Item, type WorkGroup } from './items';
 
 const message = (overrides: Partial<Message> & Pick<Message, 'id' | 'kind'>): Message => ({
   text: '',
@@ -174,6 +174,41 @@ describe('buildRows', () => {
 
   it('shows an answer without work directly', () => {
     expect(buildRows([user('u'), answer('a')], false).map((row) => row.type)).toEqual(['user', 'assistant']);
+  });
+
+  it('shows recovered progress by default when the recorded turn has no final reply, including after continuing', () => {
+    const recorded = [user('u', 1000), answer('progress', 2000), tool('a', 180000), answer('more-progress', 181000), tool('b', 320000)];
+    for (const continuing of [false, true]) {
+      const rows = buildRows(continuing ? [...recorded, user('continue', 321000), tool('new', 322000)] : recorded, continuing);
+      const group = rows[1];
+      if (group.type !== 'group') throw new Error('Expected recovered work');
+      expect(group).toMatchObject({ isRunning: false, isSummary: true, hasFinalReply: false, durationMs: 319000 });
+      expect(visibleWorkItems(group)).toEqual(group.items);
+      expect(flattenRows(visibleWorkItems(group)).map(({ id }) => id)).toEqual(['progress', 'a', 'more-progress', 'b']);
+      expect(visibleWorkItems(group, false)).toEqual([]);
+    }
+  });
+
+  it('keeps normal completed work folded across display boundaries and steering inputs', () => {
+    const rows = buildRows([user('u'), tool('first'), { type: 'compaction', id: 'compact' }, tool('second'), { type: 'user', id: 'steer', text: 'also', steered: true }, tool('third'), answer('final')], false);
+    const summaries = rows.filter((row): row is WorkGroup => row.type === 'group' && row.isSummary);
+    expect(summaries).toHaveLength(3);
+    for (const group of summaries) {
+      expect(group.hasFinalReply).toBe(true);
+      expect(visibleWorkItems(group)).toEqual([]);
+    }
+  });
+
+  it('keeps failure and stop outcomes visible after the recovered work rather than marking the group as running', () => {
+    for (const type of ['error', 'notice'] as const) {
+      const rows = buildRows([user('u'), answer('progress'), tool('last'), { type, id: 'end', text: 'ended' }], false);
+      const group = rows[1];
+      if (group.type !== 'group') throw new Error('Expected ended work');
+      expect(group.hasFinalReply).toBe(false);
+      expect(group.isRunning).toBe(false);
+      expect(visibleWorkItems(group)).toHaveLength(2);
+      expect(rows.at(-1)?.type).toBe(type);
+    }
   });
 
   it('folds completed work even when a turn ends before an answer', () => {

@@ -33,7 +33,7 @@ git clone --depth 1 https://github.com/zhukunpenglinyutong/desktop-cc-gui.git cc
 
 | 目录 | 内容 | 许可 |
 |---|---|---|
-| `repos/cindy` | Cindy `main`，用于查阅当前上游实现；最近更新为 `d386dc764f`（2026-11-11） | Apache-2.0，名称、Logo、角色形象除外 |
+| `repos/cindy` | Cindy `main`，用于查阅当前上游实现；最近更新为 `3812e68c69`（2026-11-12） | Apache-2.0，名称、Logo、角色形象除外 |
 | `repos/ccgui` | desktop-cc-gui，参考原生会话和终端互通的做法 | MIT |
 
 更新 Cindy 参考源码时，先确认参考仓库没有本地修改，再拉取并检出默认分支：

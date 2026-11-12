@@ -31,6 +31,8 @@ pub struct ViewState {
     pub task_meta: TaskMeta,
     pub project_order: Vec<String>,
     pub pinned_projects: Vec<String>,
+    /// Project and CLI group keys the user explicitly folded in the sidebar.
+    pub collapsed_sidebar_groups: Vec<String>,
     /// Tasks whose turn finished while another task was open, newest first.
     pub unread_tasks: Vec<String>,
     pub sidebar_collapsed: bool,
@@ -44,6 +46,7 @@ impl Default for ViewState {
             task_meta: TaskMeta::default(),
             project_order: Vec::new(),
             pinned_projects: Vec::new(),
+            collapsed_sidebar_groups: Vec::new(),
             unread_tasks: Vec::new(),
             sidebar_collapsed: false,
             sidebar_width: 260.,

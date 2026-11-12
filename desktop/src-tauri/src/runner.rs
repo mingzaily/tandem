@@ -44,6 +44,9 @@ pub enum TurnEvent {
     RateLimits { windows: UsageWindows },
     /// A message added to the running turn that the CLI refused; the page queues it instead.
     SteerRefused { prompt: String },
+    /// Claude's background tasks. With `idle`, the agent has answered and only waits for them:
+    /// the process stays, so new messages go straight to it and its follow-up reply shows live.
+    Background { tasks: usize, idle: bool },
     Finished {
         is_error: bool,
         cancelled: bool,
@@ -808,6 +811,10 @@ async fn run_claude(
     // A result that arrived while an added message was still unread: Claude runs that message
     // as a further turn and reports again, or exits, which then ends the turn with this one.
     let mut deferred: Option<TurnEvent> = None;
+    // A result with background tasks still running is not the end: Claude keeps the process and
+    // runs another turn when they report. `idle` is the stretch between that result and new work.
+    let mut background = 0usize;
+    let mut idle = false;
     let mut meter = TokenMeter::default();
     loop {
         tokio::select! {
@@ -818,6 +825,25 @@ async fn run_claude(
                     crate::diagnostics::debug("claude", || format!("skipped a non-JSON output line ({} bytes)", line.len()));
                     continue;
                 };
+                if let Some(tasks) = background_tasks(&value) {
+                    background = tasks;
+                    crate::diagnostics::debug("claude", || format!("{tasks} background task(s), idle={idle}"));
+                    if background == 0 && deferred.is_some() && !steer.has_unconfirmed() {
+                        // The follow-up turn, if any, needs no input; closing lets the CLI exit after it.
+                        stdin = None;
+                        steer.close();
+                        idle = false;
+                    }
+                    emit(TurnEvent::Background { tasks, idle })?;
+                    continue;
+                }
+                let starts_work = idle
+                    && (value.get("type").and_then(Value::as_str) == Some("assistant")
+                        || value.pointer("/event/type").and_then(Value::as_str) == Some("message_start"));
+                if starts_work {
+                    idle = false;
+                    emit(TurnEvent::Background { tasks: background, idle })?;
+                }
                 if value.get("type").and_then(Value::as_str) == Some("user")
                     && value.get("isReplay").and_then(Value::as_bool) == Some(true)
                     && value.get("parent_tool_use_id").is_none_or(Value::is_null)
@@ -870,6 +896,13 @@ async fn run_claude(
                 }
                 for event in parse_stream_value(&value) {
                     if let TurnEvent::Finished { is_error, .. } = &event {
+                        if background > 0 {
+                            // Input stays open: the agent is idle until its tasks report back.
+                            deferred = Some(event);
+                            idle = true;
+                            emit(TurnEvent::Background { tasks: background, idle })?;
+                            continue;
+                        }
                         stdin = None;
                         steer.close();
                         if !*is_error && steer.has_unconfirmed() {
@@ -913,6 +946,16 @@ async fn run_claude(
     } else {
         tail
     })
+}
+
+/// `background_tasks_changed` lists the main conversation's running background tasks.
+fn background_tasks(value: &Value) -> Option<usize> {
+    if value.get("type").and_then(Value::as_str) != Some("system")
+        || value.get("subtype").and_then(Value::as_str) != Some("background_tasks_changed")
+    {
+        return None;
+    }
+    Some(value.get("tasks").and_then(Value::as_array).map_or(0, Vec::len))
 }
 
 /// A failed write means the process has died, which the stdout loop reports when it ends.
@@ -1112,6 +1155,10 @@ fn tool_result_text(content: Option<&Value>) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+#[path = "runner_background_tests.rs"]
+mod background_tests;
 
 #[cfg(test)]
 mod tests {

@@ -47,6 +47,15 @@ describe('composer action meaning', () => {
     expect(html).toContain('aria-label="移除 image.png"');
   });
 
+  it('gives queued fenced code the same typography and measuring mirror as the ordinary composer', () => {
+    const html = render({ editing: { id: 'queued-code', prompt: '```sh\n  terminal output\n```', attachments: [], options: { model: null, effort: null, permissionMode: null } } });
+    expect(html).toContain('composer-code-only');
+    expect(html).toContain('composer-code-backdrop');
+    expect(html).toContain('data-code-fence');
+    expect(html).toContain('  terminal output\n');
+    expect(html).toContain('aria-label="保存修改"');
+  });
+
   it('keeps ordinary task and new-task inputs free of queue instructions', () => {
     for (const variant of ['task', 'new'] as const) {
       const html = render({ variant });

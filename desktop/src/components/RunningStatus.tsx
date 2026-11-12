@@ -93,7 +93,9 @@ export function RateCard({ rate, outputTokens, now }: { rate: RateHistory; outpu
 export function RunningStatus({ status, startedAt, outputTokens, activity, rate, center, indicator }: RunningStatusProps) {
   const label = status.key === 'statusCallingTool' && status.toolName
     ? t('statusToolRunning', { tool: status.toolName })
-    : t(status.key);
+    : status.key === 'statusBackground'
+      ? t('statusBackground', { count: String(status.tasks) })
+      : t(status.key);
   const [now, setNow] = useState(() => Date.now());
   const [cycle, setCycle] = useState(0);
   const playing = useRef(false);

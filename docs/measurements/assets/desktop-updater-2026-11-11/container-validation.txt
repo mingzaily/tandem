@@ -1,3 +1,0 @@
-Local linux/arm64 Docker build and smoke validation: exit 0
-容器 /healthz、CSP、PWA 页面、WebSocket 配对与任务列表通过。
-容器启动、非 root、健康检查、PWA 配对、持久化、重启与 SIGTERM 通过。

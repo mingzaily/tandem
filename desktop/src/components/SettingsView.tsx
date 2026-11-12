@@ -132,11 +132,11 @@ function AppearanceTab({ settings, onChange }: TabProps) {
         </Row>
         <div className={DIVIDER} />
         <Row label={t('lightThemes')}>
-          <SettingsSelect label={t('lightThemes')} value={settings.lightTheme} options={LIGHT_THEMES.map(({ id, name }) => ({ id, text: name === 'Plain' ? t('themePlain') : name }))} onChange={(lightTheme) => onChange({ ...settings, lightTheme })} />
+          <SettingsSelect label={t('lightThemes')} value={settings.lightTheme} options={LIGHT_THEMES.map(({ id, name }) => ({ id, text: name }))} onChange={(lightTheme) => onChange({ ...settings, lightTheme })} />
         </Row>
         <div className={DIVIDER} />
         <Row label={t('darkThemes')}>
-          <SettingsSelect label={t('darkThemes')} value={settings.darkTheme} options={DARK_THEMES.map(({ id, name }) => ({ id, text: name === 'Plain' ? t('themePlain') : name }))} onChange={(darkTheme) => onChange({ ...settings, darkTheme })} />
+          <SettingsSelect label={t('darkThemes')} value={settings.darkTheme} options={DARK_THEMES.map(({ id, name }) => ({ id, text: name }))} onChange={(darkTheme) => onChange({ ...settings, darkTheme })} />
         </Row>
       </Section>
       <Section title={t('displaySection')}>

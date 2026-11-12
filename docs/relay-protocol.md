@@ -266,6 +266,8 @@ interface Run {
 
 `TurnEvent` 新增展示事件 `generationSpeed`，内容为 `{speed: {rate: number | null, average: number | null, peak: number | null, generationMs: number, measuredTokens: number, streaming: boolean}}`。它将真实 usage 校准后的速度与主机计时成对传递；`measuredTokens` 是参与计速的校准份额，累计输出仍取 `outputTokens.total`。手机端当前保留协议类型并忽略该展示事件，消息合并与提问状态沿用原处理。
 
+`TurnEvent` 新增展示事件 `background`，内容为 `{tasks: number, idle: boolean}`，表示 Claude 仍在运行的后台任务数，`idle` 为真时 Agent 已回复、只在等待后台任务。这段时间这一轮尚未结束，`finished` 在后台任务清空、CLI 完成最后一轮汇报后才发出。手机端忽略该事件，运行状态保持不变。
+
 ## 8. PWA 范围
 
 第一版：配对（粘贴、相机扫码）、任务列表（按项目分组）、读任务、发消息和新建任务（模型、强度、权限）、停止、确认和提问卡片、断线重连和补齐、撤销后的提示。

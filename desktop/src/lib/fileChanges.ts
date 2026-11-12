@@ -12,6 +12,9 @@ export interface FileChanges {
 }
 
 export type FileChangesRow = FileChanges & { type: 'changes'; id: string };
+/** One measured row keeps the final body, change card and reply footer together. */
+export type CompletedReplyRow = { type: 'reply'; id: string; text: string; at?: number; changes: FileChangesRow };
+export type MessageRow = Row | FileChangesRow | CompletedReplyRow;
 
 function addStats(left: ChangedFile['stats'], right: ChangedFile['stats']): ChangedFile['stats'] {
   return left && right ? { added: left.added + right.added, removed: left.removed + right.removed } : null;
@@ -56,12 +59,18 @@ export function summarizeFileChanges(items: Item[], cwd: string | null): FileCha
 }
 
 /** Change cards belong to their completed turn and stay in history when another turn starts. */
-export function buildMessageRows(items: Item[], isRunning: boolean, cwd: string | null): (Row | FileChangesRow)[] {
-  const rows: (Row | FileChangesRow)[] = [];
+export function buildMessageRows(items: Item[], isRunning: boolean, cwd: string | null): MessageRow[] {
+  const rows: MessageRow[] = [];
   let turn: Item[] = [];
   const appendChanges = () => {
     const summary = summarizeFileChanges(turn, cwd);
-    if (summary.files.length) rows.push({ type: 'changes', id: `changes-${turn[0].id}`, ...summary });
+    if (summary.files.length) {
+      const changes: FileChangesRow = { type: 'changes', id: `changes-${turn[0].id}`, ...summary };
+      const last = rows.at(-1);
+      if (last?.type === 'assistant' && last.text.trim()) {
+        rows[rows.length - 1] = { type: 'reply', id: last.id, text: last.text, at: last.at, changes };
+      } else rows.push(changes);
+    }
     turn = [];
   };
   for (const row of buildRows(items, isRunning)) {

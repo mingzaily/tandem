@@ -26,7 +26,7 @@ export type CompactionItem = Timed & { type: 'compaction' };
 export type Item = UserItem | TextItem | ToolItem | CompactionItem;
 
 /** A finished stretch of work, folded under one header as in the task view it replicates. */
-export type WorkGroup = { type: 'group'; id: string; items: Row[]; durationMs: number | null; isRunning: boolean; isSummary: boolean; preview?: boolean };
+export type WorkGroup = { type: 'group'; id: string; items: Row[]; durationMs: number | null; isRunning: boolean; isSummary: boolean; preview?: boolean; hasFinalReply?: boolean };
 export type Row = Item | WorkGroup;
 
 const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
@@ -175,7 +175,8 @@ export function applyTurnEvent(items: Item[], event: TurnEvent): Item[] {
 
 export type TurnStatus =
   | { key: 'statusAwaitingYou' | 'statusReplying' | 'statusThinking' }
-  | { key: 'statusCallingTool'; toolName: string };
+  | { key: 'statusCallingTool'; toolName: string }
+  | { key: 'statusBackground'; tasks: number };
 
 /** What a running turn is doing now, for the line above the input box. */
 export function turnStatus(items: Item[], isWaitingForUser: boolean): TurnStatus {
@@ -236,48 +237,67 @@ function actionGroups(items: Item[], startAt: number | undefined, isRunning: boo
   return rows;
 }
 
-function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean) {
+function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean, hasFinalReply: boolean) {
   if (isRunning) { rows.push(...actionGroups(turn, startAt, true)); return; }
   // A completed turn folds only work; every steered user bubble stays in the timeline.
   let segment: Item[] = [];
   for (const item of turn) {
     if (item.type === 'user') {
-      pushCompletedTurn(rows, segment, startAt);
+      pushCompletedTurn(rows, segment, startAt, hasFinalReply);
       rows.push(item);
       startAt = item.at;
       segment = [];
     } else segment.push(item);
   }
-  pushCompletedTurn(rows, segment, startAt);
+  pushCompletedTurn(rows, segment, startAt, hasFinalReply);
 }
 
-function pushCompletedTurn(rows: Row[], turn: Item[], startAt: number | undefined) {
+function pushCompletedTurn(rows: Row[], turn: Item[], startAt: number | undefined, hasFinalReply: boolean) {
   const answerIndex = turn.at(-1)?.type === 'assistant' ? turn.length - 1 : -1;
   const work = answerIndex < 0 ? turn : turn.slice(0, answerIndex);
   if (work.length) {
     const hasProgress = work.some((item) => item.type === 'assistant');
     const children = hasProgress ? actionGroups(work, startAt, false) : work;
-    rows.push(workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true));
+    rows.push({ ...workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true), hasFinalReply });
   }
   if (answerIndex >= 0) rows.push(...turn.slice(answerIndex));
 }
 
-/** Running actions preview their latest five; completed progress folds toward the final answer. */
+/** Display separators and steering inputs do not turn earlier work into an unanswered turn. */
+function turnReplyFlags(items: Item[]): boolean[] {
+  const flags: boolean[] = [];
+  let final: boolean | undefined;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type === 'user' && !item.steered) { final = undefined; continue; }
+    if (item.type === 'compaction' || item.type === 'thinking' && !item.text.trim()) continue;
+    final ??= item.type === 'assistant' && Boolean(item.text.trim());
+    flags[index] = final;
+  }
+  return flags;
+}
+
+/** Running actions preview their latest five; answered history folds toward the final reply. */
 export function buildRows(items: Item[], isRunning: boolean): Row[] {
   const rows: Row[] = [];
+  const replies = turnReplyFlags(items);
+  let hasFinalReply = false;
   let turn: Item[] = [];
   let startAt: number | undefined;
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     // Newer models often stream thinking with no visible text, only a signature: nothing to show.
     if (item.type === 'thinking' && !item.text.trim()) continue;
     if ((item.type === 'user' && !item.steered) || item.type === 'compaction' || item.type === 'notice' || item.type === 'error') {
-      if (turn.length) pushTurn(rows, turn, startAt, false);
+      if (turn.length) pushTurn(rows, turn, startAt, false, hasFinalReply);
       turn = [];
       startAt = item.at;
       rows.push(item);
-    } else turn.push(item);
+    } else {
+      if (!turn.length) hasFinalReply = replies[index] ?? false;
+      turn.push(item);
+    }
   }
-  if (turn.length) pushTurn(rows, turn, startAt, isRunning);
+  if (turn.length) pushTurn(rows, turn, startAt, isRunning, hasFinalReply);
   return rows;
 }
 
@@ -330,9 +350,11 @@ export function withTurnFailures(items: Item[], failures: TurnFailure[]): Item[]
 }
 
 export const MAX_LIVE_ACTIVITIES = 5;
-/** An untouched live group previews recent work; an explicit close hides all its children. */
+export const workGroupDefaultOpen = (group: WorkGroup): boolean => group.hasFinalReply === false || (group.preview ?? group.isRunning);
+
+/** Unanswered history shows its progress; a manual choice always takes precedence. */
 export function visibleWorkItems(group: WorkGroup, expanded?: boolean): Row[] {
-  if (expanded === true) return group.items;
+  if (expanded === true || expanded === undefined && group.hasFinalReply === false) return group.items;
   return expanded === undefined && (group.preview ?? group.isRunning) ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
 }
 

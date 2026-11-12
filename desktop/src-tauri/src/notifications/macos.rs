@@ -11,9 +11,12 @@ use std::ptr::NonNull;
 use std::sync::Mutex;
 use tokio::sync::oneshot;
 
-/// A notification center needs an application bundle, which a plain development binary lacks.
+/// A notification center needs an application bundle; asking for one from a bare binary aborts
+/// the process. Tauri embeds Info.plist in the binary, so the identifier alone is not enough:
+/// `target/release/tandem` opened from Finder has one too, but no `.app` around it.
 fn bundled() -> bool {
-    NSBundle::mainBundle().bundleIdentifier().is_some()
+    let bundle = NSBundle::mainBundle();
+    bundle.bundleIdentifier().is_some() && bundle.bundlePath().to_string().ends_with(".app")
 }
 
 pub async fn status() -> Result<Status, String> {
@@ -56,6 +59,9 @@ pub async fn status() -> Result<Status, String> {
 
 /// macOS 13+ updates the system-owned badge. Earlier systems use Tauri's Dock label.
 pub async fn set_badge(count: u32) -> Result<bool, String> {
+    if !bundled() {
+        return Ok(false);
+    }
     let receiver = {
         let center = UNUserNotificationCenter::currentNotificationCenter();
         if !center.respondsToSelector(sel!(setBadgeCount:withCompletionHandler:)) {
@@ -84,6 +90,9 @@ pub async fn set_badge(count: u32) -> Result<bool, String> {
 }
 
 pub async fn request_permission() -> Result<(), String> {
+    if !bundled() {
+        return Err("系统通知需要从 Tandem.app 打开，当前运行的是未打包的程序".into());
+    }
     let receiver = {
         let (sender, receiver) = oneshot::channel();
         let sender = Mutex::new(Some(sender));
@@ -110,4 +119,19 @@ pub async fn request_permission() -> Result<(), String> {
     receiver
         .await
         .map_err(|_| "请求系统通知权限失败".to_owned())?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The test binary is itself a bare binary; reaching the notification center would abort it.
+    #[test]
+    fn a_bare_binary_skips_the_notification_center() {
+        assert!(!bundled());
+        assert_eq!(tauri::async_runtime::block_on(set_badge(3)), Ok(false));
+        assert!(tauri::async_runtime::block_on(request_permission()).is_err());
+        let status = tauri::async_runtime::block_on(status()).unwrap();
+        assert!(matches!(status.authorization, Authorization::Unsupported));
+    }
 }

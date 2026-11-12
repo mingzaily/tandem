@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { codeRanges, completeCodeFence, codeKeyEdit } from './fencedCode';
+import { codeRanges, completeCodeFence, codeKeyEdit, isCodeOnly } from './fencedCode';
 
 describe('composer code fences', () => {
+  it('uses code typography only when all visible input belongs to fenced blocks', () => {
+    expect(isCodeOnly('```\n\n```')).toBe(true);
+    expect(isCodeOnly('```sh\n  command\noutput')).toBe(true);
+    expect(isCodeOnly(' \n```ts\nconst x = 1;\n```\n\n~~~\nother\n~~~\n')).toBe(true);
+    expect(isCodeOnly('正文\n```\ncode\n```')).toBe(false);
+    expect(isCodeOnly('```\ncode\n```\n后续正文')).toBe(false);
+    expect(isCodeOnly('inline ```code```')).toBe(false);
+    expect(isCodeOnly('')).toBe(false);
+  });
   it('completes only a third typed backtick on a separate line and places the caret in its body', () => {
     expect(completeCodeFence('``', '```', 3)).toEqual({ value: '```\n\n```', caret: 4 });
     expect(completeCodeFence('正文\n``', '正文\n```', 6)).toEqual({ value: '正文\n```\n\n```', caret: 7 });

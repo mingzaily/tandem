@@ -29,7 +29,7 @@ describe('started task rows', () => {
     const task = { ...props.task, id: 'new-task', title: '刚发送的消息', cwd: '/conversations/new-task', updatedAtMs: Date.now() };
     const html = renderToStaticMarkup(<Sidebar {...props} tasks={[task]} pendingTaskIds={new Set([task.id])} loaded
       selectedId={task.id} running={new Set([task.id])} extraProjects={[]} conversationRoots={['/conversations']}
-      projectOrder={[]} pinnedProjects={[]} onPinnedProjectsChange={() => {}} options={{ groupByCli: false, sort: 'time' }}
+      projectOrder={[]} pinnedProjects={[]} onPinnedProjectsChange={() => {}} collapsedGroups={[]} onCollapsedGroupsChange={() => {}} options={{ groupByCli: false, sort: 'time' }}
       onProjectOrderChange={() => {}} width={260} renamingId={null} version="0.1.0" onWidthChange={() => {}}
       onNewTask={() => {}} onOpenSettings={() => {}} />);
     expect(html).toContain('刚发送的消息');
@@ -37,6 +37,28 @@ describe('started task rows', () => {
     expect(html).toContain('aria-current="page"');
     expect(html).toContain('task-running');
     expect(html).not.toContain('aria-label="生成标题"');
+  });
+});
+
+describe('saved sidebar folds', () => {
+  const task = (id: string, cwd: string, agent: 'claude' | 'pi' = 'pi') => ({ id, cwd, title: `visible-${id}`, updatedAtMs: 0, agent });
+  const render = (collapsedGroups: string[], groupByCli = false) => renderToStaticMarkup(<Sidebar {...props}
+    tasks={[task('closed', '/code/closed'), task('open', '/code/open'), task('conversation', '/conversations/one'), task('cli-pi', '/code/cli'), task('cli-claude', '/code/cli', 'claude')]} loaded
+    selectedId="closed" running={new Set(['closed'])} extraProjects={['/code/closed', '/code/open', '/code/cli']} conversationRoots={['/conversations']}
+    projectOrder={[]} pinnedProjects={[]} onPinnedProjectsChange={() => {}} collapsedGroups={collapsedGroups} onCollapsedGroupsChange={() => {}} options={{ groupByCli, sort: 'time' }}
+    onProjectOrderChange={() => {}} width={260} renamingId={null} version="0.1.0" onWidthChange={() => {}} onNewTask={() => {}} onOpenSettings={() => {}} />);
+  it('restores closed projects and conversations while newly seen projects stay expanded', () => {
+    const html = render(['/code/closed', 'tandem:conversation']);
+    expect(html).not.toContain('visible-closed');
+    expect(html).not.toContain('visible-conversation');
+    expect(html).toContain('visible-open');
+    expect(html).toMatch(/aria-expanded="false"[^>]*data-tooltip="\/code\/closed"/);
+  });
+  it('restores a CLI subgroup independently of its project and other agents', () => {
+    const html = render(['/code/cli:pi'], true);
+    expect(html).not.toContain('visible-cli-pi');
+    expect(html).toContain('visible-cli-claude');
+    expect(html).toMatch(/aria-expanded="true"[^>]*data-tooltip="\/code\/cli"/);
   });
 });
 

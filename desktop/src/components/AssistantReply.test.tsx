@@ -7,6 +7,14 @@ vi.mock('./Markdown', () => ({ Markdown: ({ text }: { text: string }) => <div cl
 afterAll(() => vi.unstubAllGlobals());
 
 describe('assistant copy footer', () => {
+  it('places its action row after an attached change card while retaining the original reply text', () => {
+    const html = renderToStaticMarkup(<AssistantReply text="原始 **回复**" copyable at={1234}><section data-turn-changes>文件更改卡片</section></AssistantReply>);
+    expect(html.indexOf('data-turn-changes')).toBeGreaterThan(html.indexOf('原始 **回复**'));
+    expect(html.indexOf('data-reply-actions')).toBeGreaterThan(html.indexOf('data-turn-changes'));
+    expect(html.match(/data-reply-actions/g)).toHaveLength(1);
+    expect(html).toContain('gap-1.5');
+  });
+
   it('keeps streaming and intermediate text free of an action bar', () => {
     const html = renderToStaticMarkup(<AssistantReply text="progress" copyable={false} at={new Date(2026, 10, 11, 15, 22).getTime()} />);
     expect(html).toContain('progress');

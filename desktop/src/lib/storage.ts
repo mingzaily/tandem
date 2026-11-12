@@ -28,6 +28,7 @@ export interface ViewState {
   taskMeta: TaskMeta;
   projectOrder: string[];
   pinnedProjects: string[];
+  collapsedSidebarGroups: string[];
   unreadTasks: string[];
   sidebarCollapsed: boolean;
   sidebarWidth: number;
@@ -50,7 +51,7 @@ export const DEFAULT_SNAPSHOT: PreferencesSnapshot = {
     conversation_dir: '', past_conversation_dirs: [], projects: [], new_task_agent: 'claude', sidebar_group_by_cli: false, sidebar_sort: 'time', hidden_task_agents: [],
     agents: { claude: prefs(), codex: prefs(), pi: prefs() },
   },
-  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], pinnedProjects: [], unreadTasks: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false },
+  state: { taskMeta: { pins: [], archived: [], titles: {} }, projectOrder: [], pinnedProjects: [], collapsedSidebarGroups: [], unreadTasks: [], sidebarCollapsed: false, sidebarWidth: 260, projectsSeeded: false },
   revision: 0, errors: [],
 };
 

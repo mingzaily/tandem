@@ -3,6 +3,33 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+fn collapsed_sidebar_groups_survive_restart_and_other_preference_updates() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_owned();
+    let store = Store::open(root.clone());
+    let groups = ["/code/app", "tandem:conversation", "/code/other:pi"];
+    let saved = store.update("state", json!({"collapsedSidebarGroups":groups, "sidebarWidth":300}).as_object().unwrap().clone()).unwrap();
+    assert_eq!(serde_json::to_value(&saved.state).unwrap()["collapsedSidebarGroups"], json!(groups));
+    store.update("config", json!({"theme":"dark"}).as_object().unwrap().clone()).unwrap();
+    store.update("state", json!({"pinnedProjects":["/code/other"]}).as_object().unwrap().clone()).unwrap();
+    drop(store);
+    let reopened = Store::open(root);
+    let snapshot = reopened.snapshot();
+    assert_eq!(serde_json::to_value(&snapshot.state).unwrap()["collapsedSidebarGroups"], json!(groups));
+    assert_eq!(snapshot.state.sidebar_width, 300.);
+    assert_eq!(snapshot.state.pinned_projects, ["/code/other"]);
+    assert_eq!(snapshot.config.theme, "dark");
+}
+
+#[test]
+fn previous_sidebar_state_defaults_new_groups_to_expanded() {
+    let state: ViewState = serde_json::from_value(json!({"sidebarWidth":300, "projectOrder":["/code/app"]})).unwrap();
+    assert_eq!(serde_json::to_value(&state).unwrap()["collapsedSidebarGroups"], json!([]));
+    assert_eq!(state.project_order, ["/code/app"]);
+    assert_eq!(state.sidebar_width, 300.);
+}
+
+#[test]
 fn update_settings_survive_restart_and_accept_valid_hand_edits() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_owned();

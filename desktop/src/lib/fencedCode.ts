@@ -25,6 +25,17 @@ export function codeRanges(value: string): CodeRange[] {
   return ranges;
 }
 
+/** A single editor font stays aligned with the caret when the draft consists entirely of code blocks. */
+export function isCodeOnly(value: string): boolean {
+  const ranges = codeRanges(value);
+  let end = 0;
+  for (const range of ranges) {
+    if (value.slice(end, range.from).trim()) return false;
+    end = range.to;
+  }
+  return ranges.length > 0 && !value.slice(end).trim();
+}
+
 /** Only the third typed backtick on a fresh line completes a block; paste and closing fences keep their text. */
 export function completeCodeFence(previous: string, value: string, caret: number): CodeEdit | null {
   if (caret < 3 || value.length !== previous.length + 1 || value[caret - 1] !== '`'

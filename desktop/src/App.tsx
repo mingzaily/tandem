@@ -83,7 +83,7 @@ import {
 import { describeUsage, selectedModel, sessionPermissionMode, taskPreferences, usageExpired, titleOptions, turnOptions, type PermissionMode, type TurnPrefs } from './lib/composerStatus';
 import type { ModelReadState } from './lib/modelEffort';
 import { t } from './lib/i18n';
-import { clearTaskPreviews, taskListWithPreviews, type TaskPreviews } from './lib/taskList';
+import { clearTaskPreviews, recordTaskActivity, recordedTaskActivity, retainTaskTimes, taskListWithPreviews, type TaskActivity, type TaskPreviews } from './lib/taskList';
 import { attentionTaskCount, shouldMarkUnread } from './lib/notifications';
 import { emptyRateHistory, recordSpeed, type RateHistory } from './lib/tokenRate';
 import { deriveInputHistory } from './lib/recallInput';
@@ -141,7 +141,11 @@ const PendingQueuePanel = lazy(() => import('./components/PendingQueuePanel').th
 
 type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings'; tab?: 'remote' };
 type Notice = { text: string; isError: boolean };
-type TurnProgress = { startedAt: number; outputTokens: number; activity: number; rate: RateHistory };
+type TurnProgress = {
+  startedAt: number; outputTokens: number; activity: number; rate: RateHistory;
+  /** Claude's background tasks; while `idle` the agent waits for them and takes new messages. */
+  background?: { tasks: number; idle: boolean };
+};
 type QueueEdit = { taskId: string; entry: QueuedMessage; owner: string };
 
 export function App() {
@@ -149,6 +153,10 @@ export function App() {
   const [codexTasks, setCodexTasks] = useState<TaskSummary[]>([]);
   const [piTasks, setPiTasks] = useState<TaskSummary[]>([]);
   const [taskPreviews, setTaskPreviews] = useState<TaskPreviews>({});
+  const [taskActivity, setTaskActivity] = useState<TaskActivity>({});
+  const touchListTask = useCallback((id: string, at = Date.now()) => {
+    setTaskActivity((current) => recordTaskActivity(current, id, at));
+  }, []);
   const lastCodexList = useRef(0);
   // A CLI the user drives elsewhere can stay out of the lists; its login, MCP and skills still show.
   const [sessionModes, setSessionModes] = useState<Record<string, PermissionMode>>({});
@@ -165,8 +173,8 @@ export function App() {
     [claudeTasks, codexTasks, piTasks, hiddenAgents],
   );
   const sidebarTasks = useMemo(
-    () => taskListWithPreviews(tasks ?? [], taskPreviews).filter((task) => !hiddenAgents.includes(task.agent)),
-    [tasks, taskPreviews, hiddenAgents],
+    () => taskListWithPreviews(tasks ?? [], taskPreviews, taskActivity).filter((task) => !hiddenAgents.includes(task.agent)),
+    [tasks, taskPreviews, taskActivity, hiddenAgents],
   );
   const pendingTaskIds = useMemo(() => new Set(Object.keys(taskPreviews)), [taskPreviews]);
   useEffect(() => {
@@ -191,6 +199,7 @@ export function App() {
   const [extraProjects, setExtraProjects] = useState(loadExtraProjects);
   const [projectOrder, setProjectOrder] = useState(loadProjectOrder);
   const [pinnedProjects, setPinnedProjects] = useState(() => preferencesSnapshot().state.pinnedProjects);
+  const [collapsedSidebarGroups, setCollapsedSidebarGroups] = useState(() => preferencesSnapshot().state.collapsedSidebarGroups);
   const [unreadTasks, setUnreadTasks] = useState(() => preferencesSnapshot().state.unreadTasks);
   const changeUnread = useCallback((change: (current: string[]) => string[]) => {
     setUnreadTasks((current) => {
@@ -249,6 +258,13 @@ export function App() {
   const [queuesLoaded, setQueuesLoaded] = useState(false);
   const queueListening = useRef<Promise<unknown>>(Promise.resolve());
   const [queues, setQueues] = useState<Record<string, TaskQueue>>({});
+  const queuesRef = useRef(queues);
+  queuesRef.current = queues;
+  /** Hands the next queued message to an agent that is idle while its background tasks run. */
+  const handOverQueue = useRef<(taskId: string) => void>(() => undefined);
+  const handingOver = useRef(new Set<string>());
+  /** Entries already handed over; a render can still show one before its removal arrives. */
+  const handedOver = useRef(new Set<string>());
   const [queueEdit, setQueueEdit] = useState<QueueEdit | null>(null);
   const queueEditRef = useRef<QueueEdit | null>(null);
   const turnGenerations = useRef(new Map<string, string>());
@@ -280,7 +296,7 @@ export function App() {
     lastCodexList.current = Date.now();
     const { projects, conversations } = scanRoots.current;
     const job = listCodexTasks(projects, conversations).then((next) => {
-      setCodexTasks(next);
+      setCodexTasks((current) => retainTaskTimes(current, next));
       return null;
     }).catch((error) => {
       console.error(error);
@@ -299,7 +315,7 @@ export function App() {
       const hidden = hiddenAgentsRef.current;
       const errors = await Promise.all([
         hidden.includes('claude') ? Promise.resolve(setClaudeTasks([])).then(() => null) : listTasks([...projects, ...conversations]).then((next) => {
-          setClaudeTasks(next);
+          setClaudeTasks((current) => retainTaskTimes(current ?? [], next));
           return null;
         }).catch((error) => {
           setClaudeTasks((current) => current ?? []);
@@ -307,7 +323,7 @@ export function App() {
           return `Claude Code: ${error}`;
         }),
         hidden.includes('pi') ? Promise.resolve(setPiTasks([])).then(() => null) : listPiTasks(projects, conversations).then((next) => {
-          setPiTasks(next);
+          setPiTasks((current) => retainTaskTimes(current, next));
           return null;
         }).catch((error) => {
           console.error(error);
@@ -324,6 +340,8 @@ export function App() {
     try {
       const { messages, context, permissionMode, modelSelection } = await readTask(agent, id);
       if (!currentTurn()) return;
+      const recordedAt = recordedTaskActivity(messages);
+      if (recordedAt > 0) touchListTask(id, recordedAt);
       setNativeModels((current) => ({ ...current, [id]: modelSelection ?? null }));
       const mode = sessionPermissionMode(permissionMode);
       if (mode) setSessionModes((current) => current[id] === mode ? current : { ...current, [id]: mode });
@@ -338,7 +356,7 @@ export function App() {
     } finally {
       if (selectedIdRef.current === id && currentTurn()) setLoadedId(id);
     }
-  }, []);
+  }, [touchListTask]);
 
   const [defaultConversationRoot, setDefaultConversationRoot] = useState('');
   const conversationRoots = useMemo(
@@ -557,6 +575,7 @@ export function App() {
             return next;
           });
           const startedAt = Date.now();
+          touchListTask(id, startedAt);
           setProgress((current) => ({
             ...current,
             [id]: { startedAt, outputTokens: 0, activity: 0, rate: emptyRateHistory() },
@@ -564,6 +583,7 @@ export function App() {
           // A turn sent from a phone reaches this window at its first event.
           setLive((current) => ({ ...current, [id]: [userItem] }));
           turnAppenders.current.set(id, (item) => {
+            if (item.type === 'user') touchListTask(id);
             streamed = [...streamed, item];
             setLive((current) => ({ ...current, [id]: streamed }));
           });
@@ -631,6 +651,14 @@ export function App() {
           });
           return;
         }
+        if (event.type === 'background') {
+          setProgress((current) => {
+            const turn = current[id];
+            return turn ? { ...current, [id]: { ...turn, background: { tasks: event.tasks, idle: event.idle } } } : current;
+          });
+          if (event.idle && event.tasks > 0) handOverQueue.current(id);
+          return;
+        }
         if (event.type === 'generationSpeed') {
           setProgress((current) => {
             const turn = current[id];
@@ -654,6 +682,7 @@ export function App() {
         }
         if (event.type === 'outputTokens') return;
         if (event.type === 'finished') {
+          touchListTask(id);
           ended = true;
           turnAppenders.current.delete(id);
           if (Date.now() - usageReadAt.current[agent] >= USAGE_STALE_MS) void refreshInfo(agent);
@@ -688,7 +717,7 @@ export function App() {
       };
       return { onEvent, taskId: () => taskId };
     },
-    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn, changeUnread, refreshInfo],
+    [setSelection, notifyIfAway, loadHistory, refreshTasks, settleRequest, clearTurn, changeUnread, refreshInfo, touchListTask],
   );
 
   // Turns started from a phone show here too, each with its own handler until it finishes.
@@ -738,6 +767,7 @@ export function App() {
       setExtraProjects(loadExtraProjects());
       setProjectOrder(loadProjectOrder());
       setPinnedProjects(preferencesSnapshot().state.pinnedProjects);
+      setCollapsedSidebarGroups(preferencesSnapshot().state.collapsedSidebarGroups);
       setUnreadTasks(preferencesSnapshot().state.unreadTasks);
       setSidebarOptions({ groupByCli: preferencesSnapshot().config.sidebar_group_by_cli, sort: preferencesSnapshot().config.sidebar_sort });
       setHiddenAgents(preferencesSnapshot().config.hidden_task_agents ?? []);
@@ -804,7 +834,8 @@ export function App() {
         // While a turn runs, the send key queues the message and the other shortcut adds it to the
         // running turn, as in the reference and Codex App.
         const appendToTurn = turnAppenders.current.get(selection.id);
-        if (appendToTurn && alternate) {
+        // An agent waiting on background tasks has finished its reply, so the message goes straight in.
+        if (appendToTurn && (alternate || progress[selection.id]?.background?.idle)) {
           try {
             await steerTurn(selectedAgent, selection.id, prompt, attachments);
             const added = userItemFor(prompt, attachments, `live-user-${crypto.randomUUID()}`);
@@ -826,6 +857,7 @@ export function App() {
           return next;
         });
         updateQueue(await enqueueTurn(selectedAgent, selection.id, prompt, attachments, options));
+        touchListTask(selection.id);
       } else if (selection.cwd === CONVERSATION_CWD) {
         setNewTaskError(null);
         const cwd = await createConversationDir(settings.conversationDir);
@@ -834,7 +866,7 @@ export function App() {
         startNewTurn(prompt, attachments, selection.cwd);
       }
     },
-    [selection, settings.conversationDir, startNewTurn, prefs, info.models, selectedAgent, overriddenWriters, updateQueue],
+    [selection, settings.conversationDir, startNewTurn, prefs, info.models, selectedAgent, overriddenWriters, updateQueue, progress, touchListTask],
   );
   /** A queued message moved into the running turn, or, with none running, sent first and resumed. */
   const steerQueued = async (taskId: string, entry: QueuedMessage) => {
@@ -852,6 +884,16 @@ export function App() {
     }
     updateQueue(await reorderQueuedTurn(taskId, entry.id, 0));
     updateQueue(await resumeQueue(taskId));
+  };
+  handOverQueue.current = (taskId) => {
+    const queue = queuesRef.current[taskId];
+    const head = queue && !queue.paused ? queue.entries[0] : undefined;
+    if (!head || queueEditRef.current?.taskId === taskId || handingOver.current.has(taskId) || handedOver.current.has(head.id)) return;
+    handingOver.current.add(taskId);
+    handedOver.current.add(head.id);
+    void steerQueued(taskId, head)
+      .catch((error) => setNotices((current) => ({ ...current, [taskId]: { text: t('queueFailed', { error: String(error) }), isError: true } })))
+      .finally(() => handingOver.current.delete(taskId));
   };
   steerFallback.current = (agent, taskId, prompt) => {
     enqueueTurn(agent, taskId, prompt, [], turnOptions(taskPreferences(allPrefs[agent], nativeModels[taskId], chosenPrefs[taskId], sessionModes[taskId]), infos[agent].models))
@@ -942,7 +984,14 @@ export function App() {
   const isRunning = selectedId ? running.has(selectedId) : false;
   const selectedPending = selectedId ? pending[selectedId]?.[0] : undefined;
   const taskCwd = selectedTask?.cwd ?? (selectedId ? newTaskCwds[selectedId] : null) ?? null;
+  // A message queued while the agent is already idle (from a phone, say) goes in too.
+  useEffect(() => {
+    for (const [taskId, turn] of Object.entries(progress)) {
+      if (turn.background?.idle && turn.background.tasks > 0 && queues[taskId]?.entries.length) handOverQueue.current(taskId);
+    }
+  }, [progress, queues]);
   const selectedProgress = selectedId ? progress[selectedId] : undefined;
+  const backgroundIdle = Boolean(selectedProgress?.background?.idle);
   const liveItems = selectedId ? live[selectedId] : undefined;
   const selectedContext = selectedId ? contexts[selectedId] : undefined;
   const contextWindow = selectedContext?.model ? contextWindows[selectedContext.model] : undefined;
@@ -1112,11 +1161,19 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [selectedId, selectedAgent, isOpenElsewhere, loadHistory]);
 
-  // The menu bar lists what is running here and elsewhere, and the plan left for each agent.
+  // One minute clock drives sidebar ages and the plan-usage windows in the menu bar.
   const [usageClock, setUsageClock] = useState(() => Date.now());
   useEffect(() => {
-    const timer = window.setInterval(() => setUsageClock(Date.now()), 60_000);
-    return () => window.clearInterval(timer);
+    const tick = () => setUsageClock(Date.now());
+    const visible = () => { if (!document.hidden) tick(); };
+    const timer = window.setInterval(tick, 60_000);
+    window.addEventListener('focus', tick);
+    document.addEventListener('visibilitychange', visible);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', tick);
+      document.removeEventListener('visibilitychange', visible);
+    };
   }, []);
   const summaryForTray = useMemo((): TraySummary => {
     const busyElsewhere = writers.filter((writer) => writer.isBusy).map((writer) => writer.taskId);
@@ -1346,6 +1403,7 @@ export function App() {
       {sidebarCollapsed ? null : (
         <Sidebar
           tasks={sidebarTasks}
+          now={usageClock}
           pendingTaskIds={pendingTaskIds}
           loaded={tasks !== null}
           selectedId={selectedId}
@@ -1362,6 +1420,8 @@ export function App() {
           generatingTitles={generatingTitles}
           onGenerateTitle={(task) => void generateTitle(task.agent, task.id)}
           onPinnedProjectsChange={(paths) => { setPinnedProjects(paths); saveViewState({ pinnedProjects: paths }); }}
+          collapsedGroups={collapsedSidebarGroups}
+          onCollapsedGroupsChange={(keys) => { setCollapsedSidebarGroups(keys); saveViewState({ collapsedSidebarGroups: keys }); }}
           projectOrder={projectOrder}
           onProjectOrderChange={(order) => {
             setProjectOrder(order);
@@ -1439,7 +1499,9 @@ export function App() {
             {isRunning && selectedProgress ? (
               <RunningStatus
                 {...remoteStatus}
-                status={turnStatus(liveItems ?? [], selectedPending !== undefined)}
+                status={selectedProgress.background?.idle && selectedPending === undefined
+                  ? { key: 'statusBackground', tasks: selectedProgress.background.tasks }
+                  : turnStatus(liveItems ?? [], selectedPending !== undefined)}
                 startedAt={selectedProgress.startedAt}
                 outputTokens={selectedProgress.outputTokens}
                 rate={selectedProgress.rate}
@@ -1478,9 +1540,9 @@ export function App() {
                 inputHistory={composerInputHistory.current}
                 running={isRunning}
                 // A paused queue does not hold back a new message: with nothing running it is sent at once.
-                queueing={isRunning || Boolean(selectedQueue?.entries.length && !selectedQueue.paused)}
+                queueing={(isRunning && !backgroundIdle) || Boolean(selectedQueue?.entries.length && !selectedQueue.paused)}
                 disabled={isHeldByWriter || !queuesLoaded}
-                placeholder={isRunning
+                placeholder={isRunning && !backgroundIdle
                   ? t('placeholderQueue', settings.sendWithCmdEnter ? { send: '⌘↵', key: '⇧⌘↵' } : { send: '↵', key: '⌘↵' })
                   : t('placeholderContinue')}
                 sendWithCmdEnter={settings.sendWithCmdEnter}
@@ -1504,6 +1566,7 @@ export function App() {
                 ) : null}
                 onSend={send}
                 onStop={() => void cancelTurn(selectedId).catch((error) => setNotices((current) => ({ ...current, [selectedId]: { text: String(error), isError: true } })))}
+                stopLabel={selectedProgress?.background?.tasks ? t('stopBackground') : undefined}
               />
             </div>
             <ComposerFooter

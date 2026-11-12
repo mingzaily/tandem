@@ -38,6 +38,12 @@ describe('running tool status', () => {
     expect(html).not.toContain('private arguments');
   });
 
+  it('says the agent waits on background tasks instead of looking busy with a reply', () => {
+    const html = renderToStaticMarkup(<RunningStatus {...props} status={{ key: 'statusBackground', tasks: 2 }} />);
+    expect(html).toContain('后台任务运行中 · 2 个');
+    expect(html).not.toContain('正在思考…');
+  });
+
   it('keeps the generic calling label when the CLI gives no name', () => {
     const html = renderToStaticMarkup(<RunningStatus {...props} status={turnStatus(tool(''), false)} />);
     expect(html).toContain('正在调用工具…');

@@ -1,10 +1,10 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Check, ChevronDown, ChevronRight, CirclePause, FileText, ImageOff, Layers, Loader2, Sparkles, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, CirclePause, CircleHelp, FileText, ImageOff, Layers, Loader2, Sparkles, X } from 'lucide-react';
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
 import type { Agent } from '../lib/api';
 import type { Item, Row, TextItem, ToolItem, WorkGroup } from '../lib/items';
-import { completedReplyIds, visibleWorkItems } from '../lib/items';
+import { completedReplyIds, visibleWorkItems, workGroupDefaultOpen } from '../lib/items';
 import { buildMessageRows } from '../lib/fileChanges';
 import { describeTool, formatDuration } from '../lib/tools';
 import { ZoomableImage } from './ImageLightbox';
@@ -103,15 +103,19 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
               key={virtualRow.key}
               data-index={virtualRow.index}
               ref={virtualizer.measureElement}
-              className="absolute left-0 top-0 w-full"
-              style={{ transform: `translateY(${virtualRow.start}px)` }}
+              className="absolute left-0 w-full"
+              style={{ top: virtualRow.start }}
             >
               <div
                 className={`message-column ${
                   row.type === 'user' ? 'pb-2 pt-5' : 'py-1'
                 }`}
               >
-                {row.type === 'changes' ? (
+                {row.type === 'reply' ? (
+                  <AssistantReply text={row.text} at={row.at} copyable={copyableReplies.has(row.id)}>
+                    <FileChangeSummary summary={row.changes} cwd={cwd} expanded={expanded.get(row.changes.id) ?? false} onToggle={() => toggle(row.changes.id)} />
+                  </AssistantReply>
+                ) : row.type === 'changes' ? (
                   <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.get(row.id) ?? false} onToggle={() => toggle(row.id)} />
                 ) : row.type === 'group' ? (
                   <Group group={row} expanded={expanded} onToggle={toggle} />
@@ -135,9 +139,11 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
 interface RowProps {
   expanded: Map<string, boolean>;
   onToggle: Toggle;
+  /** False for work restored without a final reply; missing tool results stay static. */
+  active?: boolean;
 }
 
-function ItemRow({ item, expanded, onToggle, copyable = false }: RowProps & { item: Item; copyable?: boolean }) {
+function ItemRow({ item, expanded, onToggle, copyable = false, active = true }: RowProps & { item: Item; copyable?: boolean }) {
   switch (item.type) {
     case 'user':
       return (
@@ -200,18 +206,23 @@ function ItemRow({ item, expanded, onToggle, copyable = false }: RowProps & { it
     case 'thinking':
       return <ThinkingRow item={item} isOpen={expanded.get(item.id) ?? false} onToggle={onToggle} />;
     case 'tool':
-      return <ToolRow item={item} isOpen={expanded.get(item.id) ?? false} onToggle={onToggle} />;
+      return <ToolRow item={item} isOpen={expanded.get(item.id) ?? false} onToggle={onToggle} active={active} />;
   }
 }
 
-export function Group({ group, expanded, onToggle }: RowProps & { group: WorkGroup }) {
+function workGroupLabel(group: WorkGroup): string {
+  if (group.isRunning) return t('workRunning');
+  if (group.durationMs === null) return t('workDetails');
+  const key = group.hasFinalReply === false ? 'workRecorded' : group.isSummary ? 'processed' : 'worked';
+  return t(key, { duration: formatDuration(group.durationMs) });
+}
+
+export function Group({ group, expanded, onToggle, active = true }: RowProps & { group: WorkGroup }) {
   const choice = expanded.get(group.id);
-  const defaultOpen = group.preview ?? group.isRunning;
+  const defaultOpen = workGroupDefaultOpen(group);
   const isOpen = choice ?? defaultOpen;
   const visible = visibleWorkItems(group, choice);
-  const base = group.isRunning ? t('workRunning') : group.durationMs !== null
-    ? t(group.isSummary ? 'processed' : 'worked', { duration: formatDuration(group.durationMs) })
-    : t('workDetails');
+  const base = workGroupLabel(group);
   return (
     <div className="w-full min-w-0">
       <button
@@ -236,24 +247,24 @@ export function Group({ group, expanded, onToggle }: RowProps & { group: WorkGro
       </button>
       {visible.length ? (
         <div className="mt-1 flex min-w-0 flex-col gap-0.5 border-l-2 border-[var(--agent-actions-rail)] py-[2px] pl-3">
-          <WorkChildren rows={visible} expanded={expanded} onToggle={onToggle} />
+          <WorkChildren rows={visible} expanded={expanded} onToggle={onToggle} active={active && group.hasFinalReply !== false} />
         </div>
       ) : null}
     </div>
   );
 }
 
-function WorkChildren({ rows, expanded, onToggle }: RowProps & { rows: Row[] }) {
+function WorkChildren({ rows, expanded, onToggle, active }: RowProps & { rows: Row[] }) {
   const scroller = useRef<HTMLDivElement>(null);
   const virtualized = rows.length > 80;
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scroller.current, estimateSize: () => 36, enabled: virtualized, overscan: 5, getItemKey: (index) => rows[index].id });
   const render = (row: Row) => row.type === 'group'
-    ? <Group key={row.id} group={row} expanded={expanded} onToggle={onToggle} />
-    : <ItemRow key={row.id} item={row} expanded={expanded} onToggle={onToggle} />;
+    ? <Group key={row.id} group={row} expanded={expanded} onToggle={onToggle} active={active} />
+    : <ItemRow key={row.id} item={row} expanded={expanded} onToggle={onToggle} active={active} />;
   if (!virtualized) return <>{rows.map(render)}</>;
   return <div ref={scroller} className="h-[420px] overflow-y-auto overscroll-contain">
     <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
-      {virtual.getVirtualItems().map((row) => <div key={row.key} data-index={row.index} ref={virtual.measureElement} className="absolute left-0 top-0 w-full" style={{ transform: `translateY(${row.start}px)` }}>{render(rows[row.index])}</div>)}
+      {virtual.getVirtualItems().map((row) => <div key={row.key} data-index={row.index} ref={virtual.measureElement} className="absolute left-0 w-full" style={{ top: row.start }}>{render(rows[row.index])}</div>)}
     </div>
   </div>;
 }
@@ -284,10 +295,10 @@ function ThinkingRow({ item, isOpen, onToggle }: { item: TextItem; isOpen: boole
   );
 }
 
-function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; onToggle: Toggle }) {
+function ToolRow({ item, isOpen, onToggle, active }: { item: ToolItem; isOpen: boolean; onToggle: Toggle; active: boolean }) {
   const display = useMemo(() => describeTool(item), [item]);
   const isDone = item.result !== null;
-  const status = !isDone ? t('running') : item.isError ? t('failed') : t('done');
+  const status = !isDone ? t(active ? 'running' : 'toolNoResult') : item.isError ? t('failed') : t('done');
   return (
     <div className="w-full min-w-0">
       <button type="button" aria-expanded={isOpen} onClick={() => onToggle(item.id)} className={ACTIVITY_ROW}>
@@ -296,7 +307,7 @@ function ToolRow({ item, isOpen, onToggle }: { item: ToolItem; isOpen: boolean; 
           aria-label={status}
           className={`${WORK_ICON_SLOT} ${item.isError ? 'text-[var(--text-danger)]' : 'text-[var(--msg-tool-card-chevron)]'}`}
         >
-          {!isDone ? (
+          {!isDone && !active ? <CircleHelp size={13} /> : !isDone ? (
             <Loader2 size={13} className="animate-spin motion-reduce:animate-none" />
           ) : item.isError ? (
             <X size={13} />

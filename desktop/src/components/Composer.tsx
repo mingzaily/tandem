@@ -1,5 +1,5 @@
 import { ArrowUp, FileText, ListPlus, Plus, Square, X } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   addPastedImage,
   onAttachmentDrag,
@@ -15,10 +15,11 @@ import { canRestoreComposerFocus, isComposerBlankTarget } from '../lib/composerF
 import { ZoomableImage } from './ImageLightbox';
 import { isImeKey } from '../lib/ime';
 import { continueList } from '../lib/listContinuation';
-import { completeCodeFence, codeKeyEdit, type CodeEdit } from '../lib/fencedCode';
+import { completeCodeFence, codeKeyEdit, isCodeOnly, type CodeEdit } from '../lib/fencedCode';
 import { CodeFenceBackdrop } from './CodeFenceBackdrop';
 import { useComposerResize } from '../lib/useComposerResize';
 import { browseInputHistory, inputHistoryDirection, type InputHistoryNavigation } from '../lib/recallInput';
+import { revealTextareaCaret } from '../lib/textareaLayout';
 
 const MAX_HEIGHT_PX = 240;
 const ACTION_BUTTON =
@@ -66,6 +67,8 @@ interface ComposerProps {
   /** `alternate` is the second shortcut: while a turn runs it picks the other of adding to it and queueing. */
   onSend: (prompt: string, attachments: Attachment[], alternate?: boolean) => void | Promise<void>;
   onStop: () => void;
+  /** What stopping ends, when it is more than the reply being written. */
+  stopLabel?: string;
 }
 
 export function Composer({
@@ -86,6 +89,7 @@ export function Composer({
   onCancelEdit,
   onSend,
   onStop,
+  stopLabel = t('stop'),
 }: ComposerProps) {
   const [value, setValue] = useState(() => drafts.get(draftKey)?.value ?? '');
   const [attachments, setAttachments] = useState<Attachment[]>(() => drafts.get(draftKey)?.attachments ?? []);
@@ -104,11 +108,12 @@ export function Composer({
   const textarea = useRef<HTMLTextAreaElement>(null);
   const inputArea = useRef<HTMLDivElement>(null);
   const resize = useComposerResize(inputArea, draftKey, variant);
-  /** Where the caret goes once a list continuation has been rendered. */
-  const pendingCaret = useRef<number | null>(null);
+  /** Programmatic edits restore the viewport and caret after the final height is measured. */
+  const pendingCaret = useRef<{ at: number; scrollTop: number } | null>(null);
   const restoreFocus = useRef(false);
   const historyNavigation = useRef<InputHistoryNavigation | null>(null);
   const text = editing ? editValue : value;
+  const codeOnly = useMemo(() => isCodeOnly(text), [text]);
   const displayedAttachments = editing ? editAttachments : attachments;
   const canSend = (text.trim().length > 0 || displayedAttachments.length > 0) && !disabled && !submitting && addingAttachments === 0;
 
@@ -120,12 +125,6 @@ export function Composer({
     document.addEventListener('pointerdown', cancelRestore, true);
     return () => document.removeEventListener('pointerdown', cancelRestore, true);
   }, []);
-
-  useLayoutEffect(() => {
-    if (pendingCaret.current === null) return;
-    textarea.current?.setSelectionRange(pendingCaret.current, pendingCaret.current);
-    pendingCaret.current = null;
-  }, [text]);
 
   useLayoutEffect(() => {
     if (submitting || !restoreFocus.current) return;
@@ -224,14 +223,30 @@ export function Composer({
   useLayoutEffect(() => {
     const element = textarea.current;
     if (!element) return;
-    if (resize.height !== null) { element.style.height = '100%'; return; }
-    element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT_PX)}px`;
+    const pending = pendingCaret.current;
+    const scrollTop = pending?.scrollTop ?? element.scrollTop;
+    if (resize.height !== null) element.style.height = '100%';
+    else {
+      element.style.height = 'auto';
+      element.style.height = `${Math.min(element.scrollHeight, MAX_HEIGHT_PX)}px`;
+    }
+    if (pending) element.setSelectionRange(pending.at, pending.at);
+    element.scrollTop = scrollTop;
+    if (pending) revealTextareaCaret(element, pending.at);
+    pendingCaret.current = null;
   }, [text, resize.height]);
 
   const applyEdit = (edit: CodeEdit) => {
     historyNavigation.current = null;
-    pendingCaret.current = edit.caret;
+    const element = textarea.current;
+    const scrollTop = element?.scrollTop ?? 0;
+    if (edit.value === text && element) {
+      element.setSelectionRange(edit.caret, edit.caret);
+      element.scrollTop = scrollTop;
+      revealTextareaCaret(element, edit.caret);
+      return;
+    }
+    pendingCaret.current = { at: edit.caret, scrollTop };
     if (editing) setEditValue(edit.value);
     else setValue(edit.value);
   };
@@ -263,7 +278,6 @@ export function Composer({
     >
       <div role="separator" tabIndex={0} aria-orientation="horizontal" aria-label={t('composerResize')}
         aria-valuemin={resize.range.min + 2} aria-valuemax={resize.range.max + 2} aria-valuenow={(resize.height ?? inputArea.current?.offsetHeight ?? resize.range.min) + 2}
-        data-tooltip={t('composerResizeHint')}
         onPointerDown={resize.start} onDoubleClick={() => resize.resize(null)}
         onKeyDown={(event) => {
           if (isImeKey(event) || event.metaKey || event.ctrlKey || event.altKey) return;
@@ -272,7 +286,7 @@ export function Composer({
           else if (event.key === 'Home') { event.preventDefault(); resize.resize(null); }
           else if (event.key === 'End') { event.preventDefault(); resize.resize(resize.range.max); }
         }}
-        className="composer-resize-handle absolute inset-x-0 top-0 z-10 h-1.5 cursor-ns-resize touch-none outline-none focus-visible:bg-[var(--focus-ring-soft)]" />
+        className="absolute inset-x-0 top-0 z-10 h-1.5 cursor-ns-resize touch-none outline-none focus-visible:bg-[var(--focus-ring-soft)]" />
       {queuePanel}
       {/* Two shared border pixels complete the card's 112/140px minimum. */}
       <div
@@ -325,7 +339,7 @@ export function Composer({
             ))}
           </div>
         ) : null}
-        <div data-composer-editor className={`relative min-h-[52px] ${resize.height === null ? '' : 'flex-1'}`}>
+        <div data-composer-editor className={`relative min-h-[52px] ${resize.height === null ? '' : 'flex-1'} ${codeOnly ? 'composer-code-only' : ''}`}>
         <CodeFenceBackdrop value={text} editor={textarea} />
         <textarea
           ref={textarea}
@@ -361,7 +375,7 @@ export function Composer({
               if (next) {
                 event.preventDefault();
                 historyNavigation.current = next.navigation;
-                pendingCaret.current = next.value.length;
+                pendingCaret.current = { at: next.value.length, scrollTop: box.scrollTop };
                 if (next.value === text) {
                   box.setSelectionRange(next.value.length, next.value.length);
                   pendingCaret.current = null;
@@ -370,12 +384,14 @@ export function Composer({
                 return;
               }
             }
-            if (!event.metaKey && !event.ctrlKey && !event.altKey && !(event.key === 'Tab' && event.shiftKey)) {
-              const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, event.key);
-              if (edit) { event.preventDefault(); applyEdit(edit); return; }
+            if (event.key !== 'Enter') {
+              if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+                const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, event.key);
+                if (edit) { event.preventDefault(); applyEdit(edit); }
+              }
+              return;
             }
-            if (event.key !== 'Enter') return;
-            // The send shortcut, and the same with ⌘ (or ⇧ when ⌘ already sends) for the other way to send.
+            // Resolve sending before code editing so the shortcut applies throughout the draft.
             const primary = sendWithCmdEnter ? event.metaKey && !event.shiftKey : !event.shiftKey && !event.metaKey;
             const alternate = sendWithCmdEnter ? event.metaKey && event.shiftKey : event.metaKey && !event.shiftKey;
             if (primary || alternate) {
@@ -383,7 +399,11 @@ export function Composer({
               void submit(alternate);
               return;
             }
-            // Any other Enter is a newline, which carries a typed list on to its next item.
+            if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+              const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, 'Enter');
+              if (edit) { event.preventDefault(); applyEdit(edit); return; }
+            }
+            // Newline shortcuts carry a typed list on to its next item.
             if (box.selectionStart !== box.selectionEnd) return;
             const edit = continueList(box.value, box.selectionStart);
             if (!edit) return;
@@ -419,7 +439,7 @@ export function Composer({
               if (event.button === 0 && document.activeElement === textarea.current) event.preventDefault();
             }}>
               {running ? (
-                <button type="button" aria-label={t('stop')} data-tooltip={t('stop')} onClick={onStop} className={SEND_BUTTON}>
+                <button type="button" aria-label={stopLabel} data-tooltip={stopLabel} onClick={onStop} className={SEND_BUTTON}>
                   <Square size={11} fill="currentColor" aria-hidden />
                 </button>
               ) : null}

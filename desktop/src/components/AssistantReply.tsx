@@ -1,10 +1,10 @@
 import { Check, Copy } from 'lucide-react';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { currentLanguage, t } from '../lib/i18n';
 import { Markdown } from './Markdown';
 
 /** A completed reply's footer aligns the copy glyph and record time with its body. */
-export function AssistantReply({ text, copyable, at }: { text: string; copyable: boolean; at?: number }) {
+export function AssistantReply({ text, copyable, at, children }: { text: string; copyable: boolean; at?: number; children?: ReactNode }) {
   const date = at === undefined ? null : new Date(at);
   const time = date && Number.isFinite(date.getTime()) ? date : null;
   const locale = currentLanguage() === 'zh' ? 'zh-CN' : 'en-GB';
@@ -29,6 +29,7 @@ export function AssistantReply({ text, copyable, at }: { text: string; copyable:
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setCopyState('ready');
       }}>
       <Markdown text={text} />
+      {children}
       {copyable ? (
         <div data-reply-actions className="reply-actions -ml-[5px] flex h-6 items-center gap-2">
           <button type="button" aria-label={t('messageCopy')} data-tooltip={label}

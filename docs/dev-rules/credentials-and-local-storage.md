@@ -84,7 +84,7 @@
 
 ## 侧栏偏好
 
-`config.toml` 的 `sidebar_group_by_cli` 保存项目内 CLI 分组开关，`sidebar_sort` 使用 `time`、`type` 或 `priority`。`hidden_task_agents` 列出不在任务列表里显示的 CLI（`claude`、`codex`、`pi`），桌面和手机端都不扫描它们的会话。`state.json` 的 `pinnedProjects` 保存置顶项目，`unreadTasks` 保存完成未读的任务（新的在前，最多 200 个；当前打开的任务在窗口后台完成时也计入，窗口在前台查看该任务时移除）；任务置顶继续使用 `taskMeta.pins`，项目手工顺序继续使用 `projectOrder`。工作组展开记忆只保留在应用内存。
+`config.toml` 的 `sidebar_group_by_cli` 保存项目内 CLI 分组开关，`sidebar_sort` 使用 `time`、`type` 或 `priority`。`hidden_task_agents` 列出不在任务列表里显示的 CLI（`claude`、`codex`、`pi`），桌面和手机端都不扫描它们的会话。`state.json` 的 `pinnedProjects` 保存置顶项目，`unreadTasks` 保存完成未读的任务（新的在前，最多 200 个；当前打开的任务在窗口后台完成时也计入，窗口在前台查看该任务时移除）；任务置顶继续使用 `taskMeta.pins`，项目手工顺序继续使用 `projectOrder`。`collapsedSidebarGroups` 保存用户手动收起的项目、“对话”和项目内 CLI 分组键，首次绘制前从状态快照恢复；单组与全部收起/展开都使用正常的原子状态保存。搜索结果临时展开，清除搜索后恢复保存的折叠选择；选中任务、任务运行、排序、置顶和切换 CLI 分组方式保持该选择。新项目及旧文件中缺少该字段的分组默认展开。工作过程分组的展开记忆继续只保留在应用内存。
 
 角标复用未读任务与等待确认集合，计数只在运行内存中，沿用 `notify_when_done` 控制 App 提醒与角标。系统授权和“标记”开关由 macOS 保存；Tandem 查询并遵循系统状态，原生授权信息保持在系统内。
 

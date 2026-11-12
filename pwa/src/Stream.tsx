@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   CirclePause,
   CircleAlert,
+  CircleHelp,
   Check,
   ChevronRight,
   FileText,
@@ -12,7 +13,7 @@ import {
   Terminal,
   X,
 } from 'lucide-react';
-import { buildRows, visibleWorkItems, type Item, type Row } from './lib/items';
+import { buildRows, visibleWorkItems, workGroupDefaultOpen, type Item, type Row } from './lib/items';
 import { t } from './lib/i18n';
 import { toolPresentation } from './lib/tools';
 const Markdown = lazy(() => import('./Markdown').then((m) => ({ default: m.Markdown })));
@@ -94,8 +95,15 @@ export default function Stream({
   );
 }
 
-function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, boolean>; toggle: Toggle }) {
-  const open = expanded.get(item.id) ?? (item.type === 'group' && item.isRunning);
+function workGroupLabel(group: Extract<Row, { type: 'group' }>): string {
+  if (group.isRunning) return t('workRunning');
+  if (group.durationMs === null) return t('workDetails');
+  const key = group.hasFinalReply === false ? 'workRecorded' : group.isSummary ? 'processed' : 'worked';
+  return t(key).replace('{duration}', duration(group.durationMs));
+}
+
+function ItemRow({ item, expanded, toggle, active = true }: { item: Row; expanded: Map<string, boolean>; toggle: Toggle; active?: boolean }) {
+  const open = expanded.get(item.id) ?? (item.type === 'group' && workGroupDefaultOpen(item));
   switch (item.type) {
     case 'user':
       return (
@@ -120,10 +128,20 @@ function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, 
         </div>
       );
     case 'error':
-      return <div className="reply-error">
-        <div><CircleAlert size={14} aria-hidden /><span>{t('replyFailed')}</span></div>
-        {item.text ? <details><summary>{t('showDetails')}</summary><pre>{item.text}</pre></details> : null}
-      </div>;
+      return (
+        <div className="reply-error">
+          <CircleAlert size={16} aria-hidden />
+          <div>
+            <p>{t('replyFailed')}</p>
+            {item.text ? (
+              <details>
+                <summary><ChevronRight size={12} aria-hidden />{t('showDetails')}</summary>
+                <pre>{item.text}</pre>
+              </details>
+            ) : null}
+          </div>
+        </div>
+      );
     case 'notice':
       return (
         <div className="notice">
@@ -146,18 +164,14 @@ function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, 
       );
     case 'group': {
       const visible = visibleWorkItems(item, expanded.get(item.id));
-      const label = item.isRunning
-        ? t('workRunning')
-        : item.durationMs === null
-          ? t('workDetails')
-          : t(item.isSummary ? 'processed' : 'worked').replace('{duration}', duration(item.durationMs));
+      const label = workGroupLabel(item);
       return (
         <div className="work-group">
           <button
             className="work-toggle"
             data-work-group={item.isRunning ? 'running' : 'completed'}
             aria-expanded={open}
-            onClick={() => toggle(item.id, item.isRunning)}
+            onClick={() => toggle(item.id, workGroupDefaultOpen(item))}
           >
             {item.isRunning ? <LoaderCircle size={14} className="spin" /> : <Layers size={14} />}
             <span>{label}</span>
@@ -165,7 +179,7 @@ function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, 
           </button>
           {visible.length > 0 && (
             <div className="work-rail">
-              <WorkChildren rows={visible} expanded={expanded} toggle={toggle} />
+              <WorkChildren rows={visible} expanded={expanded} toggle={toggle} active={active && item.hasFinalReply !== false} />
             </div>
           )}
         </div>
@@ -195,7 +209,7 @@ function ItemRow({ item, expanded, toggle }: { item: Row; expanded: Map<string, 
             aria-expanded={open}
             onClick={() => toggle(item.id)}
           >
-            {item.result === null ? (
+            {item.result === null && !active ? <CircleHelp size={13} aria-label={t('toolNoResult')} /> : item.result === null ? (
               <LoaderCircle size={13} className="spin" aria-label={t('running')} />
             ) : item.isError ? (
               <X size={13} />
@@ -229,10 +243,12 @@ function WorkChildren({
   rows,
   expanded,
   toggle,
+  active,
 }: {
   rows: Row[];
   expanded: Map<string, boolean>;
   toggle: Toggle;
+  active: boolean;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const virtualized = rows.length > 80;
@@ -248,7 +264,7 @@ function WorkChildren({
     return (
       <>
         {rows.map((row) => (
-          <ItemRow key={row.id} item={row} expanded={expanded} toggle={toggle} />
+          <ItemRow key={row.id} item={row} expanded={expanded} toggle={toggle} active={active} />
         ))}
       </>
     );
@@ -263,7 +279,7 @@ function WorkChildren({
             className="work-virtual-row"
             style={{ transform: `translateY(${row.start}px)` }}
           >
-            <ItemRow item={rows[row.index]} expanded={expanded} toggle={toggle} />
+            <ItemRow item={rows[row.index]} expanded={expanded} toggle={toggle} active={active} />
           </div>
         ))}
       </div>

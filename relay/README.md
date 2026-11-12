@@ -76,9 +76,9 @@ curl http://127.0.0.1:8787/healthz
 
 容器内部使用 HTTP 和 WS；网关对外提供 HTTPS 和 WSS。WebCrypto 要求安全上下文，桌面端也只接受本机地址的 `ws://`。反向代理应转发 WebSocket 升级头，读超时大于 90 秒。只有入口受保护并正确传递来源地址时，才启用 `TANDEM_RELAY_TRUST_PROXY=1`。[用户文档](../site/src/guide/proxy.md)提供 nginx 和 Caddy 完整配置。
 
-`.github/workflows/relay-image.yml` 在 relay、镜像内 PWA / 共享 token 及构建工具改动进入 `main` 后自动触发，手动执行也只接受 `main`。CI 使用北京时间生成独立的 `major.minor.YYYYMMDDNN`，预留 `relay-v<版本>` tag；同提交重跑复用版本和已经发布的完整双架构镜像。先运行共享验证，再启动 amd64 待发布镜像完成健康检查、PWA 配对、数据持久化及退出验收，成功后构建并发布 `linux/amd64` 与 `linux/arm64`，生成同名版本标签与 SHA 标签，并在高于当前版本时串行晋升 `latest`。桌面端使用自己的 `v<版本>` 命名空间，两者规则相同、序号各自递增。
+`.github/workflows/relay-image.yml` 在 relay、镜像内 PWA / 共享 token 及构建工具改动进入 `main` 后自动触发，手动执行也只接受 `main`。CI 为 relay 分配独立的递增版本，预留说明只有版本号的 `relay-v<版本>` tag；同提交重跑复用版本和已经发布的完整双架构镜像。已有日期 tag 保持原样。先运行共享验证，再启动 amd64 待发布镜像完成健康检查、PWA 配对、数据持久化及退出验收，成功后构建并发布 `linux/amd64` 与 `linux/arm64`，生成同名版本标签与 SHA 标签，并在高于当前版本时串行晋升 `latest`。桌面端使用自己的 `v<版本>` 命名空间，两者规则相同、序号各自递增。
 
-日期版本同步写入构建工作区的 Cargo.toml / Cargo.lock，二进制通过 `/healthz.version` 和 `hello-ack.relayVersion` 自报。桌面“设置 → 远程 → 中转服务”连接后显示该版本，与桌面应用版本分别呈现。文档站发布配置位于 `.github/workflows/site-pages.yml`，目标入口为 `https://mingzaily.github.io/tandem/guide/`。
+发布版本同步写入构建工作区的 Cargo.toml / Cargo.lock，二进制通过 `/healthz.version` 和 `hello-ack.relayVersion` 自报。桌面“设置 → 远程 → 中转服务”连接后显示该版本，与桌面应用版本分别呈现。文档站发布配置位于 `.github/workflows/site-pages.yml`，目标入口为 `https://mingzaily.github.io/tandem/guide/`。
 
 PR 和 main 的相关改动由 `.github/workflows/ci.yml` 自动验证。本地在仓库根目录运行 `node .github/scripts/verify.mjs --image`，使用同一套检查且不推送；完整命令、依赖和验证边界见 [CI 与本地验证](../docs/dev-rules/ci-validation.md)。
 
@@ -111,4 +111,4 @@ pnpm build
 
 真实桌面测试还通过 `dev/grant-proxy.ts` 延迟及丢弃确认，验证确认前隐藏配对码、确认超时、取消后的迟到确认、`pair4` 顺序、违规逻辑连接关闭、删除准入文件后的重登记与运行计时恢复。
 
-首次发布的 GHCR 包默认私有；公开包支持匿名拉取，私有包需要先执行 `docker login ghcr.io`。详情见 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。本次验收结果与截图索引见 [VERIFICATION.md](./VERIFICATION.md)。
+首次发布的 GHCR 包默认私有；公开包支持匿名拉取，私有包需要先执行 `docker login ghcr.io`。详情见 [GitHub Container registry 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)。

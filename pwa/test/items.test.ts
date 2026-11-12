@@ -6,6 +6,7 @@ import {
   buildRows,
   turnStatus,
   visibleWorkItems,
+  workGroupDefaultOpen,
   type Item,
 } from '../src/lib/items.ts';
 import type { Message } from '../src/lib/types.ts';
@@ -139,6 +140,42 @@ for (const count of [1, 8]) {
     assert.equal(visibleWorkItems(updated).length, Math.min(5, count + 1));
   });
 }
+
+test('restored work without a final reply reveals its progress before and after continuing', () => {
+  const recorded: Item[] = [
+    { type: 'user', id: 'u', at: 1000, text: 'work' },
+    { type: 'assistant', id: 'progress', at: 2000, text: 'saved progress' },
+    { type: 'tool', id: 'last', at: 320000, name: 'Read', input: '{}', result: null, isError: false, truncated: false },
+  ];
+  for (const continuing of [false, true]) {
+    const rows = buildRows(continuing ? [...recorded, { type: 'user', id: 'continue', text: 'continue' }] : recorded, continuing);
+    const group = rows[1];
+    assert.ok(group.type === 'group');
+    assert.equal(group.isRunning, false);
+    assert.equal(group.hasFinalReply, false);
+    assert.equal(group.durationMs, 319000);
+    assert.equal(workGroupDefaultOpen(group), true);
+    assert.deepEqual(visibleWorkItems(group), group.items);
+    assert.deepEqual(visibleWorkItems(group, false), []);
+  }
+});
+
+test('a compaction boundary keeps earlier completed work folded when its user turn has a final reply', () => {
+  const rows = buildRows([
+    { type: 'user', id: 'u', text: 'work' },
+    { type: 'tool', id: 'first', name: 'Read', input: '{}', result: 'ok', isError: false, truncated: false },
+    { type: 'compaction', id: 'compact' },
+    { type: 'tool', id: 'second', name: 'Read', input: '{}', result: 'ok', isError: false, truncated: false },
+    { type: 'assistant', id: 'final', text: 'done' },
+  ], false);
+  const groups = rows.filter((row) => row.type === 'group');
+  assert.equal(groups.length, 2);
+  for (const group of groups) {
+    assert.equal(group.hasFinalReply, true);
+    assert.equal(workGroupDefaultOpen(group), false);
+    assert.deepEqual(visibleWorkItems(group), []);
+  }
+});
 
 test('completed progress nests action groups and leaves only the final reply outside', () => {
   const rows = buildRows(

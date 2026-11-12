@@ -32,6 +32,7 @@ export type WorkGroup = {
   durationMs: number | null;
   isRunning: boolean;
   isSummary: boolean;
+  hasFinalReply?: boolean;
 };
 export type Row = Item | WorkGroup;
 
@@ -241,7 +242,7 @@ function actionGroups(items: Item[], startAt: number | undefined, isRunning: boo
   return rows;
 }
 
-function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean) {
+function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunning: boolean, hasFinalReply: boolean) {
   if (isRunning) {
     rows.push(...actionGroups(turn, startAt, true));
     return;
@@ -252,32 +253,53 @@ function pushTurn(rows: Row[], turn: Item[], startAt: number | undefined, isRunn
     const children = work.some((item) => item.type === 'assistant')
       ? actionGroups(work, startAt, false)
       : work;
-    rows.push(workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true));
+    rows.push({ ...workGroup(children, startAt, turn[answerIndex]?.at ?? lastTime(work), false, true), hasFinalReply });
   }
   if (answerIndex >= 0) rows.push(turn[answerIndex]);
 }
 
-/** Live actions preview their latest five; completed progress folds toward the final answer. */
+/** A compaction marker separates display groups, while the user input still owns the reply. */
+function turnReplyFlags(items: Item[]): boolean[] {
+  const flags: boolean[] = [];
+  let final: boolean | undefined;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.type === 'user') { final = undefined; continue; }
+    if (item.type === 'compaction' || item.type === 'thinking' && !item.text.trim()) continue;
+    final ??= item.type === 'assistant' && Boolean(item.text.trim());
+    flags[index] = final;
+  }
+  return flags;
+}
+
+/** Live actions preview their latest five; answered history folds toward the final reply. */
 export function buildRows(items: Item[], isRunning: boolean): Row[] {
   const rows: Row[] = [];
+  const replies = turnReplyFlags(items);
+  let hasFinalReply = false;
   let turn: Item[] = [];
   let startAt: number | undefined;
-  for (const item of items) {
+  for (const [index, item] of items.entries()) {
     if (item.type === 'thinking' && !item.text.trim()) continue;
     if (item.type === 'user' || item.type === 'compaction' || item.type === 'notice' || item.type === 'error') {
-      if (turn.length) pushTurn(rows, turn, startAt, false);
+      if (turn.length) pushTurn(rows, turn, startAt, false, hasFinalReply);
       turn = [];
       startAt = item.at;
       rows.push(item);
-    } else turn.push(item);
+    } else {
+      if (!turn.length) hasFinalReply = replies[index] ?? false;
+      turn.push(item);
+    }
   }
-  if (turn.length) pushTurn(rows, turn, startAt, isRunning);
+  if (turn.length) pushTurn(rows, turn, startAt, isRunning, hasFinalReply);
   return rows;
 }
 
 export const MAX_LIVE_ACTIVITIES = 5;
-/** An untouched live group previews recent work; an explicit close hides all its children. */
+export const workGroupDefaultOpen = (group: WorkGroup): boolean => group.hasFinalReply === false || group.isRunning;
+
+/** Unanswered history shows its progress; a manual choice always takes precedence. */
 export function visibleWorkItems(group: WorkGroup, expanded?: boolean): Row[] {
-  if (expanded === true) return group.items;
+  if (expanded === true || expanded === undefined && group.hasFinalReply === false) return group.items;
   return expanded === undefined && group.isRunning ? group.items.slice(-MAX_LIVE_ACTIVITIES) : [];
 }

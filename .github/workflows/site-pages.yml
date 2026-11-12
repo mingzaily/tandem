@@ -3,7 +3,15 @@ name: Documentation Pages
 on:
   push:
     branches: [main]
-    paths: ['site/**', 'pwa/**', 'relay/**', 'desktop/design/tokens/**', '.github/**', 'docs/relay-protocol.md', 'docs/relay-test-vectors.json']
+    paths:
+      - 'site/**'
+      - 'pwa/**'
+      - 'desktop/design/tokens/**'
+      - '.github/workflows/site-pages.yml'
+      - '.github/scripts/build-pages.mjs'
+      - '.github/scripts/verify.mjs'
+      - '.github/scripts/run.mjs'
+      - '.github/scripts/automation.test.mjs'
   workflow_dispatch:
 
 permissions:

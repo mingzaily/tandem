@@ -115,7 +115,7 @@ for (const [name, candidate, current, status, publish, pushes] of [
   ['缺少发布参数', 'relay-v2.0.0', 'relay-v1.0.0', 200, false, false],
 ]) {
   test(`晋升 CLI：${name}`, async (t) => {
-    const setup = await fixture(t, ['relay-release.mjs', 'run.mjs'], {
+    const setup = await fixture(t, ['relay-release.mjs', 'release-version.mjs', 'run.mjs'], {
       docker: `require('node:fs').writeFileSync(process.env.FIXTURE+'/published', JSON.stringify(process.argv.slice(2)));`,
     });
     const mock = join(setup.dir, 'registry.mjs');

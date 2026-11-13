@@ -10,6 +10,7 @@ on:
       - '.github/scripts/desktop-release.mjs'
       - '.github/scripts/desktop-release.test.mjs'
       - '.github/scripts/release-version.mjs'
+      - '.github/scripts/release-notes.mjs'
       - '.github/scripts/run.mjs'
   workflow_dispatch:
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { latestVersion, shouldPromote, registryImage, prepareRelay, stampRelay, relaySource } from './relay-release.mjs';
+import { latestVersion, shouldPromote, registryImage, prepareRelay, stampRelay, relaySource, publishRelayRelease, pullNotes } from './relay-release.mjs';
 import { nextVersion } from './release-version.mjs';
 
 for (const [candidate, current, expected] of [
@@ -194,4 +194,34 @@ test('GHCR 查询带回多架构 digest、版本和源码提交', async (t) => {
     [200, { config: { Labels: { 'org.opencontainers.image.version': imageRecord.version, 'org.opencontainers.image.revision': sourceSha } } }],
   ]);
   assert.deepEqual(await registryImage({ ...credentials, reference: imageRecord.version }), imageRecord);
+});
+
+test('relay Release 不抢桌面的 Latest，重跑保留已有说明', async () => {
+  const sha = 'c'.repeat(40);
+  const created = [];
+  let existing;
+  const client = {
+    request: async (path, options = {}) => {
+      if (path === '/releases/tags/relay-v0.1.2') return existing;
+      assert.equal(path, '/releases');
+      created.push(options.json);
+      return { html_url: 'https://example.test/relay', ...options.json };
+    },
+  };
+  await publishRelayRelease(client, { tag: 'relay-v0.1.2', sha, body: 'notes', log: () => {} });
+  assert.equal(created.length, 1);
+  assert.equal(created[0].make_latest, 'false');
+  assert.equal(created[0].name, 'Tandem Relay v0.1.2');
+  existing = { html_url: 'https://example.test/old' };
+  assert.equal((await publishRelayRelease(client, { tag: 'relay-v0.1.2', sha, body: 'new', log: () => {} })).html_url, 'https://example.test/old');
+  assert.equal(created.length, 1);
+  await assert.rejects(publishRelayRelease(client, { tag: 'v0.1.2', sha, body: 'x', log: () => {} }), /格式错误/);
+});
+
+test('relay 说明给出带版本的拉取命令和部署文档', () => {
+  const { zh, en } = pullNotes('relay-v0.1.2', 'ghcr.io/mingzaily/tandem-relay', 'mingzaily/tandem');
+  for (const text of [zh, en]) {
+    assert.match(text, /docker pull ghcr\.io\/mingzaily\/tandem-relay:relay-v0\.1\.2/);
+    assert.match(text, /blob\/relay-v0\.1\.2\/relay\/README\.md/);
+  }
 });

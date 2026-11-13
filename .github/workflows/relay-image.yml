@@ -14,6 +14,7 @@ on:
       - '.github/scripts/relay-release.mjs'
       - '.github/scripts/relay-release.test.mjs'
       - '.github/scripts/release-version.mjs'
+      - '.github/scripts/release-notes.mjs'
       - '.github/scripts/verify.mjs'
       - '.github/scripts/run.mjs'
       - '.github/scripts/container-smoke.mjs'
@@ -153,3 +154,26 @@ jobs:
           RELAY_DIGEST: ${{ needs.prepare.outputs.digest || needs.image.outputs.digest }}
           REGISTRY_USER: ${{ github.actor }}
           REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+  release:
+    needs: [prepare, latest]
+    if: ${{ !cancelled() && needs.latest.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+      - name: Publish relay release notes
+        run: node .github/scripts/relay-release.mjs release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELAY_IMAGE: ghcr.io/mingzaily/tandem-relay
+          RELAY_TAG: ${{ needs.prepare.outputs.tag }}
+          TANDEM_RELEASE_NOTES_API_URL: ${{ secrets.TANDEM_RELEASE_NOTES_API_URL }}
+          TANDEM_RELEASE_NOTES_API_KEY: ${{ secrets.TANDEM_RELEASE_NOTES_API_KEY }}
+          TANDEM_RELEASE_NOTES_MODEL: ${{ secrets.TANDEM_RELEASE_NOTES_MODEL }}

@@ -5,6 +5,9 @@ import { pathToFileURL } from 'node:url';
 import { root } from './run.mjs';
 
 import { compareVersions, githubClient, nextVersion, releaseVersion, reserveTag } from './release-version.mjs';
+import { changeNotes, commitSubjects, releaseBody } from './release-notes.mjs';
+
+export { chatEndpoint, modelChangelog } from './release-notes.mjs';
 
 const cargoVersion = /(^\[package\][\s\S]*?\nversion = ")([^"]+)(")/m;
 const lockVersion = /(^\[\[package\]\]\nname = "tandem"\nversion = ")([^"]+)(")/m;
@@ -36,100 +39,35 @@ function newestRelease(releases) {
     .sort((a, b) => compareVersions(b.tag_name.slice(1), a.tag_name.slice(1)))[0];
 }
 
-function subjectOf(message = '') {
-  const subject = message.split('\n', 1)[0].trim();
-  return subject && !subject.startsWith('Merge ') ? subject : '';
-}
-
-export async function releaseSubjects(client, { version, sha }) {
+export async function releaseSubjects(client, { version, sha, log = console.info }) {
   if (!releaseVersion(`v${version}`)) throw new Error(`发布版本格式错误：${version}`);
   const tags = await client.list('/tags');
   const previous = tags
     .map((item) => ({ name: item.name, version: releaseVersion(item.name)?.version }))
     .filter((item) => item.version && compareVersions(item.version, version) < 0)
     .sort((left, right) => compareVersions(right.version, left.version))[0];
-  if (!previous) return [subjectOf((await client.request(`/commits/${sha}`)).commit.message)].filter(Boolean);
-  const comparison = await client.request(`/compare/${previous.name}...${sha}`);
-  const subjects = (comparison.commits ?? [])
-    .map((item) => subjectOf(item.commit?.message))
-    .filter(Boolean)
-    .slice(0, 100);
-  if (subjects.length || comparison.status === 'identical') return subjects;
-  return [subjectOf((await client.request(`/commits/${sha}`)).commit.message)].filter(Boolean);
+  return commitSubjects(client, { previous: previous?.name, sha, log });
 }
 
-export function commitChangelog(subjects) {
-  if (!subjects.length) return '这一版发布安装包。';
-  return `这一版的提交：\n\n${subjects.map((subject) => `- ${subject}`).join('\n')}`;
-}
-
-export function englishCommitChangelog(subjects) {
-  if (!subjects.length) return 'This release publishes the desktop packages.';
-  return `Changes in this release:\n\n${subjects.map((subject) => `- ${subject}`).join('\n')}`;
-}
-
-export function installNote(version, sha) {
-  return `macOS 安装包分为 Apple Silicon 和 Intel。\n\n版本：${version}\n源码提交：${sha}\n\n使用 Tandem 自签名证书签名，未经过 Apple 公证。首次打开如被系统拦截，请在“系统设置 → 隐私与安全性”中允许打开。\n\n下载后可使用 SHA256SUMS 核对安装包。`;
-}
-
-export function englishInstallNote(version, sha) {
-  return `Separate macOS packages for Apple Silicon and Intel.\n\nVersion: ${version}\nCommit: ${sha}\n\nThe app is signed with a Tandem self-signed certificate and not notarized. If macOS blocks the first open, allow it in System Settings → Privacy & Security.\n\nCheck the downloads with SHA256SUMS.`;
-}
-
-function changelogText(text, key) {
-  const changelog = String(text ?? '').trim().replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
-  if (!changelog || changelog.length > 12000 || changelog.includes(key)) return undefined;
-  return changelog;
-}
-
-async function chatCompletion(endpoint, { key, model, prompt, fetchImpl }) {
-  const response = await fetchImpl(endpoint, {
-    method: 'POST', redirect: 'error', signal: AbortSignal.timeout(60000),
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
-  });
-  if (!response.ok) return undefined;
-  const payload = await response.json();
-  return changelogText(payload?.choices?.[0]?.message?.content, key);
-}
-
-export async function modelChangelog(subjects, { url = '', key = '', model = '', fetchImpl = fetch } = {}) {
-  if (!subjects.length || !url || !key || !model) return undefined;
-  let endpoint;
-  try {
-    endpoint = new URL(url);
-  } catch {
-    return undefined;
-  }
-  if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password) return undefined;
-  try {
-    const english = await chatCompletion(endpoint, {
-      key, model, fetchImpl,
-      prompt: `Based on these git commit subjects, write concise user-facing release notes in markdown. Group them as Features, Bug Fixes, and Improvements, and omit empty groups. Keep only changes a desktop user can notice. Skip dependency bumps, formatting, and docs-only commits. One sentence per item. Output only the notes, without a preamble or install instructions.\n\nCommit subjects:\n${subjects.join('\n')}`,
-    });
-    if (!english) return undefined;
-    let chinese;
-    try {
-      chinese = await chatCompletion(endpoint, {
-        key, model, fetchImpl,
-        prompt: `把下面的发布说明译成简体中文。保留 markdown 结构、标题层级、链接、代码和产品名 Tandem。只输出译文，不要前言。\n\n${english}`,
-      });
-    } catch {
-      chinese = undefined;
-    }
-    return chinese ? { english, chinese } : { english };
-  } catch {
-    return undefined;
-  }
-}
-
-export async function composeReleaseBody({ subjects, version, sha, llm, fetchImpl }) {
-  const generated = await modelChangelog(subjects, { ...llm, fetchImpl });
-  const english = generated?.english ?? englishCommitChangelog(subjects);
-  const chinese = generated?.chinese ?? commitChangelog(subjects);
+/** Which file to take, with direct links; GitHub already shows the tag and commit above. */
+export function downloadNotes(version, repository) {
+  const link = (arch) => {
+    const name = `Tandem_${version}_${arch}.dmg`;
+    return `[${name}](https://github.com/${repository}/releases/download/v${version}/${name})`;
+  };
   return {
-    body: `${english}\n\n${englishInstallNote(version, sha)}\n\n<!-- lang:zh -->\n\n${chinese}\n\n${installNote(version, sha)}`,
-    source: generated?.english ? 'model' : 'commits',
+    zh: `## 下载\n\n| 电脑 | 安装包 |\n| --- | --- |\n| Apple 芯片（M 系列） | ${link('aarch64')} |\n| Intel 芯片 | ${link('x64')} |\n\n已安装的 Tandem 会在“设置 → 关于”中收到这次更新。安装包使用 Tandem 自签名证书，未经 Apple 公证；首次打开如被拦截，请在“系统设置 → 隐私与安全性”中允许。`,
+    en: `## Download\n\n| Mac | Package |\n| --- | --- |\n| Apple silicon (M series) | ${link('aarch64')} |\n| Intel | ${link('x64')} |\n\nInstalled copies get this update from Settings → About. The app is signed with Tandem's self-signed certificate and not notarized; if macOS blocks the first open, allow it in System Settings → Privacy & Security.`,
+  };
+}
+
+export async function composeReleaseBody({ subjects, version, llm, fetchImpl, repository, log = console.info }) {
+  const notes = await changeNotes({ subjects, llm, fetchImpl, audience: 'desktop', log });
+  const download = downloadNotes(version, repository);
+  return {
+    body: releaseBody({ zh: notes.zh, en: notes.en, zhAfter: download.zh, enAfter: download.en }),
+    source: notes.source,
+    reason: notes.reason,
   };
 }
 
@@ -150,7 +88,10 @@ export async function prepareRelease(client, { base, sha }) {
   return { version, tag, skip: false };
 }
 
-export async function publishRelease(client, { version, sha, directory, repository = client.repository, now = new Date(), body = installNote(version, sha) }) {
+export async function publishRelease(client, {
+  version, sha, directory, repository = client.repository, now = new Date(),
+  body = releaseBody({ zh: '没有可列出的改动。', en: 'No listed changes.', zhAfter: downloadNotes(version, repository).zh, enAfter: downloadNotes(version, repository).en }),
+}) {
   if (!releaseVersion(`v${version}`)) throw new Error(`发布版本格式错误：${version}`);
   const tag = `v${version}`;
   const architectures = [['aarch64', 'darwin-aarch64'], ['x64', 'darwin-x86_64']];
@@ -235,14 +176,13 @@ async function main() {
     const sha = process.env.GITHUB_SHA;
     const subjects = await releaseSubjects(client, { version, sha });
     const notes = await composeReleaseBody({
-      subjects, version, sha,
+      subjects, version, repository: client.repository,
       llm: {
         url: process.env.TANDEM_RELEASE_NOTES_API_URL,
         key: process.env.TANDEM_RELEASE_NOTES_API_KEY,
         model: process.env.TANDEM_RELEASE_NOTES_MODEL,
       },
     });
-    console.info(notes.source === 'model' ? '发布说明由模型生成' : '发布说明使用提交标题');
     const release = await publishRelease(client, { version, sha, directory: resolve(argument), body: notes.body });
     console.info(`桌面版本已发布：${release.html_url}`);
   }

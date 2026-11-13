@@ -8,8 +8,8 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
-  commitChangelog, composeReleaseBody, englishCommitChangelog, englishInstallNote, installNote,
-  modelChangelog, prepareRelease, publishRelease, releaseSubjects, sourceVersions, stampVersion,
+  composeReleaseBody, downloadNotes,
+  chatEndpoint, modelChangelog, prepareRelease, publishRelease, releaseSubjects, sourceVersions, stampVersion,
 } from './desktop-release.mjs';
 import { compareVersions, githubClient, nextVersion, releaseVersion } from './release-version.mjs';
 
@@ -80,7 +80,7 @@ test('版本不一致时在写入前中止', async (t) => {
 test('真实 CLI 校验与写入，发布命令拒绝其他分支', async (t) => {
   const directory = await sourceFixture(t);
   await mkdir(join(directory, '.github/scripts'), { recursive: true });
-  for (const name of ['desktop-release.mjs', 'release-version.mjs', 'run.mjs']) {
+  for (const name of ['desktop-release.mjs', 'release-notes.mjs', 'release-version.mjs', 'run.mjs']) {
     await cp(new URL(name, import.meta.url), join(directory, '.github/scripts', name));
   }
   const command = ['.github/scripts/desktop-release.mjs'];
@@ -296,7 +296,7 @@ test('发布说明取上一版之后的提交标题，跳过合并提交和 rela
     list: async () => tags,
     request: async (path) => commits[path] ?? { commit: { message: 'missing' } },
   };
-  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha }), ['Show the update action']);
+  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha, log: () => {} }), ['Show the update action']);
 });
 
 test('首个版本使用当前提交标题', async () => {
@@ -307,7 +307,7 @@ test('首个版本使用当前提交标题', async () => {
       return { commit: { message: 'First desktop release\n\nmore' } };
     },
   };
-  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha }), ['First desktop release']);
+  assert.deepEqual(await releaseSubjects(client, { version: '0.1.2026111101', sha, log: () => {} }), ['First desktop release']);
 });
 
 test('模型说明失败、缺配置或回显密钥时使用提交标题', async () => {
@@ -321,18 +321,61 @@ test('模型说明失败、缺配置或回显密钥时使用提交标题', async
   assert.equal(await modelChangelog(subjects, { ...llm, fetchImpl }), undefined);
   assert.equal(await modelChangelog(subjects, { ...llm, url: 'http://notes.example.test/v1' }), undefined);
   assert.equal(calls.length, 1);
+  const quiet = () => {};
   const failed = await composeReleaseBody({
-    subjects, version: '0.1.2026111101', sha, llm,
+    subjects, version: '0.1.1', repository: 'mingzaily/tandem', llm, log: quiet,
     fetchImpl: async () => new Response('', { status: 401 }),
   });
   assert.equal(failed.source, 'commits');
-  assert.match(failed.body, /Add the update page/);
-  assert.match(failed.body, /self-signed certificate/);
-  assert.match(failed.body, /<!-- lang:zh -->/);
+  assert.equal(failed.reason, '接口返回 HTTP 401');
+  assert.match(failed.body, /^## 更新内容\n\n- Add the update page/);
+  assert.match(failed.body, /自签名证书/);
+  assert.match(failed.body, /<summary>English<\/summary>/);
   assert.equal(failed.body.includes('notes-secret'), false);
-  const unconfigured = await composeReleaseBody({ subjects, version: '0.1.1', sha, llm: {} });
+  const unconfigured = await composeReleaseBody({ subjects, version: '0.1.1', repository: 'mingzaily/tandem', llm: {}, log: quiet });
   assert.equal(unconfigured.source, 'commits');
-  assert.equal(unconfigured.body, `${englishCommitChangelog(subjects)}\n\n${englishInstallNote('0.1.1', sha)}\n\n<!-- lang:zh -->\n\n${commitChangelog(subjects)}\n\n${installNote('0.1.1', sha)}`);
+  assert.equal(unconfigured.reason, '没有配置接口地址、密钥或模型');
+});
+
+test('正文中文在前、英文折叠，下载表直链两种架构，不重复版本号和提交', () => {
+  const { zh, en } = downloadNotes('0.1.1', 'mingzaily/tandem');
+  for (const text of [zh, en]) {
+    assert.match(text, /\[Tandem_0\.1\.1_aarch64\.dmg\]\(https:\/\/github\.com\/mingzaily\/tandem\/releases\/download\/v0\.1\.1\/Tandem_0\.1\.1_aarch64\.dmg\)/);
+    assert.match(text, /Tandem_0\.1\.1_x64\.dmg\]/);
+    assert.equal(/SHA256|源码提交|Commit:/.test(text), false);
+  }
+  assert.match(zh, /设置 → 关于/);
+});
+
+test('基础地址补上 chat/completions，非 HTTPS 和带账号的地址拒绝', () => {
+  assert.equal(chatEndpoint('https://api.example.test/v1').href, 'https://api.example.test/v1/chat/completions');
+  assert.equal(chatEndpoint('https://api.example.test/v1/').href, 'https://api.example.test/v1/chat/completions');
+  assert.equal(chatEndpoint('https://api.example.test/v1/chat/completions').href, 'https://api.example.test/v1/chat/completions');
+  assert.equal(chatEndpoint('https://api.example.test').href, 'https://api.example.test/chat/completions');
+  assert.equal(chatEndpoint('http://api.example.test/v1'), undefined);
+  assert.equal(chatEndpoint('https://user:pass@api.example.test/v1'), undefined);
+  assert.equal(chatEndpoint('not a url'), undefined);
+});
+
+test('失败原因可以写进日志，但不含地址和密钥', async () => {
+  const llm = { url: 'https://notes.example.test/v1', key: 'notes-secret', model: 'notes-model' };
+  const reasons = [];
+  const onFailure = (reason) => reasons.push(reason);
+  const urls = [];
+  await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async (url) => { urls.push(url.href); return new Response('', { status: 404 }); } });
+  await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => { throw Object.assign(new Error('getaddrinfo ENOTFOUND notes.example.test'), { cause: { code: 'ENOTFOUND' } }); } });
+  await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => { throw new DOMException('timed out', 'TimeoutError'); } });
+  await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: 'notes-secret' } }] })) });
+  await modelChangelog(['Add'], { ...llm, url: 'http://notes.example.test/v1', onFailure });
+  await modelChangelog(['Add'], { url: '', key: '', model: '', onFailure });
+  assert.deepEqual(urls, ['https://notes.example.test/v1/chat/completions']);
+  assert.deepEqual(reasons, [
+    '接口返回 HTTP 404', '请求失败（Error ENOTFOUND）', '请求超过 60 秒',
+    '接口没有返回可用的说明（为空、过长或包含密钥）', '接口地址无效：需要不带账号的 HTTPS 地址', '没有配置接口地址、密钥或模型',
+  ]);
+  assert.equal(reasons.some((reason) => reason.includes('notes-secret') || reason.includes('notes.example')), false);
+  const failed = await composeReleaseBody({ subjects: ['Add'], version: '0.1.1', sha, llm, fetchImpl: async () => new Response('', { status: 401 }) });
+  assert.equal(failed.reason, '接口返回 HTTP 401');
 });
 
 test('中文翻译失败时保留已生成的英文说明', async () => {

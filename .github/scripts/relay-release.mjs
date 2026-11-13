@@ -2,6 +2,10 @@ import { appendFile, realpath, readFile, writeFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import { root, run } from './run.mjs';
 import { compareVersions, githubClient, nextVersion, releaseVersion, reserveTag } from './release-version.mjs';
+import { changeNotes, commitSubjects, releaseBody } from './release-notes.mjs';
+
+/** Only these folders go into the relay image, so only their commits describe a relay release. */
+const RELAY_PATHS = ['relay', 'pwa'];
 
 export function stableVersion(tag) {
   return releaseVersion(tag, 'relay-v');
@@ -79,6 +83,44 @@ export async function prepareRelay(client, { base, sha, readImage }) {
   return { version, tag, skip: false, digest: image?.digest ?? '' };
 }
 
+export function pullNotes(tag, image, repository) {
+  const pull = `\`\`\`bash\ndocker pull ${image}:${tag}\n\`\`\``;
+  const readme = `https://github.com/${repository}/blob/${tag}/relay/README.md`;
+  return {
+    zh: `## 镜像\n\n${pull}\n\n同时提供 amd64 和 arm64，\`latest\` 只指向最新的正式版本。部署和升级见 [relay/README.md](${readme})。`,
+    en: `## Image\n\n${pull}\n\nBuilt for amd64 and arm64; \`latest\` points at the newest stable release. See [relay/README.md](${readme}) to deploy or upgrade.`,
+  };
+}
+
+/**
+ * A GitHub Release for the relay tag, so the tag page says what changed and how to pull it. It is
+ * never marked Latest: the desktop updater reads the latest release's manifest.
+ */
+export async function publishRelayRelease(client, { tag, sha, body, log = console.info }) {
+  if (!stableVersion(tag)) throw new Error(`relay 发布版本格式错误：${tag}`);
+  const existing = await client.request(`/releases/tags/${tag}`, { optional: true });
+  if (existing) {
+    log(`relay Release 已存在，保持原说明：${existing.html_url}`);
+    return existing;
+  }
+  return client.request('/releases', {
+    method: 'POST', json: {
+      tag_name: tag, target_commitish: sha, name: `Tandem Relay ${tag.slice('relay-'.length)}`, body,
+      draft: false, prerelease: false, make_latest: 'false', generate_release_notes: false,
+    },
+  });
+}
+
+export async function relaySubjects(client, { tag, sha, log = console.info }) {
+  const current = stableVersion(tag);
+  const tags = await client.list('/tags');
+  const previous = tags
+    .map((item) => ({ name: item.name, version: stableVersion(item.name)?.version }))
+    .filter((item) => item.version && compareVersions(item.version, current.version) < 0)
+    .sort((left, right) => compareVersions(right.version, left.version))[0];
+  return commitSubjects(client, { previous: previous?.name, sha, paths: RELAY_PATHS, log });
+}
+
 const cargoVersion = /(^\[package\][\s\S]*?\nversion = ")([^"]+)(")/m;
 const lockVersion = /(^\[\[package\]\]\nname = "tandem-relay"\nversion = ")([^"]+)(")/m;
 export async function relaySource(directory = root) {
@@ -114,6 +156,26 @@ async function main() {
     return;
   }
   const tag = process.env.RELAY_TAG;
+  if (command === 'release') {
+    const client = githubClient({ repository: process.env.GITHUB_REPOSITORY, token: process.env.GH_TOKEN,
+      apiUrl: process.env.GITHUB_API_URL });
+    const sha = process.env.GITHUB_SHA;
+    const subjects = await relaySubjects(client, { tag, sha });
+    const notes = await changeNotes({
+      subjects, audience: 'relay',
+      llm: {
+        url: process.env.TANDEM_RELEASE_NOTES_API_URL,
+        key: process.env.TANDEM_RELEASE_NOTES_API_KEY,
+        model: process.env.TANDEM_RELEASE_NOTES_MODEL,
+      },
+    });
+    const pull = pullNotes(tag, credentials.image, client.repository);
+    const release = await publishRelayRelease(client, {
+      tag, sha, body: releaseBody({ zh: notes.zh, en: notes.en, zhAfter: pull.zh, enAfter: pull.en }),
+    });
+    console.info(`relay Release：${release.html_url}`);
+    return;
+  }
   if (!stableVersion(tag)) {
     console.info('本次构建保留版本／SHA 标签，latest 只晋升正式 relay-vX.Y.Z。');
     return;

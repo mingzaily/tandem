@@ -112,7 +112,11 @@ CI 安装两种 Rust target，分别构建 `aarch64-apple-darwin` 和 `x86_64-ap
 
 证书和密码保存在 Actions Secret `TANDEM_CODESIGN_P12`（base64 编码的 `.p12`）与 `TANDEM_CODESIGN_P12_PASSWORD`。Tauri 自带的 `APPLE_CERTIFICATE` 导入只接受 Apple 签发的证书，因此构建前由工作流自己创建临时钥匙串、导入证书，并只在当次运行器上把它信任为代码签名证书。打包后校验每个架构的签名要求包含这张证书，换了证书或退回 ad hoc 都会让发布失败。
 
-发布说明先取上一版桌面 tag 之后的提交标题。三个 Actions Secret `TANDEM_RELEASE_NOTES_API_URL`、`TANDEM_RELEASE_NOTES_API_KEY`、`TANDEM_RELEASE_NOTES_MODEL` 都存在时，发布步骤向该 HTTPS 的 OpenAI 兼容接口先要英文更新说明，再译成简体中文；地址必须不带账号，每次请求超时 60 秒。正文以 `<!-- lang:zh -->` 分隔两种语言，后面各自保留安装包、自签名证书和 SHA256 核对文字。任一配置缺失、接口失败、返回为空或正文回显密钥时，对应语言改用提交标题，安装包照常发布。草稿重跑会更新正文；已公开的 Release 不改写说明。
+发布说明由 `release-notes.mjs` 生成，桌面和 relay 共用。提交标题取自上一个同类 tag 之后的提交；relay 只算改动 `relay/` 和 `pwa/` 的提交，没有上一个 tag 时只取本次提交。三个 Actions Secret `TANDEM_RELEASE_NOTES_API_URL`、`TANDEM_RELEASE_NOTES_API_KEY`、`TANDEM_RELEASE_NOTES_MODEL` 都存在时，向该 HTTPS 的 OpenAI 兼容接口先要英文说明（新功能、修复、改进），再译成简体中文。地址可以填服务的基础地址（如 `https://api.example.com/v1`），没有以 `/chat/completions` 结尾时自动补上；地址必须不带账号，每次请求超时 60 秒。任一配置缺失、接口失败、返回为空或正文回显密钥时，对应语言改用提交标题，安装包照常发布。
+
+正文中文在前：`## 更新内容`，再接桌面的下载表（Apple 芯片和 Intel 两个安装包的直链，以及应用内更新和首次打开的提示）或 relay 的镜像拉取命令与部署文档链接；英文放在折叠的 `English` 段落里。版本号和提交 SHA 由 Release 页面本身显示，正文不重复。草稿重跑会更新桌面正文；已公开的 Release 不改写说明。
+
+日志逐步记录说明来源：取自哪个 tag 范围、共几条提交，是否请求模型、HTTP 状态和用时，中文翻译是否成功，以及最终来源或退回原因（如“接口返回 HTTP 404”、“请求超过 60 秒”）。日志不写接口地址、密钥和模型名。
 
 Release 包含 `Tandem_<version>_aarch64.dmg`、`Tandem_<version>_x64.dmg`、两种架构的 `Tandem_<arch>.app.tar.gz` 及签名、`latest.json` 和 `SHA256SUMS`。更新清单为 `darwin-aarch64` 与 `darwin-x86_64` 提供各自的更新包，URL 指向不可变版本 tag；发布器只在全部产物上传后公开 Release。临时 Actions 产物保留 7 天，Release 按版本保存。
 
@@ -147,6 +151,8 @@ relay 发布全流程按 `relay-release` 串行排队。`prepare` 在 `relay-v` 
 - 首次发布的 `latest` 返回 404 时，允许正式版本建立该标签。
 - 旧版本、同版本重跑保留现有 latest；手动执行也只接受 main，沿用该提交的预留版本和已发布镜像。
 - GHCR 准入、网络、服务错误或现有版本标签无法识别时，结束晋升并报告原因，保留当前 `latest`。
+
+每个 relay 版本在 latest 晋升任务成功后建一个 GitHub Release（`Tandem Relay <version>`），正文是本版说明和该版本镜像的拉取命令。它始终不标记为 Latest：桌面应用从最新 Release 读取更新清单。同一 tag 已有 Release 时保留原说明。
 
 串行队列覆盖并发更新；版本比较覆盖旧版本重跑和构建完成顺序变化。`relay-release.mjs prepare` 会预留 Git tag，`stamp` 只写当前工作区版本，只有显式 `--publish` 才执行 latest 晋升；普通本地验证只运行其隔离测试。
 

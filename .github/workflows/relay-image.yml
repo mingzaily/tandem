@@ -113,11 +113,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/mingzaily/tandem-relay:${{ needs.prepare.outputs.version }}
+            ghcr.io/mingzaily/tandem-relay:v${{ needs.prepare.outputs.version }}
             ghcr.io/mingzaily/tandem-relay:sha-${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.version=v${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

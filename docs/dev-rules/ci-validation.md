@@ -87,7 +87,7 @@ Pages 仍执行 PWA 与 relay 的浏览器集成门禁，但仅在实际前端�
 
 官网和 PWA 随 main 的部署提交 SHA 标识构建，不手动维护独立发布号。桌面与 relay 各自使用 `v<version>` 和 `relay-v<version>`，在同一 `major.minor` 内按 `1`、`2`、`3` 递增；同一次提交的两个产物可以有不同序号。已经发出的 `major.minor.YYYYMMDDNN` 日期 tag 保持原样，同提交重跑继续复用，新版本按递增序号比较时新于这些日期版本。通信协议继续使用自身的 `v: 1`，与产品版本分别管理。
 
-relay 镜像包含一份 PWA 和共享 token，因此 PWA 及 token 改动也自动触发 GHCR 镜像发布，确保镜像中的手机端更新。纯 site 改动只部署 Pages。relay 相关改动进入 main 后直接分配独立递增版本，构建并推送 `ghcr.io/mingzaily/tandem-relay:<version>`（Git tag 带 `relay-v` 前缀以区别桌面版，镜像标签只用版本号；早期镜像仍是 `relay-v<version>`，latest 晋升兼容两种格式）、`:sha-<commit>`，验证通过后晋升 latest；无需手动推送 tag。
+relay 镜像包含一份 PWA 和共享 token，因此 PWA 及 token 改动也自动触发 GHCR 镜像发布，确保镜像中的手机端更新。纯 site 改动只部署 Pages。relay 相关改动进入 main 后直接分配独立递增版本，构建并推送 `ghcr.io/mingzaily/tandem-relay:v<version>`（Git tag 带 `relay-v` 前缀以区别桌面版，镜像标签和版本 label 用 `v<version>`；早期镜像是 `relay-v<version>`，latest 晋升兼容这两种以及无前缀的版本号）、`:sha-<commit>`，验证通过后晋升 latest；无需手动推送 tag。
 
 ## 桌面自动发布
 

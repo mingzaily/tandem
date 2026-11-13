@@ -13,11 +13,17 @@ export function stableVersion(tag) {
 
 /**
  * The version an image records. Git tags need the `relay-v` prefix to stay apart from desktop
- * tags in this repository; image tags live in the image's own namespace and use the bare version.
- * Images published before that change still carry `relay-vX.Y.Z`.
+ * tags in this repository; image tags live in the image's own namespace and use `vX.Y.Z`.
+ * Older images carry `relay-vX.Y.Z` or the bare `X.Y.Z`, and latest promotion still reads them.
  */
+export function imageTag(version) {
+  return `v${version}`;
+}
+
 export function imageVersion(label) {
-  return typeof label === 'string' ? stableVersion(label.startsWith('relay-v') ? label : `relay-v${label}`) : undefined;
+  if (typeof label !== 'string') return undefined;
+  if (label.startsWith('relay-v')) return stableVersion(label);
+  return stableVersion(`relay-v${label.startsWith('v') ? label.slice(1) : label}`);
 }
 
 export function shouldPromote(candidate, current) {
@@ -84,7 +90,7 @@ export async function prepareRelay(client, { base, sha, readImage }) {
   if (!reserved) await reserveTag(client, tag, sha);
   // A fresh reservation has no published image. This also allows the first
   // release to create its GHCR package before requesting pull access to it.
-  const image = reserved ? await readImage(version) : undefined;
+  const image = reserved ? await readImage(imageTag(version)) : undefined;
   if (image && (imageVersion(image.version)?.version !== version || image.revision !== sha || !/^sha256:[a-f0-9]{64}$/.test(image.digest ?? '')
       || !['amd64', 'arm64'].every((architecture) => image.platforms.includes(architecture)))) {
     throw new Error('已存在的 relay 版本需要对应同一提交及完整双架构镜像');
@@ -93,7 +99,7 @@ export async function prepareRelay(client, { base, sha, readImage }) {
 }
 
 export function pullNotes(tag, image, repository) {
-  const pull = `\`\`\`bash\ndocker pull ${image}:${tag.slice('relay-v'.length)}\n\`\`\``;
+  const pull = `\`\`\`bash\ndocker pull ${image}:${imageTag(tag.slice('relay-v'.length))}\n\`\`\``;
   const readme = `https://github.com/${repository}/blob/${tag}/relay/README.md`;
   return {
     zh: `## 镜像\n\n${pull}\n\n同时提供 amd64 和 arm64，\`latest\` 只指向最新的正式版本。部署和升级见 [relay/README.md](${readme})。`,

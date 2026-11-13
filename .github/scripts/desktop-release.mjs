@@ -88,7 +88,7 @@ export async function prepareRelease(client, { base, sha }) {
 }
 
 export async function publishRelease(client, {
-  version, sha, directory, repository = client.repository, now = new Date(),
+  version, directory, repository = client.repository, now = new Date(),
   body = releaseBody({ zh: '没有可列出的改动。', en: 'No listed changes.', zhAfter: downloadNotes(version, repository).zh, enAfter: downloadNotes(version, repository).en }),
 }) {
   if (!releaseVersion(`v${version}`)) throw new Error(`发布版本格式错误：${version}`);
@@ -126,9 +126,11 @@ export async function publishRelease(client, {
     return release;
   }
   if (!release) {
+    // prepare already reserved the tag. GitHub rejects a commit SHA as target_commitish once that
+    // commit is no longer a branch tip, which happens whenever main moves on during the build.
     release = await client.request('/releases', {
       method: 'POST', json: {
-        tag_name: tag, target_commitish: sha, name: `Tandem ${tag}`, draft: true, prerelease: false,
+        tag_name: tag, name: `Tandem ${tag}`, draft: true, prerelease: false,
         generate_release_notes: false, body,
       },
     });
@@ -179,7 +181,7 @@ async function main() {
         model: process.env.TANDEM_RELEASE_NOTES_MODEL,
       },
     });
-    const release = await publishRelease(client, { version, sha, directory: resolve(argument), body: notes.body });
+    const release = await publishRelease(client, { version, directory: resolve(argument), body: notes.body });
     console.info(`桌面版本已发布：${release.html_url}`);
   }
 }

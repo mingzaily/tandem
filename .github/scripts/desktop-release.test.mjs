@@ -210,6 +210,7 @@ test('发布安装包、更新包和更新清单，已发布版本重跑保持�
   await publishRelease(client, options);
   assert.equal(state.releases[0].draft, false);
   assert.equal(state.releases[0].make_latest, 'true');
+  assert.equal('target_commitish' in state.releases[0], false);
   assert.deepEqual(state.uploads.map((asset) => asset.name).sort(), [
     'Tandem_0.1.1_aarch64.dmg', 'Tandem_0.1.1_x64.dmg', 'Tandem_aarch64.app.tar.gz', 'Tandem_x64.app.tar.gz', 'latest.json',
   ]);

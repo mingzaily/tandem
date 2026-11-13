@@ -211,6 +211,7 @@ test('relay Release 不抢桌面的 Latest，重跑保留已有说明', async ()
   await publishRelayRelease(client, { tag: 'relay-v0.1.2', sha, body: 'notes', log: () => {} });
   assert.equal(created.length, 1);
   assert.equal(created[0].make_latest, 'false');
+  assert.equal('target_commitish' in created[0], false);
   assert.equal(created[0].name, 'Tandem Relay v0.1.2');
   existing = { html_url: 'https://example.test/old' };
   assert.equal((await publishRelayRelease(client, { tag: 'relay-v0.1.2', sha, body: 'new', log: () => {} })).html_url, 'https://example.test/old');

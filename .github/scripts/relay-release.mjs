@@ -111,16 +111,17 @@ export function pullNotes(tag, image, repository) {
  * A GitHub Release for the relay tag, so the tag page says what changed and how to pull it. It is
  * never marked Latest: the desktop updater reads the latest release's manifest.
  */
-export async function publishRelayRelease(client, { tag, sha, body, log = console.info }) {
+export async function publishRelayRelease(client, { tag, body, log = console.info }) {
   if (!stableVersion(tag)) throw new Error(`relay 发布版本格式错误：${tag}`);
   const existing = await client.request(`/releases/tags/${tag}`, { optional: true });
   if (existing) {
     log(`relay Release 已存在，保持原说明：${existing.html_url}`);
     return existing;
   }
+  // prepare already reserved the tag; a SHA target fails once main has moved past this commit.
   return client.request('/releases', {
     method: 'POST', json: {
-      tag_name: tag, target_commitish: sha, name: `Tandem Relay ${tag.slice('relay-'.length)}`, body,
+      tag_name: tag, name: `Tandem Relay ${tag.slice('relay-'.length)}`, body,
       draft: false, prerelease: false, make_latest: 'false', generate_release_notes: false,
     },
   });
@@ -186,7 +187,7 @@ async function main() {
     });
     const pull = pullNotes(tag, credentials.image, client.repository);
     const release = await publishRelayRelease(client, {
-      tag, sha, body: releaseBody({ zh: notes.zh, en: notes.en, zhAfter: pull.zh, enAfter: pull.en }),
+      tag, body: releaseBody({ zh: notes.zh, en: notes.en, zhAfter: pull.zh, enAfter: pull.en }),
     });
     console.info(`relay Release：${release.html_url}`);
     return;

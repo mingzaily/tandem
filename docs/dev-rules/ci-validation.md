@@ -112,13 +112,13 @@ CI 安装两种 Rust target，分别构建 `aarch64-apple-darwin` 和 `x86_64-ap
 
 证书和密码保存在 Actions Secret `TANDEM_CODESIGN_P12`（base64 编码的 `.p12`）与 `TANDEM_CODESIGN_P12_PASSWORD`。Tauri 自带的 `APPLE_CERTIFICATE` 导入只接受 Apple 签发的证书，因此构建前由工作流自己创建临时钥匙串、导入证书，并只在当次运行器上把它信任为代码签名证书。打包后校验每个架构的签名要求包含这张证书，换了证书或退回 ad hoc 都会让发布失败。
 
-发布说明由 `release-notes.mjs` 生成，桌面和 relay 共用。提交标题取自上一个同类 tag 之后的提交；relay 只算改动 `relay/` 和 `pwa/` 的提交，没有上一个 tag 时只取本次提交。三个 Actions Secret `TANDEM_RELEASE_NOTES_API_URL`、`TANDEM_RELEASE_NOTES_API_KEY`、`TANDEM_RELEASE_NOTES_MODEL` 都存在时，向该 HTTPS 的 OpenAI 兼容接口先要英文说明（新功能、修复、改进），再译成简体中文。地址可以填服务的基础地址（如 `https://api.example.com/v1`），没有以 `/chat/completions` 结尾时自动补上；地址必须不带账号，每次请求超时 60 秒。任一配置缺失、接口失败、返回为空或正文回显密钥时，对应语言改用提交标题，安装包照常发布。
+发布说明由 `release-notes.mjs` 生成，桌面和 relay 共用。提交标题取自上一个同类 tag 之后的提交；relay 只算改动 `relay/` 和 `pwa/` 的提交，没有上一个 tag 时只取本次提交。三个 Actions Secret `TANDEM_RELEASE_NOTES_API_URL`、`TANDEM_RELEASE_NOTES_API_KEY`、`TANDEM_RELEASE_NOTES_MODEL` 都存在时，向该 HTTPS 的 OpenAI 兼容接口先要英文说明（新功能、修复、改进），再译成简体中文。地址可以填服务的基础地址（如 `https://api.example.com/v1`），没有以 `/chat/completions` 结尾时自动补上；地址必须不带账号，每次请求超时 60 秒。接口返回 HTTP 429、5xx、超时或连接被重置时，分别等 5 秒和 15 秒各重试一次；HTTP 4xx 等配置错误不重试。任一配置缺失、重试后仍失败、返回为空或正文回显密钥时，对应语言改用提交标题，安装包照常发布。
 
 正文中文在前：`## 更新内容`，再接桌面的下载表（Apple 芯片和 Intel 两个安装包的直链，以及应用内更新和首次打开的提示）或 relay 的镜像拉取命令与部署文档链接；英文放在折叠的 `English` 段落里。版本号和提交 SHA 由 Release 页面本身显示，正文不重复。草稿重跑会更新桌面正文；已公开的 Release 不改写说明。
 
-日志逐步记录说明来源：取自哪个 tag 范围、共几条提交，是否请求模型、HTTP 状态和用时，中文翻译是否成功，以及最终来源或退回原因（如“接口返回 HTTP 404”、“请求超过 60 秒”）。日志不写接口地址、密钥和模型名。
+日志逐步记录说明来源：取自哪个 tag 范围、共几条提交，是否请求模型、HTTP 状态和用时，失败时接口回复的前 200 字和重试等待，中文翻译是否成功，以及最终来源或退回原因（如“接口返回 HTTP 404”、“请求超过 60 秒”）。日志不写接口地址、密钥和模型名，接口回复中出现的这三者替换为 `***`。
 
-Release 包含 `Tandem_<version>_aarch64.dmg`、`Tandem_<version>_x64.dmg`、两种架构的 `Tandem_<arch>.app.tar.gz` 及签名、`latest.json` 和 `SHA256SUMS`。更新清单为 `darwin-aarch64` 与 `darwin-x86_64` 提供各自的更新包，URL 指向不可变版本 tag；发布器只在全部产物上传后公开 Release。临时 Actions 产物保留 7 天，Release 按版本保存。
+Release 只上传五个文件：`Tandem_<version>_aarch64.dmg`、`Tandem_<version>_x64.dmg`、两种架构的 `Tandem_<arch>.app.tar.gz` 和 `latest.json`。更新包签名写在 `latest.json` 里，不单独上传 `.sig`；GitHub 为每个产物显示 SHA-256，不再上传 `SHA256SUMS`。更新清单为 `darwin-aarch64` 与 `darwin-x86_64` 提供各自的更新包，URL 指向不可变版本 tag；发布器只在全部产物上传后公开 Release。临时 Actions 产物保留 7 天，Release 按版本保存。
 
 “设置 → 关于”提供检查、下载和安装重启入口。应用从 `https://github.com/mingzaily/tandem/releases/latest/download/latest.json` 读取清单，自动更新默认关闭；开启后由 Rust 按 1、6、12、24 小时间隔检查并下载，默认 6 小时，首次检查最早在启动 30 秒后执行。官方更新器校验签名和签名绑定版本（`requireSignedVersion`），安装与重启始终由用户确认。后台调度和下载状态独立于设置页挂载，失败等待所选间隔，已就绪更新暂停定期检查。更新签名使用 `TAURI_SIGNING_PRIVATE_KEY` Actions Secret，公钥写在 Tauri 配置中。私钥本机保存在 `~/.local/share/tandem-release/updater.key`，目录 `0700`、私钥 `0600`；它与 Apple ad hoc 签名独立。需要在新仓库配置 Secret 时从文件标准输入传给 `gh secret set`，保持密钥原值并妥善备份。
 
@@ -135,7 +135,7 @@ node .github/scripts/desktop-release.mjs check
 
 ### 首次线上验收
 
-推送后在 `Desktop release` 检查 prepare、build、publish 三阶段，确认 tag 指向触发提交，安装包版本与 tag 一致，双架构和签名检查通过，Release 含完整的五项产物，并按 `SHA256SUMS` 验证下载文件。在真实 Mac 上验证首次安装和打开；公开后再从前一个安装版本完成检查、下载校验、安装和重启，核对运行任务阻止安装、结束后可重试，以及重启后的版本。私有期间额外核对下载者权限。
+推送后在 `Desktop release` 检查 prepare、build、publish 三阶段，确认 tag 指向触发提交，安装包版本与 tag 一致，双架构和签名检查通过，Release 含完整的五项产物，并按 Release 页面显示的 SHA-256 验证下载文件。在真实 Mac 上验证首次安装和打开；公开后再从前一个安装版本完成检查、下载校验、安装和重启，核对运行任务阻止安装、结束后可重试，以及重启后的版本。私有期间额外核对下载者权限。
 
 失败时查看对应步骤的 HTTP 状态、版本校验或构建错误。修复后重跑失败任务；已发布版本需要修复时，将修复或 revert 合入 main，自动生成后续版本。发布结果异常时可在 GitHub 暂停 `Desktop release`，完成核对后恢复。首次线上执行和首次安装验收由维护者完成。
 

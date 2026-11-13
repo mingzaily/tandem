@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -204,16 +203,16 @@ async function packageFixture(t, version = '0.1.1') {
   return directory;
 }
 
-test('发布完整安装包和校验值，已发布版本重跑保持原产物', async (t) => {
+test('发布安装包、更新包和更新清单，已发布版本重跑保持原产物', async (t) => {
   const directory = await packageFixture(t);
   const { client, state } = githubFixture();
   const options = { version: '0.1.1', sha, directory };
   await publishRelease(client, options);
   assert.equal(state.releases[0].draft, false);
   assert.equal(state.releases[0].make_latest, 'true');
-  const checksum = state.uploads.find((asset) => asset.name === 'SHA256SUMS').data.toString();
-  assert.ok(checksum.startsWith(`${createHash('sha256').update('fixture-dmg-aarch64').digest('hex')}  Tandem_0.1.1_aarch64.dmg\n`));
-  assert.equal(checksum.trim().split('\n').length, 7);
+  assert.deepEqual(state.uploads.map((asset) => asset.name).sort(), [
+    'Tandem_0.1.1_aarch64.dmg', 'Tandem_0.1.1_x64.dmg', 'Tandem_aarch64.app.tar.gz', 'Tandem_x64.app.tar.gz', 'latest.json',
+  ]);
   const manifest = JSON.parse(state.uploads.find((asset) => asset.name === 'latest.json').data);
   assert.equal(manifest.version, '0.1.1');
   assert.equal(manifest.platforms['darwin-aarch64'].signature, 'fixture-signature-aarch64');
@@ -236,7 +235,7 @@ test('上传中断保持草稿，重跑替换草稿产物后发布', async (t) =
   state.failUpload = 0;
   await publishRelease(client, options);
   assert.equal(state.releases[0].draft, false);
-  assert.equal(state.releases[0].assets.length, 8);
+  assert.equal(state.releases[0].assets.length, 5);
 });
 
 test('旧任务发布不会夺取 Latest', async (t) => {
@@ -364,7 +363,7 @@ test('失败原因可以写进日志，但不含地址和密钥', async () => {
   const urls = [];
   await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async (url) => { urls.push(url.href); return new Response('', { status: 404 }); } });
   await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => { throw Object.assign(new Error('getaddrinfo ENOTFOUND notes.example.test'), { cause: { code: 'ENOTFOUND' } }); } });
-  await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => { throw new DOMException('timed out', 'TimeoutError'); } });
+  await modelChangelog(['Add'], { ...llm, onFailure, wait: async () => {}, fetchImpl: async () => { throw new DOMException('timed out', 'TimeoutError'); } });
   await modelChangelog(['Add'], { ...llm, onFailure, fetchImpl: async () => new Response(JSON.stringify({ choices: [{ message: { content: 'notes-secret' } }] })) });
   await modelChangelog(['Add'], { ...llm, url: 'http://notes.example.test/v1', onFailure });
   await modelChangelog(['Add'], { url: '', key: '', model: '', onFailure });

@@ -59,6 +59,44 @@ test('失败时日志写明原因，正文退回提交标题', async () => {
   assert.equal(logs.at(-1), '更新说明：使用提交标题（接口返回 HTTP 403）');
 });
 
+test('接口暂时不可用时等待后重试，日志带脱敏的回复片段', async () => {
+  const logs = [];
+  const waits = [];
+  const replies = [
+    new Response('model notes-model busy at notes.example.test, key notes-secret', { status: 503 }),
+    new Response('', { status: 429 }),
+    new Response(JSON.stringify({ choices: [{ message: { content: '### Features\n\n- A thing.' } }] })),
+    new Response(JSON.stringify({ choices: [{ message: { content: '### 新功能\n\n- 一个功能。' } }] })),
+  ];
+  const notes = await changeNotes({
+    subjects: ['Add a thing'], log: (line) => logs.push(line), wait: async (ms) => { waits.push(ms); },
+    llm: { url: 'https://notes.example.test/v1', key: 'notes-secret', model: 'notes-model' },
+    fetchImpl: async () => replies.shift(),
+  });
+  assert.deepEqual([notes.source, notes.zh], ['model', '### 新功能\n\n- 一个功能。']);
+  assert.deepEqual(waits, [5000, 15000]);
+  assert.ok(logs.includes('英文说明：接口回复 model *** busy at ***, key ***'));
+  assert.ok(logs.includes('英文说明：接口返回 HTTP 503，5 秒后重试'));
+  assert.equal(logs.some((line) => /notes-secret|notes\.example|notes-model/.test(line)), false);
+});
+
+test('重试用完仍失败才退回提交标题，配置错误不重试', async () => {
+  let calls = 0;
+  const busy = await changeNotes({
+    subjects: ['Add a thing'], log: () => {}, wait: async () => {},
+    llm: { url: 'https://notes.example.test/v1', key: 'k', model: 'm' },
+    fetchImpl: async () => { calls += 1; return new Response('', { status: 502 }); },
+  });
+  assert.deepEqual([busy.source, busy.reason, calls], ['commits', '接口返回 HTTP 502', 3]);
+  calls = 0;
+  await changeNotes({
+    subjects: ['Add a thing'], log: () => {}, wait: async () => { throw new Error('should not wait'); },
+    llm: { url: 'https://notes.example.test/v1', key: 'k', model: 'm' },
+    fetchImpl: async () => { calls += 1; return new Response('', { status: 401 }); },
+  });
+  assert.equal(calls, 1);
+});
+
 test('正文中文在前，英文折叠在 details 里', () => {
   const body = releaseBody({ zh: '- 中文', en: '- English', zhAfter: '## 下载', enAfter: '## Download' });
   assert.equal(body, '## 更新内容\n\n- 中文\n\n## 下载\n\n<details>\n<summary>English</summary>\n\n## What\'s new\n\n- English\n\n## Download\n\n</details>');

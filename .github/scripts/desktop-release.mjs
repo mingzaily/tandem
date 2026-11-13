@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { appendFile, realpath, readFile, readdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -102,7 +101,7 @@ export async function publishRelease(client, {
   }
   if (!/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new Error('发布需要有效的 GitHub 仓库地址');
   const platforms = {};
-  const artifacts = [];
+  const assets = [];
   for (const [arch, platform] of architectures) {
     const dmgName = `Tandem_${version}_${arch}.dmg`;
     const archiveName = `Tandem_${arch}.app.tar.gz`;
@@ -113,15 +112,12 @@ export async function publishRelease(client, {
     platforms[platform] = {
       signature, url: `https://github.com/${repository}/releases/download/${tag}/${archiveName}`,
     };
-    artifacts.push(
-      { name: dmgName, data: dmg }, { name: archiveName, data: archive },
-      { name: `${archiveName}.sig`, data: Buffer.from(`${signature}\n`) },
-    );
+    // The signature lives in latest.json, and GitHub lists a SHA-256 for every asset, so the
+    // release carries only what people download and what the updater fetches.
+    assets.push({ name: dmgName, data: dmg }, { name: archiveName, data: archive });
   }
   const manifest = { version, pub_date: now.toISOString(), notes: `Tandem ${version}`, platforms };
-  artifacts.push({ name: 'latest.json', data: Buffer.from(JSON.stringify(manifest, null, 2) + '\n') });
-  const checksum = artifacts.map(({ name, data }) => `${createHash('sha256').update(data).digest('hex')}  ${name}\n`).join('');
-  const assets = [...artifacts, { name: 'SHA256SUMS', data: Buffer.from(checksum) }];
+  assets.push({ name: 'latest.json', data: Buffer.from(JSON.stringify(manifest, null, 2) + '\n') });
   let release = await client.request(`/releases/tags/${tag}`, { optional: true });
   if (release && !release.draft) {
     if (!assets.every((asset) => release.assets.some((existing) => existing.name === asset.name))) {

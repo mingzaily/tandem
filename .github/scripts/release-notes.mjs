@@ -61,13 +61,29 @@ function failureReason(error) {
   return `请求失败（${error?.name ?? 'Error'}${code ? ` ${code}` : ''}）`;
 }
 
+/** Busy or briefly unreachable services usually recover within seconds; bad config never does. */
+const RETRY_DELAYS = [5000, 15000];
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function transient(error) {
+  if (error instanceof NotesFailure) return error.retry === true;
+  return error?.name === 'TimeoutError' || ['ECONNRESET', 'ETIMEDOUT', 'UND_ERR_SOCKET'].includes(error?.cause?.code);
+}
+
+/** A short excerpt of an error reply, with the key, model and host taken out. */
+function errorExcerpt(text, { key, model, endpoint }) {
+  let excerpt = String(text ?? '').replace(/\s+/g, ' ').trim().slice(0, 200);
+  for (const secret of [key, model, endpoint.host].filter(Boolean)) excerpt = excerpt.split(secret).join('***');
+  return excerpt;
+}
+
 function changelogText(text, key) {
   const changelog = String(text ?? '').trim().replace(/^```(?:markdown)?\s*/i, '').replace(/\s*```$/, '').trim();
   if (!changelog || changelog.length > 12000 || changelog.includes(key)) return undefined;
   return changelog;
 }
 
-async function chatCompletion(endpoint, { key, model, prompt, fetchImpl, label, log }) {
+async function chatAttempt(endpoint, { key, model, prompt, fetchImpl, label, log }) {
   const started = Date.now();
   log(`${label}：请求模型`);
   const response = await fetchImpl(endpoint, {
@@ -76,12 +92,30 @@ async function chatCompletion(endpoint, { key, model, prompt, fetchImpl, label, 
     body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }] }),
   });
   log(`${label}：HTTP ${response.status}，用时 ${Date.now() - started} ms`);
-  if (!response.ok) throw new NotesFailure(`接口返回 HTTP ${response.status}`);
+  if (!response.ok) {
+    const excerpt = errorExcerpt(await response.text().catch(() => ''), { key, model, endpoint });
+    if (excerpt) log(`${label}：接口回复 ${excerpt}`);
+    const failure = new NotesFailure(`接口返回 HTTP ${response.status}`);
+    failure.retry = response.status === 429 || response.status >= 500;
+    throw failure;
+  }
   const payload = await response.json().catch(() => undefined);
   const text = changelogText(payload?.choices?.[0]?.message?.content, key);
   if (!text) throw new NotesFailure('接口没有返回可用的说明（为空、过长或包含密钥）');
   log(`${label}：收到 ${text.length} 字`);
   return text;
+}
+
+async function chatCompletion(endpoint, { wait = sleep, ...options }) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await chatAttempt(endpoint, options);
+    } catch (error) {
+      if (attempt >= RETRY_DELAYS.length || !transient(error)) throw error;
+      options.log(`${options.label}：${failureReason(error)}，${RETRY_DELAYS[attempt] / 1000} 秒后重试`);
+      await wait(RETRY_DELAYS[attempt]);
+    }
+  }
 }
 
 const AUDIENCES = {
@@ -90,7 +124,7 @@ const AUDIENCES = {
 };
 
 export async function modelChangelog(subjects, {
-  url = '', key = '', model = '', fetchImpl = fetch, onFailure = () => {}, log = () => {}, audience = 'desktop',
+  url = '', key = '', model = '', fetchImpl = fetch, onFailure = () => {}, log = () => {}, audience = 'desktop', wait,
 } = {}) {
   if (!subjects.length) return undefined;
   if (!url || !key || !model) {
@@ -104,13 +138,13 @@ export async function modelChangelog(subjects, {
   }
   try {
     const english = await chatCompletion(endpoint, {
-      key, model, fetchImpl, log, label: '英文说明',
+      key, model, fetchImpl, log, wait, label: '英文说明',
       prompt: `Based on these git commit subjects, write concise release notes in markdown for ${AUDIENCES[audience] ?? AUDIENCES.desktop}. Use "### Features", "### Fixes" and "### Improvements" headings and omit empty ones. Keep only changes those readers can notice. Skip dependency bumps, formatting, CI, tests and docs-only commits. One sentence per item. Output only the notes, without a preamble, version numbers or install instructions.\n\nCommit subjects:\n${subjects.join('\n')}`,
     });
     let chinese;
     try {
       chinese = await chatCompletion(endpoint, {
-        key, model, fetchImpl, log, label: '中文翻译',
+        key, model, fetchImpl, log, wait, label: '中文翻译',
         prompt: `把下面的发布说明译成简体中文。标题依次译为“### 新功能”“### 修复”“### 改进”，保留 markdown 结构、链接、代码和产品名 Tandem。只输出译文，不要前言。\n\n${english}`,
       });
     } catch (error) {
@@ -128,10 +162,10 @@ function subjectList(subjects, empty) {
 }
 
 /** Notes in both languages; each language falls back to the commit subjects on its own. */
-export async function changeNotes({ subjects, llm = {}, fetchImpl, audience = 'desktop', log = console.info }) {
+export async function changeNotes({ subjects, llm = {}, fetchImpl, audience = 'desktop', log = console.info, wait }) {
   let reason;
   const generated = await modelChangelog(subjects, {
-    ...llm, fetchImpl, audience, log, onFailure: (why) => { reason = why; },
+    ...llm, fetchImpl, audience, log, wait, onFailure: (why) => { reason = why; },
   });
   const notes = {
     en: generated?.english ?? subjectList(subjects, 'No listed changes.'),

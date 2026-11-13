@@ -145,7 +145,7 @@ pub enum Decision {
     Allow,
     AllowForTask,
     Deny,
-    Answer { answers: serde_json::Map<String, Value>, #[serde(default)] custom: bool },
+    Answer { answers: serde_json::Map<String, Value>, #[serde(default)] custom: bool, #[serde(default)] comment: Option<String> },
 }
 
 /// Where a turn's events go. The page, phones or both, so the turn itself does not care.
@@ -1428,7 +1428,7 @@ mod tests {
         let mut channels = begin_with(&runs, QUESTION_REQUEST);
         assert!(runs.answer("a", "r1", Decision::Allow).is_err());
         let answers = json!({"Color?": "Red"}).as_object().unwrap().clone();
-        runs.answer("a", "r1", Decision::Answer { answers, custom: false }).unwrap();
+        runs.answer("a", "r1", Decision::Answer { answers, custom: false, comment: None }).unwrap();
         let sent = sent_line(&mut channels);
         let input = &sent["response"]["response"]["updatedInput"];
         assert_eq!(input["answers"]["Color?"], "Red");
@@ -1443,7 +1443,7 @@ mod tests {
         let runs = Runs::default();
         let mut channels = begin_with(&runs, &body);
         let answers = json!({"Pick": "Use my own approach"}).as_object().unwrap().clone();
-        runs.answer("a", "r1", Decision::Answer { answers, custom: true }).unwrap();
+        runs.answer("a", "r1", Decision::Answer { answers, custom: true, comment: None }).unwrap();
         let sent = sent_line(&mut channels);
         assert_eq!(sent["response"]["response"]["updatedInput"]["answers"]["Pick"], "Use my own approach");
         assert_eq!(sent["response"]["response"]["updatedInput"]["questions"][0]["options"].as_array().unwrap().len(), 2);

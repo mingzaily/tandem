@@ -92,13 +92,15 @@ export interface Question {
   multiSelect?: boolean;
   /** Normalized native capability for the localized free-text entry. */
   allowCustom?: boolean;
+  /** Kept local until the choice and its optional note are submitted together. */
+  allowComment?: boolean;
 }
 
 export type Decision =
   | { kind: 'allow' }
   | { kind: 'allowForTask' }
   | { kind: 'deny' }
-  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean };
+  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean; comment?: string };
 
 export interface GenerationSpeed {
   rate: number | null;

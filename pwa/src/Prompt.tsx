@@ -20,15 +20,18 @@ export function Prompt({
   const compositionEnded = useRef(Number.NEGATIVE_INFINITY);
   const [index, setIndex] = useState(0);
   const [customOpen, setCustomOpen] = useState(false);
+  const [commentOpen, setCommentOpen] = useState(false);
+  const [comment, setComment] = useState('');
+  const [commentAnswer, setCommentAnswer] = useState('');
   const customInput = useRef<HTMLInputElement>(null);
   const customEntry = useRef<HTMLButtonElement>(null);
   const restoreOptions = useRef(false);
   const q = request.type === 'question' ? request.questions[index] : undefined;
-  const showCustom = Boolean(q && (!q.options?.length || customOpen));
+  const showCustom = Boolean(q && !commentOpen && (!q.options?.length || customOpen));
   useEffect(() => {
-    if (showCustom) customInput.current?.focus();
+    if (showCustom || commentOpen) customInput.current?.focus();
     else if (restoreOptions.current) { restoreOptions.current = false; customEntry.current?.focus(); }
-  }, [index, showCustom]);
+  }, [index, showCustom, commentOpen]);
   const answer = async (d: Decision) => {
     if (disabled || inFlight.current) return;
     inFlight.current = true;
@@ -79,16 +82,21 @@ export function Prompt({
     );
   if (!q) return null;
   const isLast = index === request.questions.length - 1;
-  const closeCustom = () => { restoreOptions.current = true; setCustomOpen(false); };
-  const advance = (value: string, custom = false) => {
+  const closeCustom = () => { restoreOptions.current = true; setCustomOpen(false); setCommentOpen(false); };
+  const advance = (value: string, custom = false, note = comment) => {
     if (!value || disabled || inFlight.current) return;
+    if (q.allowComment && (!custom || q.multiSelect) && !commentOpen) {
+      if (!q.multiSelect) setSelected((old) => ({ ...old, [q.question]: [value] }));
+      setCommentAnswer(value);
+      setCommentOpen(true); return;
+    }
     if (!isLast) {
       setAnswers((old) => ({ ...old, [q.question]: value }));
       setCustomOpen(false);
       setIndex(index + 1);
-    } else void answer({ kind: 'answer', answers: { ...answers, [q.question]: value }, ...(custom ? { custom: true } : {}) });
+    } else void answer({ kind: 'answer', answers: { ...answers, [q.question]: value }, ...(custom ? { custom: true } : {}), ...(commentOpen ? { comment: note.trim() } : {}) });
   };
-  const value = [
+  const value = commentOpen ? commentAnswer : [
     ...(selected[q.question] ?? []),
     ...(showCustom && answers[q.question]?.trim() ? [answers[q.question].trim()] : []),
   ].join(', ');
@@ -131,6 +139,13 @@ export function Prompt({
             <p>{q.context}</p>
           </div> : null}
           <div className="question-options">
+            {commentOpen ? <div className="question-note">
+              <small>{t('questionSelected')}</small><p>{commentAnswer}</p>
+              <label htmlFor={`note-${request.requestId}`}>{t('questionComment')}</label>
+              <input id={`note-${request.requestId}`} ref={customInput} className="custom-answer" aria-label={t('questionComment')}
+                placeholder={t('questionCommentHint')} value={comment} onChange={(event) => setComment(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Escape' && !event.nativeEvent.isComposing) { event.preventDefault(); event.stopPropagation(); closeCustom(); } }} />
+            </div> : <>
             {q.options?.map((o, i) => (
               <label
                 className={
@@ -198,11 +213,12 @@ export function Prompt({
                 onChange={(e) => setAnswers((old) => ({ ...old, [q.question]: e.target.value }))}
               />
             )}
+            </>}
           </div>
           <div className="prompt-actions">
-            {customOpen && Boolean(q.options?.length) ? <button type="button" onClick={closeCustom}><ArrowLeft size={14} aria-hidden />{t('backOptions')}</button> : null}
-            <button type="button" onClick={() => void answer({ kind: 'deny' })}>
-              {t('cancel')}
+            {(customOpen || commentOpen) && Boolean(q.options?.length) ? <button type="button" onClick={closeCustom}><ArrowLeft size={14} aria-hidden />{t('backOptions')}</button> : null}
+            <button type="button" onClick={() => commentOpen ? advance(value, false, '') : void answer({ kind: 'deny' })}>
+              {t(commentOpen ? 'questionSkipComment' : 'cancel')}
             </button>
             <span />
             <button className="primary" disabled={!value}>

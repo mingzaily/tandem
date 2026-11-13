@@ -53,6 +53,7 @@ import {
   NO_ACTIVE_TURN,
   steerTurn,
   steerQueuedTurn,
+  takeQueuedDraft,
   reorderQueuedTurn,
   resumeQueue,
   editQueuedTurn,
@@ -85,6 +86,7 @@ import { describeUsage, selectedModel, sessionPermissionMode, taskPreferences, u
 import type { ModelReadState } from './lib/modelEffort';
 import { t } from './lib/i18n';
 import { clearTaskPreviews, recordTaskActivity, recordedTaskActivity, retainTaskTimes, taskListWithPreviews, type TaskActivity, type TaskPreviews } from './lib/taskList';
+import { historyForTask, historyReadyForTask, HistoryReads, type TaskHistory } from './lib/taskHistory';
 import { attentionTaskCount, shouldMarkUnread } from './lib/notifications';
 import { emptyRateHistory, recordSpeed, type RateHistory } from './lib/tokenRate';
 import { deriveInputHistory } from './lib/recallInput';
@@ -115,7 +117,10 @@ import {
 
 import { loadSettings, saveSettings, type AppSettings } from './lib/settings';
 import { preferencesSnapshot, saveConfig, saveViewState, subscribePreferences } from './lib/storage';
-import { acceptNativeTitle, taskTitle, unarchive, type TaskMeta } from './lib/taskMeta';
+import { acceptNativeTitle, archivedTaskIds, isTaskArchived, taskTitle, type TaskMeta } from './lib/taskMeta';
+import { useTaskArchive } from './lib/useTaskArchive';
+import { composerDrafts } from './lib/composerDrafts';
+import { APP_SHORTCUTS, type AppShortcutId } from './lib/keyboardShortcuts';
 import { mergeQueue } from './lib/pendingQueue';
 import { requestAnswerFailure } from './lib/requestAnswer';
 import { useRemotePresence } from './lib/remotePresence';
@@ -140,7 +145,8 @@ const SEED_RECENT_MS = 30 * 24 * 60 * 60 * 1000;
 const MessageStream = lazy(() => import('./components/MessageStream'));
 const PendingQueuePanel = lazy(() => import('./components/PendingQueuePanel').then((module) => ({ default: module.PendingQueuePanel })));
 
-type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null } | { kind: 'settings'; tab?: 'remote' };
+type NewTaskDraft = { id: string; agent: Agent; prefs: TurnPrefs; worktree: boolean };
+type Selection = { kind: 'task'; id: string } | { kind: 'new'; cwd: string | null; draft?: NewTaskDraft } | { kind: 'settings'; tab?: 'remote' };
 type Notice = { text: string; isError: boolean };
 type TurnProgress = {
   startedAt: number; outputTokens: number; activity: number; rate: RateHistory;
@@ -190,7 +196,6 @@ export function App() {
   const navigate = useCallback((next: Selection) => setNav((current) => pushEntry(current, next)), []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(loadSidebarCollapsed);
   const [draftFill, setDraftFill] = useState<{ text: string }>();
-  const [loadedId, setLoadedId] = useState<string | null>(null);
   const [settings, setSettings] = useState(loadSettings);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -220,9 +225,10 @@ export function App() {
   const [useWorktree, setUseWorktree] = useState(false);
   const [writers, setWriters] = useState<ExternalWriter[]>([]);
   const [overriddenWriters, setOverriddenWriters] = useState<Set<string>>(new Set());
-  const [history, setHistory] = useState<Item[]>([]);
-  const historyRef = useRef(history);
-  historyRef.current = history;
+  const [historySnapshot, setHistory] = useState<TaskHistory | null>(null);
+  const historyRef = useRef(historySnapshot);
+  historyRef.current = historySnapshot;
+  const historyReads = useRef(new HistoryReads());
   const [live, setLive] = useState<Record<string, Item[]>>({});
   const [stoppedTasks, setStoppedTasks] = useState<Set<string>>(new Set());
   const [notices, setNotices] = useState<Record<string, Notice>>({});
@@ -284,11 +290,17 @@ export function App() {
   // The CLI has not written a new task's file yet, so its live items are all there is to show.
   const unwrittenTasks = useRef(new Set<string>());
   const selectedId = selection.kind === 'task' ? selection.id : null;
+  const historyVisit = useMemo(() => ({}), [selectedId]);
+  const historyVisitRef = useRef(historyVisit);
+  historyVisitRef.current = historyVisit;
+  const history = historyForTask(historySnapshot, selectedId);
+  const loadedId = historyReadyForTask(historySnapshot, selectedId, historyVisit) ? selectedId : null;
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
 
   const scanRoots = useRef<{ projects: string[]; conversations: string[] } | null>(null);
   const codexListJob = useRef<Promise<string | null> | null>(null);
+  const codexListEpoch = useRef(0);
   const refreshCodexTasks = useCallback((force: boolean): Promise<string | null> => {
     if (codexListJob.current) return codexListJob.current;
     if (hiddenAgentsRef.current.includes('codex')) {
@@ -298,8 +310,9 @@ export function App() {
     if (!scanRoots.current || (!force && Date.now() - lastCodexList.current < CODEX_LIST_MIN_INTERVAL_MS)) return Promise.resolve(null);
     lastCodexList.current = Date.now();
     const { projects, conversations } = scanRoots.current;
+    const epoch = codexListEpoch.current;
     const job = listCodexTasks(projects, conversations).then((next) => {
-      setCodexTasks((current) => retainTaskTimes(current, next));
+      if (epoch === codexListEpoch.current) setCodexTasks((current) => retainTaskTimes(current, next));
       return null;
     }).catch((error) => {
       console.error(error);
@@ -339,25 +352,41 @@ export function App() {
     [refreshCodexTasks],
   );
 
+  const { archiving, archiveError, change: changeArchive } = useTaskArchive({
+    onChanged: ({ taskId, agent, archived }) => {
+      if (agent === 'codex') setCodexTasks((current) => current.map((task) => task.id === taskId ? { ...task, archived } : task));
+    },
+    onSettled: (task) => {
+      if (task.agent !== 'codex') return;
+      codexListEpoch.current += 1;
+      void (codexListJob.current ?? Promise.resolve()).then(() => refreshCodexTasks(true));
+    },
+  });
+
   const loadHistory = useCallback(async (agent: Agent, id: string, currentTurn: () => boolean = () => true) => {
+    const visit = historyVisitRef.current;
+    const pendingRead = historyReads.current.begin(id);
+    const isCurrent = () => pendingRead.isCurrent() && currentTurn();
     try {
       const { messages, context, permissionMode, modelSelection } = await readTask(agent, id);
-      if (!currentTurn()) return;
+      if (!isCurrent()) return;
       const recordedAt = recordedTaskActivity(messages);
       if (recordedAt > 0) touchListTask(id, recordedAt);
       setNativeModels((current) => ({ ...current, [id]: modelSelection ?? null }));
       const mode = sessionPermissionMode(permissionMode);
       if (mode) setSessionModes((current) => current[id] === mode ? current : { ...current, [id]: mode });
-      if (selectedIdRef.current === id) setHistory(buildItems(messages));
+      if (selectedIdRef.current === id && historyVisitRef.current === visit) setHistory({ taskId: id, items: buildItems(messages), ready: true, visit });
       if (context) setContexts((current) => ({ ...current, [id]: context }));
     } catch (error) {
-      if (!currentTurn()) return;
+      if (!isCurrent()) return;
       setNotices((current) => ({
         ...current,
         [id]: { text: t('loadFailed', { error: String(error) }), isError: true },
       }));
     } finally {
-      if (selectedIdRef.current === id && currentTurn()) setLoadedId(id);
+      if (selectedIdRef.current === id && historyVisitRef.current === visit && isCurrent()) setHistory((current) => historyReadyForTask(current, id, visit)
+        ? current : { taskId: id, items: historyForTask(current, id), ready: true, visit });
+      pendingRead.release();
     }
   }, [touchListTask]);
 
@@ -439,9 +468,11 @@ export function App() {
   }, [tasksLoaded, refreshInfo]);
 
   // A CLI whose tasks are hidden is not offered for new ones; the saved choice returns with it.
-  const startAgent: Agent = hiddenAgents.includes(newTaskAgent)
+  const newDraft = selection.kind === 'new' ? selection.draft : undefined;
+  const newDraftKey = newDraft ? `new-${newDraft.id}` : 'new';
+  const startAgent: Agent = newDraft?.agent ?? (hiddenAgents.includes(newTaskAgent)
     ? ((['claude', 'codex', 'pi'] as const).find((agent) => !hiddenAgents.includes(agent)) ?? newTaskAgent)
-    : newTaskAgent;
+    : newTaskAgent);
   const selectedTaskAgent = tasks?.find((task) => task.id === selectedId)?.agent;
   const selectedAgent: Agent = selectedId
     ? (selectedTaskAgent ?? newTaskAgents[selectedId] ?? queues[selectedId]?.agent ?? 'claude')
@@ -449,7 +480,7 @@ export function App() {
   // A task continues in the permission mode it last ran in, wherever that was, until it is changed here.
   const prefs = selectedId
     ? taskPreferences(allPrefs[selectedAgent], nativeModels[selectedId], chosenPrefs[selectedId], sessionModes[selectedId])
-    : allPrefs[selectedAgent];
+    : newDraft?.prefs ?? allPrefs[selectedAgent];
   const info = infos[selectedAgent];
 
   useEffect(() => {
@@ -531,9 +562,9 @@ export function App() {
   };
 
   useEffect(() => {
-    setHistory([]);
-    setLoadedId(null);
-    if (selectedId && !unwrittenTasks.current.has(selectedId)) void loadHistory(selectedAgent, selectedId);
+    let current = true;
+    if (selectedId && !unwrittenTasks.current.has(selectedId)) void loadHistory(selectedAgent, selectedId, () => current);
+    return () => { current = false; };
   }, [selectedId, selectedAgent, loadHistory]);
 
   const settleRequest = useCallback((taskId: string, requestId: string) => {
@@ -700,7 +731,7 @@ export function App() {
           if (error?.type === 'error') {
             const source = [...streamed].reverse().find((item) => item.type === 'user');
             if (source?.type === 'user') {
-              const before = selectedIdRef.current === id ? historyBeforeLiveTurn(historyRef.current, streamed) : null;
+              const before = selectedIdRef.current === id ? historyBeforeLiveTurn(historyForTask(historyRef.current, id), streamed) : null;
               const occurrence = before ? [...before, ...streamed].filter((item) => item.type === 'user' && item.text === source.text).length - 1 : undefined;
               setTurnFailures((current) => ({ ...current, [id]: [...(current[id] ?? []), { prompt: source.text, sentAt: source.at, endedAt: Date.now(), occurrence, error: { ...error, type: 'error' } }] }));
             }
@@ -709,7 +740,10 @@ export function App() {
           if (shouldMarkUnread(Boolean(event.cancelled), id, selectedIdRef.current, document.hasFocus())) changeUnread((current) => markUnread(current, id));
           // Preserve the completed stream until the native file replaces it. A following queued
           // turn can start while that read is in flight, and owns its own live content.
-          if (selectedIdRef.current === id) setHistory((current) => [...historyBeforeLiveTurn(current, streamed), ...streamed]);
+          if (selectedIdRef.current === id) setHistory((current) => ({
+            taskId: id, items: [...historyBeforeLiveTurn(historyForTask(current, id), streamed), ...streamed],
+            ready: historyReadyForTask(current, id, historyVisitRef.current) || isNew, visit: historyVisitRef.current,
+          }));
           setLive(({ [id]: _removed, ...rest }) => rest);
           void (async () => {
             if (selectedIdRef.current === id) await loadHistory(agent, id, () => turnGenerations.current.get(id) === generation);
@@ -803,7 +837,7 @@ export function App() {
         ...turnOptions(prefs, info.models),
         // Pi has no permission modes, and any saved choice belongs to another agent's menu.
         ...(agent === 'pi' ? { permissionMode: null } : {}),
-        worktree: agent === 'claude' && useWorktree,
+        worktree: agent === 'claude' && (newDraft?.worktree ?? useWorktree),
       };
       const model = selectedModel(prefs, info.models);
       const initialPrefs = { ...prefs, model: prefs.model ?? (model?.resolvedModel || null), effort: prefs.effort ?? model?.defaultEffort ?? null };
@@ -818,7 +852,7 @@ export function App() {
         }
       });
     },
-    [selectedAgent, prefs, info.models, useWorktree, createTurnHandler, clearTurn],
+    [selectedAgent, prefs, info.models, useWorktree, newDraft, createTurnHandler, clearTurn],
   );
 
   const changeHiddenAgents = useCallback((next: Agent[]) => {
@@ -831,13 +865,6 @@ export function App() {
   const changeSidebarOptions = useCallback((options: SidebarOptions) => {
     setSidebarOptions(options);
     saveConfig({ sidebar_group_by_cli: options.groupByCli, sidebar_sort: options.sort });
-  }, []);
-  const unarchiveTask = useCallback((id: string) => {
-    setTaskMeta((current) => {
-      const next = unarchive(current, id);
-      if (next !== current) saveTaskMeta(next);
-      return next;
-    });
   }, []);
 
   const send = useCallback(
@@ -946,6 +973,7 @@ export function App() {
   }, []);
   const changePrefs = (next: TurnPrefs) => {
     if (selectedId) setChosenPrefs((current) => ({ ...current, [selectedId]: next }));
+    else if (selection.kind === 'new' && newDraft) setSelection({ ...selection, draft: { ...newDraft, prefs: next } });
     else changePrefsFor(selectedAgent, next);
   };
   const otherAgents = (['claude', 'codex', 'pi'] as const).filter((agent) => agent !== startAgent && !hiddenAgents.includes(agent));
@@ -969,7 +997,7 @@ export function App() {
   const unread = useMemo(() => new Set(unreadTasks), [unreadTasks]);
   const badgeCount = useMemo(() => {
     const visible = (tasks ?? []).filter((task) => !hiddenAgents.includes(task.agent)).map(({ id }) => id);
-    return attentionTaskCount(unreadTasks, waiting, [...visible, ...Object.keys(live)], taskMeta.archived);
+    return attentionTaskCount(unreadTasks, waiting, [...visible, ...Object.keys(live)], archivedTaskIds(taskMeta, tasks ?? []));
   }, [tasks, hiddenAgents, unreadTasks, waiting, live, taskMeta.archived]);
   useEffect(() => { void updateAppBadge(badgeCount).catch(console.error); }, [badgeCount]);
   const menuTask = menuAnchor ? tasks?.find((task) => task.id === menuAnchor.id) : undefined;
@@ -1031,17 +1059,16 @@ export function App() {
     : null;
 
   // An archived task leaves the sidebar, so the page it was on gives way to a new task there.
-  const isSelectedArchived = selectedId !== null && taskMeta.archived.includes(selectedId);
+  const isSelectedArchived = selectedTask ? isTaskArchived(taskMeta, selectedTask) : selectedId !== null && taskMeta.archived.includes(selectedId);
   useEffect(() => {
     if (isSelectedArchived) setSelection({ kind: 'new', cwd: homeOfSelected ?? newTaskCwd ?? null });
   }, [isSelectedArchived]);
 
   const archivedGroups = useMemo((): ArchivedGroup[] => {
     const groups = new Map<string, ArchivedGroup>();
-    const byId = new Map((tasks ?? []).map((task) => [task.id, task]));
-    for (const id of taskMeta.archived) {
-      const task = byId.get(id);
-      if (!task) continue;
+    for (const task of tasks ?? []) {
+      if (!isTaskArchived(taskMeta, task)) continue;
+      const id = task.id;
       const name = isConversationCwd(task.cwd) ? t('conversations') : projectName(groupRoot(task.cwd, extraProjects));
       const group = groups.get(name) ?? { name, tasks: [] };
       group.tasks.push({ id, title: taskTitle(taskMeta, task), agent: task.agent, updatedAtMs: task.updatedAtMs });
@@ -1120,8 +1147,9 @@ export function App() {
         started = true;
         // The replaced turn leaves the view now; the native file decides what stays once the turn ends.
         setHistory((current) => {
-          const index = current.findIndex((item) => item.id === itemId);
-          return index < 0 ? current : current.slice(0, index);
+          if (current?.taskId !== id) return current;
+          const index = current.items.findIndex((item) => item.id === itemId);
+          return index < 0 ? current : { ...current, items: current.items.slice(0, index) };
         });
         resolve();
       }
@@ -1270,8 +1298,8 @@ export function App() {
   }, []);
 
   const changeTaskMeta = useCallback((next: TaskMeta) => {
+    saveTaskMeta(next, taskMetaRef.current);
     setTaskMeta(next);
-    saveTaskMeta(next);
   }, []);
 
   const generateTitle = useCallback(async (agent: Agent, id: string) => {
@@ -1294,7 +1322,7 @@ export function App() {
       if (agent === 'pi') setPiTasks(updated);
       setTaskMeta((current) => {
         const next = acceptNativeTitle(current, id, previousTitle);
-        saveTaskMeta(next);
+        saveTaskMeta(next, current);
         return next;
       });
       void refreshTasks(agent === 'codex');
@@ -1321,10 +1349,10 @@ export function App() {
           saveExtraProjects(next);
           return next;
         });
-        setSelection({ kind: 'new', cwd });
+        setSelection({ kind: 'new', cwd, draft: newDraft });
       })
       .catch(console.error);
-  }, [setSelection]);
+  }, [setSelection, newDraft]);
 
   const openSettings = useCallback(() => navigate({ kind: 'settings' }), [navigate]);
   const closeMenu = useCallback(() => setMenuAnchor(null), []);
@@ -1338,13 +1366,14 @@ export function App() {
 
   // Reads the page state each time, so it never needs to be bound again.
   const shortcuts = useRef<Record<string, () => void>>({});
-  shortcuts.current = {
-    ',': openSettings,
-    n: () => navigate({ kind: 'new', cwd: homeOfSelected ?? newTaskCwd ?? projects[0] ?? null }),
-    b: toggleSidebar,
-    '[': () => setNav(goBack),
-    ']': () => setNav(goForward),
+  const shortcutActions: Record<AppShortcutId, () => void> = {
+    settings: openSettings,
+    newTask: () => navigate({ kind: 'new', cwd: homeOfSelected ?? newTaskCwd ?? projects[0] ?? null }),
+    sidebar: toggleSidebar,
+    back: () => setNav(goBack),
+    forward: () => setNav(goForward),
   };
+  shortcuts.current = Object.fromEntries(APP_SHORTCUTS.map(({ id, key }) => [key, shortcutActions[id]]));
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const run = event.metaKey && !event.shiftKey && !event.altKey ? shortcuts.current[event.key] : undefined;
@@ -1395,7 +1424,9 @@ export function App() {
           archivedGroups={archivedGroups}
           hiddenAgents={hiddenAgents}
           onHiddenAgentsChange={changeHiddenAgents}
-          onUnarchive={unarchiveTask}
+          onUnarchive={(id) => { const task = tasks?.find((task) => task.id === id); if (task) void changeArchive(task, false); }}
+          archiving={archiving}
+          archiveError={archiveError}
           version={version}
           onBack={() => setNav(goBack)}
         />
@@ -1430,8 +1461,6 @@ export function App() {
           pinnedProjects={pinnedProjects}
           options={sidebarOptions}
           menuAnchor={menuAnchor}
-          generatingTitles={generatingTitles}
-          onGenerateTitle={(task) => void generateTitle(task.agent, task.id)}
           onPinnedProjectsChange={(paths) => { setPinnedProjects(paths); saveViewState({ pinnedProjects: paths }); }}
           collapsedGroups={collapsedSidebarGroups}
           onCollapsedGroupsChange={(keys) => { setCollapsedSidebarGroups(keys); saveViewState({ collapsedSidebarGroups: keys }); }}
@@ -1455,6 +1484,8 @@ export function App() {
             })
           }
           onMetaChange={changeTaskMeta}
+          onArchive={(task, archived) => void changeArchive(task, archived)}
+          archiving={archiving}
           onRenameDone={() => setRenamingId(null)}
           onOpenMenu={setMenuAnchor}
           onOpenSettings={openSettings}
@@ -1463,6 +1494,11 @@ export function App() {
       <main className="content-area flex min-w-0 flex-1 flex-col bg-[hsl(var(--content-area))]">
         <header
           data-tauri-drag-region
+          onContextMenu={(event) => {
+            if (!selectedTask) return;
+            event.preventDefault();
+            setMenuAnchor({ source: 'header', id: selectedTask.id, x: event.clientX, y: event.clientY });
+          }}
           className={`flex h-[46px] shrink-0 select-none items-center pr-4 ${
             sidebarCollapsed ? 'pl-[176px]' : 'pl-4'
           } ${selectedId ? 'border-b border-[hsl(var(--titlebar-border))]' : ''}`}
@@ -1478,10 +1514,11 @@ export function App() {
               {selectedTask ? taskTitle(taskMeta, selectedTask) : selectedId ? (draftTitles[selectedId] ?? '') : ''}
             </span>
           </div>
-          {selectedTask ? <TaskHeaderActions task={selectedTask} menuAnchor={menuAnchor}
-            onMenu={(bounds) => setMenuAnchor((current) => current?.source === 'header' && current.id === selectedTask.id ? null : { source: 'header', id: selectedTask.id, x: bounds.right - 200, y: bounds.bottom + 4 })}
+          {selectedTask ? <TaskHeaderActions task={selectedTask} generatingTitle={generatingTitles.has(selectedTask.id)}
+            onGenerateTitle={() => void generateTitle(selectedTask.agent, selectedTask.id)} onOpenMenu={setMenuAnchor}
             onError={(error) => setNotices((current) => ({ ...current, [selectedTask.id]: { text: String(error), isError: true } }))} /> : null}
         </header>
+        {archiveError ? <div className="px-4 py-2"><NoticeLine notice={{ text: archiveError, isError: true }} /></div> : null}
         {selectedId ? (
           <ConversationLayout key={selectedId} messages={(bottomPadding) => (
             <Suspense fallback={null}>
@@ -1573,6 +1610,18 @@ export function App() {
                     <PendingQueuePanel key={selectedId} queue={selectedQueue} editingId={editingEntry?.id}
                       onEdit={(entry) => void beginQueueEdit(entry)} onChange={updateQueue}
                       running={turnAppenders.current.has(selectedId)}
+                      onNewTask={async (entry) => {
+                        if (!taskCwd) throw new Error(t('queueProjectUnavailable'));
+                        const moved = await takeQueuedDraft(selectedId, entry.id);
+                        updateQueue(moved.queue);
+                        const draft: NewTaskDraft = { id: crypto.randomUUID(), agent: moved.queue.agent,
+                          prefs: { model: moved.entry.options.model, effort: moved.entry.options.effort,
+                            permissionMode: (moved.entry.options.permissionMode ?? 'ask') as PermissionMode },
+                          worktree: Boolean(moved.entry.options.worktree) };
+                        composerDrafts.set(`new-${draft.id}`, { value: moved.entry.prompt, attachments: moved.entry.attachments });
+                        setDraftFill(undefined);
+                        navigate({ kind: 'new', cwd: taskCwd, draft });
+                      }}
                       onSteer={(entry) => void steerQueued(selectedId, entry).catch((error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } })))}
                       onError={(error) => setNotices((current) => ({ ...current, [selectedId]: { text: t('queueFailed', { error: String(error) }), isError: true } }))} />
                   </Suspense>
@@ -1605,23 +1654,26 @@ export function App() {
                   <ProjectSelect
                     value={newTaskCwd}
                     options={projects}
-                    onChange={(cwd) => setSelection({ kind: 'new', cwd })}
+                    onChange={(cwd) => setSelection({ kind: 'new', cwd, draft: newDraft })}
                     onAddProject={addProject}
                   />
                   {branch ? (
                     <BranchPill
                       branch={branch}
                       canUseWorktree={startAgent === 'claude'}
-                      worktree={useWorktree}
-                      onWorktreeChange={setUseWorktree}
+                      worktree={newDraft?.worktree ?? useWorktree}
+                      onWorktreeChange={(worktree) => {
+                        if (selection.kind === 'new' && newDraft) setSelection({ ...selection, draft: { ...newDraft, worktree } });
+                        else setUseWorktree(worktree);
+                      }}
                     />
                   ) : null}
                 </div>
               </div>
               {hasRemoteNotice ? <ComposerStatusRow {...remoteStatus} /> : null}
               <Composer
-                key="new"
-                draftKey="new"
+                key={newDraftKey}
+                draftKey={newDraftKey}
                 variant="new"
                 running={false}
                 disabled={!newTaskCwd || !queuesLoaded}
@@ -1646,6 +1698,10 @@ export function App() {
                       status: infoStates[otherAgent],
                       onRefresh: () => refreshInfo(otherAgent),
                       onChoose: (next) => {
+                        if (selection.kind === 'new' && newDraft) {
+                          setSelection({ ...selection, draft: { ...newDraft, agent: otherAgent, prefs: next, worktree: false } });
+                          return;
+                        }
                         changePrefsFor(otherAgent, next);
                         setNewTaskAgent(otherAgent);
                         saveNewTaskAgent(otherAgent);
@@ -1671,6 +1727,8 @@ export function App() {
           task={menuTask}
           meta={taskMeta}
           onMetaChange={changeTaskMeta}
+          onArchive={(task, archived) => void changeArchive(task, archived)}
+          archiving={archiving.has(menuAnchor.id)}
           generatingTitle={generatingTitles.has(menuAnchor.id)}
           onGenerateTitle={(agent, id) => {
             navigate({ kind: 'task', id });

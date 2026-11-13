@@ -1,7 +1,6 @@
-/**
- * Pins, archived tasks and aliases live in state.json, managed by Rust.
- * Each CLI continues to own its native task files.
- */
+import type { TaskSummary } from './api';
+
+/** Pins, local archive marks and aliases live in state.json. Codex also reports native archive state. */
 export interface TaskMeta {
   pins: string[];
   archived: string[];
@@ -10,21 +9,16 @@ export interface TaskMeta {
 
 export const EMPTY_TASK_META: TaskMeta = { pins: [], archived: [], titles: {} };
 
+export const isTaskArchived = (meta: TaskMeta, task: Pick<TaskSummary, 'id' | 'archived'>): boolean =>
+  task.archived === true || meta.archived.includes(task.id);
+
+export const archivedTaskIds = (meta: TaskMeta, tasks: readonly TaskSummary[]): string[] =>
+  [...new Set([...meta.archived, ...tasks.filter((task) => task.archived === true).map(({ id }) => id)])];
+
 const toggled = (list: string[], id: string) =>
   list.includes(id) ? list.filter((item) => item !== id) : [id, ...list];
 
 export const togglePin = (meta: TaskMeta, id: string): TaskMeta => ({ ...meta, pins: toggled(meta.pins, id) });
-
-/** An archived task leaves the list, so it stops being pinned too. */
-export const toggleArchived = (meta: TaskMeta, id: string): TaskMeta => ({
-  ...meta,
-  archived: toggled(meta.archived, id),
-  pins: meta.pins.filter((item) => item !== id),
-});
-
-/** Sending to an archived task brings it back, as in the reference. */
-export const unarchive = (meta: TaskMeta, id: string): TaskMeta =>
-  meta.archived.includes(id) ? { ...meta, archived: meta.archived.filter((item) => item !== id) } : meta;
 
 export function renameTask(meta: TaskMeta, id: string, title: string): TaskMeta {
   const { [id]: _removed, ...titles } = meta.titles;

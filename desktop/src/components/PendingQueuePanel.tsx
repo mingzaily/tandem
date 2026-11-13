@@ -1,11 +1,13 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { createPortal } from 'react-dom';
-import { ArrowUp, ChevronDown, ChevronUp, GripVertical, Image as ImageIcon, ListEnd, Paperclip, Pencil, Trash2 } from 'lucide-react';
+import { ArrowUp, ChevronDown, ChevronUp, GripVertical, Image as ImageIcon, ListEnd, Paperclip, Pencil, SquareArrowOutUpRight, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { removeQueuedTurn, reorderQueuedTurn, type Attachment, type QueuedMessage, type TaskQueue } from '../lib/api';
 import { t } from '../lib/i18n';
 import { QUEUE_ROW_ESTIMATE, queuePreviewStart, queueKeyboardTarget, visibleQueueCount } from '../lib/pendingQueue';
 import { useQueueDrag } from '../lib/useQueueDrag';
+import { FloatingMenu } from './FloatingMenu';
+import { MENU_ROW } from './ComposerMenu';
 import { isImeKey } from '../lib/ime';
 
 const ICON_BUTTON = 'flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[var(--chat-input-border)] bg-[var(--chat-input-bg)] text-[var(--settings-section-desc)] enabled:hover:text-[var(--msg-assistant-text)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-default disabled:opacity-30';
@@ -20,6 +22,7 @@ interface Props {
   running: boolean;
   /** The reference's row 插话: into the running turn, or first in line and resumed when idle. */
   onSteer: (entry: QueuedMessage) => void;
+  onNewTask: (entry: QueuedMessage) => Promise<void>;
 }
 
 /** Images already have a preview; the paperclip counts only ordinary files. */
@@ -31,7 +34,7 @@ function QueueAttachments({ attachments }: { attachments: readonly Attachment[] 
   const imageLabel = t('queueImageCount', { count: String(images.length) });
   const fileLabel = t('queueFileCount', { count: String(files.length) });
   return <span className="flex shrink-0 items-center gap-1.5 text-12 leading-none text-[var(--cmd-palette-item-meta)]">
-    {images.length ? <span role="img" aria-label={imageLabel} data-tooltip={[imageLabel, ...images.map(({ name }) => name)].join('\n')} className="flex items-center gap-1">
+    {images.length ? <span role="img" aria-label={imageLabel} data-tooltip={imageLabel} className="flex items-center gap-1">
       {preview ? <img src={preview} alt="" className="size-[18px] rounded border border-[var(--chat-input-chip-border)] object-cover" /> : <ImageIcon size={13} aria-hidden />}
       {images.length > 1 || !preview ? <span>{images.length}</span> : null}
     </span> : null}
@@ -41,7 +44,14 @@ function QueueAttachments({ attachments }: { attachments: readonly Attachment[] 
   </span>;
 }
 
-export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError, running, onSteer }: Props) {
+export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError, running, onSteer, onNewTask }: Props) {
+  const [menu, setMenu] = useState<{ entry: QueuedMessage; x: number; y: number } | null>(null);
+  const [moving, setMoving] = useState(false);
+  const menuTrigger = useRef<HTMLElement | null>(null);
+  const closeMenu = () => { setMenu(null); menuTrigger.current?.focus({ preventScroll: true }); };
+  useEffect(() => {
+    if (menu && !queue.entries.some(({ id }) => id === menu.entry.id)) setMenu(null);
+  }, [queue.entries, menu]);
   const [expanded, setExpanded] = useState(false);
   const [announcement, setAnnouncement] = useState('');
   const [queueHovered, setQueueHovered] = useState(false);
@@ -56,6 +66,8 @@ export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError,
     onExpand: () => setExpanded(true), onChange, onError,
     onMoved: (index) => setAnnouncement(t('queuePosition', { index: String(index + 1) })),
   });
+  // Queue events may confirm the move before the command or unlock request returns.
+  const previewDrag = drag && queue.entries[drag.from]?.id === drag.entry.id ? drag : null;
   useEffect(() => {
     const ids = new Set(queue.entries.map(({ id }) => id));
     setHoveredId((id) => id !== null && ids.has(id) ? id : null);
@@ -89,12 +101,30 @@ export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError,
             const entry = queue.entries[row.index];
             const editing = entry.id === editingId;
             const active = entry.id === hoveredId || entry.id === focusedId;
-            const dragging = entry.id === drag?.entry.id;
+            const dragging = entry.id === previewDrag?.entry.id;
             const controlsVisible = queueHovered || active;
             const controlsOpacity = active ? 'opacity-100' : queueHovered ? 'opacity-40' : 'opacity-0';
-            const title = [entry.prompt, ...entry.attachments.map(({ name }) => name)].filter(Boolean).join('\n');
+            const imageCount = entry.attachments.filter(({ kind }) => kind === 'image').length;
+            const attachmentTags = [
+              ...(imageCount ? [t('queueImageTag', { count: String(imageCount) })] : []),
+              ...entry.attachments.filter(({ kind }) => kind === 'file').map(({ name }) => name),
+            ];
             return (
-              <div key={entry.id} data-queue-entry={entry.id} data-index={row.index} ref={rows.measureElement} role="listitem"
+              <div key={entry.id} data-queue-entry={entry.id} data-index={row.index} ref={rows.measureElement} role="listitem" tabIndex={0}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  if (editingId || sorting || moving) return;
+                  menuTrigger.current = event.currentTarget;
+                  setMenu({ entry, x: event.clientX, y: event.clientY });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'ContextMenu' && !(event.shiftKey && event.key === 'F10')) return;
+                  event.preventDefault();
+                  if (editingId || sorting || moving) return;
+                  menuTrigger.current = event.currentTarget;
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  setMenu({ entry, x: rect.left + 24, y: rect.bottom });
+                }}
                 onMouseEnter={() => { if (!editingId) setHoveredId(entry.id); }}
                 onMouseLeave={() => setHoveredId((id) => id === entry.id ? null : id)}
                 onFocusCapture={() => setFocusedId(entry.id)}
@@ -102,14 +132,15 @@ export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError,
                   if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return;
                   setFocusedId((id) => id === entry.id ? null : id);
                 }}
-                className={`pending-queue-row absolute left-0 top-0 flex min-h-[32px] w-full items-center gap-1.5 rounded-[8px] py-0.5 ${drag ? 'transition-transform duration-[var(--motion-fast)] motion-reduce:transition-none' : ''} ${active || editing ? 'bg-[var(--chat-input-chip-bg)]' : ''} ${dragging ? 'opacity-30' : ''}`}
-                style={{ transform: `translateY(${drag ? queuePreviewStart(rows.measurementsCache, row.index, drag.from, drag.target) : row.start}px)` }}>
-                <button type="button" disabled={editing || sorting || Boolean(editingId) || queue.entries.length < 2} aria-label={t('queueDrag', { index: String(row.index + 1) })} data-tooltip={t('queueDragHint')}
+                className={`pending-queue-row absolute left-0 top-0 flex min-h-[32px] w-full items-center gap-1.5 rounded-[8px] py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--focus-ring)] ${previewDrag ? 'transition-transform duration-[var(--motion-fast)] motion-reduce:transition-none' : ''} ${active || editing ? 'bg-[var(--chat-input-chip-bg)]' : ''} ${dragging ? 'opacity-30' : ''}`}
+                style={{ transform: `translateY(${previewDrag ? queuePreviewStart(rows.measurementsCache, row.index, previewDrag.from, previewDrag.target) : row.start}px)` }}>
+                <button type="button" disabled={editing || (sorting && !dragging) || Boolean(editingId) || queue.entries.length < 2} aria-label={t('queueDrag', { index: String(row.index + 1) })} data-tooltip={t('queueDragHint')}
                   aria-keyshortcuts="ArrowUp ArrowDown Home End" onPointerDown={(event) => startDrag(event, entry, row.index)}
                   onKeyDown={(event) => {
                     const target = queueKeyboardTarget(queue.entries.length, row.index, event.key);
                     if (target === null || isImeKey(event)) return;
                     event.preventDefault();
+                    if (sorting || moving || editingId) return;
                     if (target !== row.index) {
                       focusAfterMove.current = { id: entry.id, index: target };
                       if (target >= shown) setExpanded(true);
@@ -121,7 +152,7 @@ export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError,
                   <GripVertical size={12} strokeWidth={2} aria-hidden className={`absolute ${active && !editing ? 'opacity-100' : 'opacity-0'} group-focus-visible/handle:opacity-100`} />
                 </button>
                 <div className="flex min-w-0 flex-1 items-center gap-1.5">
-                  <p data-tooltip={title} className={`min-w-0 truncate text-13 leading-5 ${active ? 'text-[var(--msg-assistant-text)]' : 'text-[var(--settings-section-desc)]'}`}>
+                  <p data-tooltip={entry.prompt || t('attachmentsOnly')} data-tooltip-tags={attachmentTags.length ? JSON.stringify(attachmentTags) : undefined} className={`min-w-0 max-w-[min(80ch,85%)] truncate text-13 leading-5 ${active ? 'text-[var(--msg-assistant-text)]' : 'text-[var(--settings-section-desc)]'}`}>
                     {entry.prompt || t('attachmentsOnly')}
                   </p>
                   <QueueAttachments attachments={entry.attachments} />
@@ -146,12 +177,22 @@ export function PendingQueuePanel({ queue, editingId, onEdit, onChange, onError,
       </div>
       <span className="sr-only" role="status" aria-live="polite">{announcement}</span>
     </section>
-    {drag ? createPortal(
+    {menu ? <FloatingMenu x={menu.x} y={menu.y} width={208} label={t('queueRegion')} onClose={closeMenu}>
+      <button type="button" role="menuitem" autoFocus disabled={moving || Boolean(editingId) || sorting}
+        aria-label={t('queueNewTask', { index: String(queue.entries.findIndex(({ id }) => id === menu.entry.id) + 1) })}
+        data-tooltip={t('queueNewTaskHint')} className={MENU_ROW}
+        onClick={() => {
+          if (moving) return;
+          setMoving(true);
+          void onNewTask(menu.entry).then(closeMenu).catch(onError).finally(() => setMoving(false));
+        }}><SquareArrowOutUpRight size={14} aria-hidden />{t('queueNewTaskAction')}</button>
+    </FloatingMenu> : null}
+    {previewDrag ? createPortal(
       <div aria-hidden className="pending-queue-row pointer-events-none fixed z-50 flex items-center gap-1.5 rounded-[8px] bg-[var(--chat-input-chip-bg)] text-[var(--msg-assistant-text)] shadow-[shadow:var(--shadow-menu)] ring-1 ring-inset ring-[var(--chat-input-chip-border)]"
-        style={{ left: drag.left, top: drag.top, width: drag.width, height: drag.height }}>
+        style={{ left: previewDrag.left, top: previewDrag.top, width: previewDrag.width, height: previewDrag.height }}>
         <span className="pending-queue-leading absolute flex size-5 items-center justify-center"><GripVertical size={12} aria-hidden /></span>
-        <span className="min-w-0 flex-1 truncate text-13 leading-5">{drag.entry.prompt || t('attachmentsOnly')}</span>
-        <QueueAttachments attachments={drag.entry.attachments} />
+        <span className="min-w-0 max-w-[min(80ch,85%)] flex-1 truncate text-13 leading-5">{previewDrag.entry.prompt || t('attachmentsOnly')}</span>
+        <QueueAttachments attachments={previewDrag.entry.attachments} />
         <span className="w-[68px] shrink-0" />
       </div>, document.body,
     ) : null}

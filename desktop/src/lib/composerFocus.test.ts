@@ -27,7 +27,7 @@ describe('composer blank area focus', () => {
 describe('composer send focus restoration', () => {
   const body = {} as Element, documentElement = {} as Element;
   const ownerDocument = { body, documentElement, activeElement: null as Element | null };
-  const editor = { ownerDocument } as unknown as HTMLTextAreaElement;
+  const editor = { ownerDocument, contains: () => false } as unknown as HTMLElement;
 
   it('restores focus after disabling the editor moves focus to the document body', () => {
     ownerDocument.activeElement = body;

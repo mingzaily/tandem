@@ -1,7 +1,7 @@
 export interface CodeRange { from: number; to: number; bodyFrom: number; bodyTo: number; closed: boolean; marker: string }
 export interface CodeEdit { value: string; caret: number }
 
-/** Markdown fences stay plain text; ranges only decorate the native editor. */
+/** Markdown offsets let both input modes share the same code editing shortcuts. */
 export function codeRanges(value: string): CodeRange[] {
   const ranges: CodeRange[] = [];
   let open: { from: number; bodyFrom: number; marker: string } | null = null;
@@ -23,17 +23,6 @@ export function codeRanges(value: string): CodeRange[] {
   }
   if (open) ranges.push({ ...open, to: value.length, bodyTo: value.length, closed: false });
   return ranges;
-}
-
-/** A single editor font stays aligned with the caret when the draft consists entirely of code blocks. */
-export function isCodeOnly(value: string): boolean {
-  const ranges = codeRanges(value);
-  let end = 0;
-  for (const range of ranges) {
-    if (value.slice(end, range.from).trim()) return false;
-    end = range.to;
-  }
-  return ranges.length > 0 && !value.slice(end).trim();
 }
 
 /** Only the third typed backtick on a fresh line completes a block; paste and closing fences keep their text. */

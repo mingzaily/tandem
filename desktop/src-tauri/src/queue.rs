@@ -172,7 +172,7 @@ impl TaskQueue {
     }
 }
 
-enum ActiveKind { Turn, Metadata(Arc<AtomicBool>) }
+enum ActiveKind { Turn, Metadata(Arc<AtomicBool>), Archive }
 
 enum Reservation { Ready(Option<Snapshot>), MetadataPending(Arc<AtomicBool>) }
 
@@ -487,6 +487,9 @@ impl Store {
         validate_task_id(id)?;
         entry.options.validate_for(agent)?;
         let mut state = self.state()?;
+        if state.active.get(id).is_some_and(|active| matches!(active.kind, ActiveKind::Archive)) {
+            return Err("任务正在更新归档状态，请稍后发送".into());
+        }
         let mut queue = state.queues.get(id).cloned().unwrap_or_else(|| TaskQueue {
             task_id: id.to_owned(),
             agent,
@@ -574,6 +577,24 @@ impl Store {
             entry.attachments = attachments;
             Ok(())
         })
+    }
+
+    /// Transfer under the queue mutex so dispatch, edits and a second transfer see one owner.
+    pub fn take_draft(&self, id: &str, entry_id: &str, attachments: &crate::attachments::Attachments) -> Result<SteeredEntry, String> {
+        validate_task_id(id)?;
+        let mut state = self.state()?;
+        if state.locks.get(id).is_some_and(|locks| locks.values().any(|entry| entry.is_none() || entry.as_deref() == Some(entry_id))) {
+            return Err("消息正在编辑或队列正在排序".into());
+        }
+        let mut queue = state.queues.get(id).cloned().ok_or("任务没有待发送队列")?;
+        let index = queue.entries.iter().position(|entry| entry.id == entry_id).ok_or("这条消息已发送或已删除")?;
+        let entry = queue.entries.remove(index);
+        let restored = attachments.restore(&entry.attachments, &self.image_dir(id))?;
+        let ids: Vec<_> = restored.iter().map(|attachment| attachment.id.clone()).collect();
+        match self.commit(&mut state, queue) {
+            Ok(queue) => Ok(SteeredEntry { queue, entry: EntryView { id: entry.id, prompt: entry.prompt, options: entry.options, attachments: restored } }),
+            Err(error) => { attachments.release(&ids); Err(error) }
+        }
     }
 
     pub fn remove(&self, id: &str, entry_id: &str) -> Result<Snapshot, String> {
@@ -697,6 +718,7 @@ impl Store {
             return match &active.kind {
                 ActiveKind::Metadata(stopped) => Ok(Reservation::MetadataPending(stopped.clone())),
                 ActiveKind::Turn => Err("任务正在运行".into()),
+                ActiveKind::Archive => Err("任务正在更新归档状态，请稍后发送".into()),
             };
         }
         if state
@@ -743,6 +765,24 @@ impl Store {
             resume_requested: false,
         });
         Ok(active.stopped)
+    }
+
+    pub fn reserve_archive(&self, id: &str, agent: Agent) -> Result<(), String> {
+        validate_task_id(id)?;
+        let mut state = self.state()?;
+        if state.active.contains_key(id) { return Err("任务正在运行或更新元数据，请结束当前工作后再整理".into()); }
+        if state.queues.get(id).is_some_and(|queue| !queue.entries.is_empty() || queue.in_flight.is_some()) {
+            return Err("任务有待发送消息，请先处理队列后再整理".into());
+        }
+        if state.locks.get(id).is_some_and(|locks| !locks.is_empty()) { return Err("任务队列正在编辑或排序，请完成后再整理".into()); }
+        state.active.insert(id.to_owned(), Active { agent, kind: ActiveKind::Archive, stopped: false, resume_requested: false });
+        Ok(())
+    }
+
+    fn release_archive(&self, id: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            if state.active.get(id).is_some_and(|active| matches!(active.kind, ActiveKind::Archive)) { state.active.remove(id); }
+        }
     }
 
     /// An idle CLI can save title metadata while the next conversation turn waits here.
@@ -901,6 +941,19 @@ pub async fn access<T: Send + 'static>(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+pub struct ArchiveGuard { app: AppHandle, id: String }
+impl Drop for ArchiveGuard {
+    fn drop(&mut self) { self.app.state::<Store>().release_archive(&self.id); }
+}
+
+pub async fn archive_guard(app: &AppHandle, id: String, agent: Agent) -> Result<ArchiveGuard, String> {
+    let owner = app.clone();
+    access(app, move |store| {
+        store.reserve_archive(&id, agent)?;
+        Ok(ArchiveGuard { app: owner, id })
+    }).await
 }
 
 pub fn announce(app: &AppHandle, snapshot: &Snapshot) {
@@ -1182,6 +1235,42 @@ mod tests {
     }
     fn store(dir: &tempfile::TempDir) -> Store {
         Store::new(dir.path().join("queues"))
+    }
+
+    #[test]
+    fn archive_reservation_excludes_turns_queue_edits_and_metadata_until_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.reserve_archive(&task, Agent::Codex).unwrap();
+        assert!(queue.reserve(&task, Agent::Codex).is_err());
+        assert!(queue.enqueue(&task, Agent::Codex, entry("late send")).is_err());
+        assert!(queue.reserve_metadata(&task, Agent::Codex).is_err());
+        assert!(queue.reserve_archive(&task, Agent::Codex).is_err());
+        assert!(queue.claim(&task).unwrap().is_none());
+        queue.release_archive(&task);
+        assert!(queue.reserve(&task, Agent::Codex).is_ok());
+    }
+
+    #[test]
+    fn archive_preflight_keeps_waiting_messages_pause_state_and_existing_owners() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        queue.enqueue(&task, Agent::Codex, entry("waiting")).unwrap();
+        queue.pause(&task).unwrap();
+        let before = fs::read(queue.root.join(format!("{task}.json"))).unwrap();
+        assert!(queue.reserve_archive(&task, Agent::Codex).is_err());
+        assert_eq!(fs::read(queue.root.join(format!("{task}.json"))).unwrap(), before);
+        let other = id();
+        queue.reserve_metadata(&other, Agent::Codex).unwrap();
+        queue.release_archive(&other);
+        assert!(queue.reserve_archive(&other, Agent::Codex).is_err());
+        queue.release_metadata(&other).unwrap();
+        queue.set_lock(&other, "drag".into(), None, true).unwrap();
+        assert!(queue.reserve_archive(&other, Agent::Codex).is_err());
+        queue.set_lock(&other, "drag".into(), None, false).unwrap();
+        assert!(queue.reserve_archive(&other, Agent::Codex).is_ok());
     }
 
     #[test]
@@ -2210,6 +2299,73 @@ mod tests {
     fn saved_image(attachments: &Attachments, tag: u8) -> SavedAttachment {
         let image = serde_json::to_value(attachments.add_pasted_image(&STANDARD.encode([0x89, b'P', b'N', b'G', 13, 10, 26, 10, tag])).unwrap()).unwrap();
         attachments.capture(&[image["id"].as_str().unwrap().to_owned()]).unwrap().remove(0)
+    }
+
+    #[test]
+    fn queue_draft_transfer_preserves_options_and_attachments_with_independent_ids() {
+        for agent in [Agent::Claude, Agent::Codex, Agent::Pi] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            let drafts = Attachments::default();
+            let image = saved_image(&drafts, 7);
+            let image_id = image.id().to_owned();
+            drafts.release(std::slice::from_ref(&image_id));
+            let mut message = Entry::new("independent work".into(), vec![image], TurnOptions::default()).unwrap();
+            message.options.model = Some("chosen-model".into());
+            message.options.effort = Some("high".into());
+            let entry_id = message.id.clone();
+            queue.enqueue(&task, agent, entry("keep first")).unwrap();
+            queue.enqueue(&task, agent, message).unwrap();
+            queue.pause(&task).unwrap();
+            let moved = queue.take_draft(&task, &entry_id, &drafts).unwrap();
+            assert_eq!(moved.queue.entries.len(), 1);
+            assert_eq!(moved.queue.entries[0].prompt, "keep first");
+            assert!(moved.queue.paused);
+            assert_eq!(moved.entry.prompt, "independent work");
+            assert_eq!(moved.entry.options.model.as_deref(), Some("chosen-model"));
+            assert_eq!(moved.entry.options.effort.as_deref(), Some("high"));
+            assert_ne!(moved.entry.attachments[0].id, image_id);
+            assert!(!queue.image_dir(&task).join(image_id).exists());
+            let restored = drafts.capture(&[moved.entry.attachments[0].id.clone()]).unwrap();
+            assert_eq!(restored.len(), 1);
+            assert!(serde_json::to_string(&moved.entry.attachments[0]).unwrap().contains("data:image/png;base64,"));
+            assert!(queue.take_draft(&task, &entry_id, &drafts).is_err());
+            assert_eq!(store(&dir).list().unwrap()[0].entries.len(), 1);
+        }
+    }
+
+    #[test]
+    fn queue_draft_transfer_respects_edit_sort_and_dispatch_ownership() {
+        for lock_entry in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let queue = store(&dir);
+            let task = id();
+            let message = entry("waiting");
+            let entry_id = message.id.clone();
+            let drafts = Attachments::default();
+            queue.enqueue(&task, Agent::Claude, message).unwrap();
+            queue.set_lock(&task, "owner".into(), lock_entry.then_some(entry_id.clone()), true).unwrap();
+            assert!(queue.take_draft(&task, &entry_id, &drafts).is_err());
+            assert_eq!(queue.list().unwrap()[0].entries.len(), 1);
+            queue.set_lock(&task, "owner".into(), None, false).unwrap();
+            queue.claim(&task).unwrap().unwrap();
+            assert!(queue.take_draft(&task, &entry_id, &drafts).is_err());
+        }
+    }
+
+    #[test]
+    fn queue_draft_transfer_rolls_back_when_queue_persistence_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let queue = store(&dir);
+        let task = id();
+        let message = entry("keep this message");
+        let entry_id = message.id.clone();
+        queue.enqueue(&task, Agent::Claude, message).unwrap();
+        fs::rename(&queue.root, dir.path().join("saved")).unwrap();
+        fs::write(&queue.root, "blocked").unwrap();
+        assert!(queue.take_draft(&task, &entry_id, &Attachments::default()).is_err());
+        assert_eq!(queue.list().unwrap()[0].entries[0].prompt, "keep this message");
     }
 
     #[test]

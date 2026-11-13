@@ -14,6 +14,8 @@ for line in sys.stdin:
     if agent == 'codex':
         method = q.get('method')
         if method == 'initialize': out({'id':q['id'], 'result':{}})
+        elif method == 'thread/read':
+            out({'id':q['id'], 'result':{'thread':{'id':task, 'path':str(pathlib.Path(os.environ['CODEX_HOME']) / 'sessions' / (task + '.jsonl')), 'status':{'type':'notLoaded'}}}})
         elif method == 'thread/resume':
             assert q['params']['sandbox'] == 'read-only'
             out({'id':q['id'], 'result':{'thread':{'id':task}, 'model':'audit'}})

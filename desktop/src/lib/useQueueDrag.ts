@@ -44,6 +44,9 @@ export function useQueueDrag(options: Options) {
     const startY = event.clientY;
     const grabOffset = startY - bounds.top;
     const pointerId = event.pointerId;
+    // The virtualized row may leave the DOM; the stable list owns the complete gesture.
+    const pointerSurface = scroller.current;
+    pointerSurface.setPointerCapture(pointerId);
     let x = event.clientX;
     let y = startY;
     let target = index;
@@ -82,15 +85,18 @@ export function useQueueDrag(options: Options) {
       cancelAnimationFrame(frame);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', stop);
+      window.removeEventListener('pointercancel', pointerCancel);
+      pointerSurface.removeEventListener('lostpointercapture', pointerCancel);
       window.removeEventListener('blur', stop);
       window.removeEventListener('keydown', key);
       document.removeEventListener('visibilitychange', hidden);
       document.body.classList.remove('pending-queue-dragging');
+      if (pointerSurface.hasPointerCapture(pointerId)) pointerSurface.releasePointerCapture(pointerId);
       cancel.current = null;
       const commit = apply && active && target !== index ? async () => {
         latest.current.onChange(await reorderQueuedTurn(queue.taskId, entry.id, target));
         latest.current.onMoved(target);
+        setDrag(null);
       } : undefined;
       if (!commit) setDrag(null);
       setSorting(true);
@@ -115,12 +121,14 @@ export function useQueueDrag(options: Options) {
       finish(inside);
     };
     const stop = () => finish(false);
+    const pointerCancel = (event: PointerEvent) => { if (event.pointerId === pointerId) finish(false); };
     const key = (pressed: KeyboardEvent) => { if (pressed.key === 'Escape') { pressed.preventDefault(); finish(false); } };
     const hidden = () => { if (document.visibilityState === 'hidden') finish(false); };
     cancel.current = stop;
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', stop);
+    window.addEventListener('pointercancel', pointerCancel);
+    pointerSurface.addEventListener('lostpointercapture', pointerCancel);
     window.addEventListener('blur', stop);
     window.addEventListener('keydown', key);
     document.addEventListener('visibilitychange', hidden);

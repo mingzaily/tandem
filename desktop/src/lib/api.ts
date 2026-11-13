@@ -37,6 +37,8 @@ export interface TaskSummary {
   cwd: string;
   updatedAtMs: number;
   agent: Agent;
+  /** Native Codex archive state; other agents use local view metadata. */
+  archived?: boolean;
 }
 
 export type MessageKind = 'user' | 'assistant' | 'thinking' | 'tool_use' | 'tool_result' | 'compaction';
@@ -127,13 +129,15 @@ export interface Question {
   multiSelect?: boolean;
   /** Normalized native capability for the localized free-text entry. */
   allowCustom?: boolean;
+  /** Kept local until the choice and its optional note are submitted together. */
+  allowComment?: boolean;
 }
 
 export type Decision =
   | { kind: 'allow' }
   | { kind: 'allowForTask' }
   | { kind: 'deny' }
-  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean };
+  | { kind: 'answer'; answers: Record<string, string>; custom?: boolean; comment?: string };
 
 export interface GenerationSpeed {
   /** Latest complete request, paired with real CLI usage. */
@@ -177,6 +181,9 @@ export interface DiscoveredProject {
   cwd: string;
   lastActiveMs: number;
 }
+export interface TaskArchiveResult { taskId: string; agent: Agent; archived: boolean; preferences: PreferencesSnapshot }
+export const setTaskArchived = (agent: Agent, id: string, archived: boolean) => invoke<TaskArchiveResult>('set_task_archived', { agent, id, archived });
+
 export const listTasks = (roots: string[]) => invoke<TaskSummary[]>('list_tasks', { roots });
 export const listCodexTasks = (roots: string[], conversationRoots: string[]) =>
   invoke<TaskSummary[]>('list_codex_tasks', { roots, conversationRoots });
@@ -386,6 +393,7 @@ export interface SteeredQueuedTurn {
   /** Accepted message with image previews independent of the removed queue files. */
   entry: QueuedMessage;
 }
+export const takeQueuedDraft = (taskId: string, entryId: string) => invoke<SteeredQueuedTurn>('take_queued_draft', { taskId, entryId });
 export const steerQueuedTurn = (taskId: string, entryId: string) => invoke<SteeredQueuedTurn>('steer_queued_turn', { taskId, entryId });
 export const resumeQueue = (taskId: string) => invoke<TaskQueue>('resume_queue', { taskId });
 export const setQueueLock = (taskId: string, owner: string, entryId: string | null, locked: boolean) =>

@@ -6,7 +6,7 @@ use crate::runner::{self, Decision, TurnOptions, TurnSink};
 use crate::sessions::{Agent, Message};
 use crate::{codex, commands, conversations, login_env};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
@@ -52,29 +52,51 @@ fn host_name() -> String {
     if result != 0 {
         return "Tandem".to_owned();
     }
-    let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(buffer.len());
-    String::from_utf8_lossy(&buffer[..end]).trim_end_matches(".local").to_owned()
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[..end])
+        .trim_end_matches(".local")
+        .to_owned()
 }
 
 fn project_name(cwd: &str) -> String {
-    cwd.trim_end_matches('/').rsplit('/').next().unwrap_or(cwd).to_owned()
+    cwd.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or(cwd)
+        .to_owned()
 }
 
 fn host_projects(context: &Context) -> Vec<Value> {
     let mut projects: Vec<&str> = context.projects.iter().map(String::as_str).collect();
     projects.push(CONVERSATION_CWD);
-    let order: std::collections::HashMap<&str, usize> = context.project_order.iter()
-        .enumerate().map(|(index, cwd)| (cwd.as_str(), index + 1)).collect();
+    let order: std::collections::HashMap<&str, usize> = context
+        .project_order
+        .iter()
+        .enumerate()
+        .map(|(index, cwd)| (cwd.as_str(), index + 1))
+        .collect();
     projects.sort_by_key(|cwd| order.get(cwd).copied().unwrap_or(0));
-    projects.into_iter().map(|cwd| json!({
-        "cwd": cwd,
-        "name": if cwd == CONVERSATION_CWD { "对话".to_owned() } else { project_name(cwd) },
-    })).collect()
+    projects
+        .into_iter()
+        .map(|cwd| {
+            json!({
+                "cwd": cwd,
+                "name": if cwd == CONVERSATION_CWD { "对话".to_owned() } else { project_name(cwd) },
+            })
+        })
+        .collect()
 }
 
 async fn host_info(inner: &Inner) -> Result<Value, OpError> {
     let env = login_env::login_env().await;
-    let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
+    let context = inner
+        .context
+        .lock()
+        .map(|context| context.clone())
+        .unwrap_or_default();
     // A CLI whose tasks are hidden is not offered for new tasks on the phone either.
     let agents: Vec<&str> = ["claude", "codex", "pi"]
         .into_iter()
@@ -91,11 +113,21 @@ async fn host_info(inner: &Inner) -> Result<Value, OpError> {
 }
 
 async fn tasks_list(inner: &Inner) -> Result<Value, OpError> {
-    let context = inner.context.lock().map(|context| context.clone()).unwrap_or_default();
+    let context = inner
+        .context
+        .lock()
+        .map(|context| context.clone())
+        .unwrap_or_default();
     let reader = inner.app.state::<codex::Reader>();
     let runs = inner.app.state::<runner::Runs>();
-    let mut tasks = commands::collect_tasks(reader.inner(), context.projects, context.conversation_roots, &context.hidden_agents).await;
-    tasks.retain(|task| !context.archived.contains(&task.id));
+    let mut tasks = commands::collect_tasks(
+        reader.inner(),
+        context.projects,
+        context.conversation_roots,
+        &context.hidden_agents,
+    )
+    .await;
+    tasks.retain(|task| task.archived != Some(true) && !context.archived.contains(&task.id));
     for task in &mut tasks {
         if let Some(title) = context.titles.get(&task.id) {
             task.title.clone_from(title);
@@ -119,7 +151,11 @@ struct ReadParams {
 }
 
 /// Images stay on the computer in this version: they are large, and most phones never open them.
-fn page_of(mut messages: Vec<Message>, before: Option<usize>, limit: Option<usize>) -> (Vec<Message>, usize) {
+fn page_of(
+    mut messages: Vec<Message>,
+    before: Option<usize>,
+    limit: Option<usize>,
+) -> (Vec<Message>, usize) {
     let total = messages.len();
     let end = before.unwrap_or(total).min(total);
     let start = end.saturating_sub(limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE));
@@ -159,7 +195,10 @@ async fn agent_info(inner: &Inner, value: &Value) -> Result<Value, OpError> {
     let key = agent_key(request.agent);
     {
         let cache = inner.info_cache.lock().await;
-        if let Some((at, info)) = cache.get(key).filter(|(at, _)| at.elapsed() < INFO_LIFETIME) {
+        if let Some((at, info)) = cache
+            .get(key)
+            .filter(|(at, _)| at.elapsed() < INFO_LIFETIME)
+        {
             let _ = at;
             return Ok(info.clone());
         }
@@ -167,7 +206,11 @@ async fn agent_info(inner: &Inner, value: &Value) -> Result<Value, OpError> {
     let reader = inner.app.state::<codex::Reader>();
     let info = commands::read_info(reader.inner(), request.agent).await?;
     let info = serde_json::to_value(info).map_err(|error| error.to_string())?;
-    inner.info_cache.lock().await.insert(key, (Instant::now(), info.clone()));
+    inner
+        .info_cache
+        .lock()
+        .await
+        .insert(key, (Instant::now(), info.clone()));
     Ok(info)
 }
 
@@ -188,7 +231,9 @@ fn check_new_cwd(cwd: &str, projects: &[String]) -> Result<(), OpError> {
     if cwd == CONVERSATION_CWD || projects.iter().any(|project| project == cwd) {
         return Ok(());
     }
-    Err(OpError::not_allowed("That folder has not been added on the computer"))
+    Err(OpError::not_allowed(
+        "That folder has not been added on the computer",
+    ))
 }
 
 fn check_send(request: &SendParams, projects: &[String]) -> Result<(), OpError> {
@@ -216,14 +261,21 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
     };
     let remote = Remote(inner.clone());
     let app = inner.app.clone();
-    let (agent, prompt, is_new) = (request.agent, request.prompt.clone(), request.task_id.is_none());
+    let (agent, prompt, is_new) = (
+        request.agent,
+        request.prompt.clone(),
+        request.task_id.is_none(),
+    );
     let run_holder: Arc<std::sync::Mutex<String>> = Arc::default();
     let holder = run_holder.clone();
     let page_cwd = cwd.clone();
     let page_prompt = prompt.clone();
     // The computer's window shows this turn as well, as if it had been sent from there.
     let page_sink = TurnSink::new(move |event| {
-        let run_id = holder.lock().map(|run_id| run_id.clone()).unwrap_or_default();
+        let run_id = holder
+            .lock()
+            .map(|run_id| run_id.clone())
+            .unwrap_or_default();
         app.emit_to(
             "main",
             TURN_EVENT,
@@ -231,7 +283,12 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
         )
         .map_err(|error| error.to_string())
     });
-    let (run_id, sink) = remote.track(request.agent, request.task_id.clone(), prompt.clone(), page_sink);
+    let (run_id, sink) = remote.track(
+        request.agent,
+        request.task_id.clone(),
+        prompt.clone(),
+        page_sink,
+    );
     if let Ok(mut holder) = run_holder.lock() {
         holder.clone_from(&run_id);
     }
@@ -247,7 +304,19 @@ async fn turn_send(inner: &Arc<Inner>, value: &Value) -> Result<Value, OpError> 
     let inner_for_turn = inner.clone();
     let id_for_turn = run_id.clone();
     tauri::async_runtime::spawn(async move {
-        let result = crate::queue::dispatch(&inner_for_turn.app, agent, codex::TurnRequest { task_id, cwd, prompt, attachments: Default::default(), options }, sink).await;
+        let result = crate::queue::dispatch(
+            &inner_for_turn.app,
+            agent,
+            codex::TurnRequest {
+                task_id,
+                cwd,
+                prompt,
+                attachments: Default::default(),
+                options,
+            },
+            sink,
+        )
+        .await;
         Remote(inner_for_turn.clone()).end_run(&id_for_turn, &result);
     });
     Ok(json!({"runId": run_id}))
@@ -296,11 +365,17 @@ async fn dispatch(inner: &Arc<Inner>, op: &str, value: &Value) -> Result<Value, 
 
 pub(super) async fn handle(inner: Arc<Inner>, request: Value) -> Value {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    let op = request.get("op").and_then(Value::as_str).unwrap_or_default().to_owned();
+    let op = request
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let value = request.get("p").cloned().unwrap_or_else(|| json!({}));
     match dispatch(&inner, &op, &value).await {
         Ok(result) => json!({"id": id, "ok": true, "r": result}),
-        Err(OpError(code, message)) => json!({"id": id, "ok": false, "e": {"code": code, "message": message}}),
+        Err(OpError(code, message)) => {
+            json!({"id": id, "ok": false, "e": {"code": code, "message": message}})
+        }
     }
 }
 
@@ -333,20 +408,36 @@ mod tests {
         let projects = ["/a".to_owned()];
         assert!(check_send(&send(None, Some("/a"), None), &projects).is_ok());
         assert!(check_send(&send(None, Some(CONVERSATION_CWD), None), &projects).is_ok());
-        assert!(matches!(check_send(&send(None, Some("/etc"), None), &projects), Err(OpError("NOT_ALLOWED", _))));
-        assert!(matches!(check_send(&send(None, Some("/a/sub"), None), &projects), Err(OpError("NOT_ALLOWED", _))));
+        assert!(matches!(
+            check_send(&send(None, Some("/etc"), None), &projects),
+            Err(OpError("NOT_ALLOWED", _))
+        ));
+        assert!(matches!(
+            check_send(&send(None, Some("/a/sub"), None), &projects),
+            Err(OpError("NOT_ALLOWED", _))
+        ));
     }
 
     #[test]
     fn host_projects_follow_the_saved_sidebar_order_including_conversations() {
         let context = Context {
             projects: vec!["/first".into(), "/second".into()],
-            project_order: vec!["/second".into(), CONVERSATION_CWD.into(), "/removed".into(), "/first".into()],
+            project_order: vec![
+                "/second".into(),
+                CONVERSATION_CWD.into(),
+                "/removed".into(),
+                "/first".into(),
+            ],
             ..Context::default()
         };
         let projects = host_projects(&context);
-        assert_eq!(projects.iter().map(|p| p["cwd"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["/second", CONVERSATION_CWD, "/first"]);
+        assert_eq!(
+            projects
+                .iter()
+                .map(|p| p["cwd"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/second", CONVERSATION_CWD, "/first"]
+        );
         assert_eq!(projects[1]["name"], "对话");
     }
 
@@ -357,8 +448,13 @@ mod tests {
             project_order: vec![CONVERSATION_CWD.into(), "/known".into()],
             ..Context::default()
         };
-        assert_eq!(host_projects(&context).iter().map(|p| p["cwd"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["/new", CONVERSATION_CWD, "/known"]);
+        assert_eq!(
+            host_projects(&context)
+                .iter()
+                .map(|p| p["cwd"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["/new", CONVERSATION_CWD, "/known"]
+        );
     }
 
     #[test]
@@ -377,20 +473,29 @@ mod tests {
             is_error: false,
             truncated: false,
             timestamp: None,
-            image: image.map(str::to_owned), image_error: None,
+            image: image.map(str::to_owned),
+            image_error: None,
         }
     }
 
     #[test]
     fn pages_count_back_from_the_end_and_leave_images_behind() {
-        let messages: Vec<Message> = (0..5).map(|id| message(id, (id == 4).then_some("data:image/png;base64,x"))).collect();
+        let messages: Vec<Message> = (0..5)
+            .map(|id| message(id, (id == 4).then_some("data:image/png;base64,x")))
+            .collect();
         let (page, total) = page_of(messages, None, Some(2));
         assert_eq!(total, 5);
-        assert_eq!(page.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["3", "4"]);
+        assert_eq!(
+            page.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["3", "4"]
+        );
         assert_eq!(page[1].image.as_deref(), Some(OMITTED_IMAGE));
 
         let messages: Vec<Message> = (0..5).map(|id| message(id, None)).collect();
         let (page, _) = page_of(messages, Some(3), Some(100));
-        assert_eq!(page.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["0", "1", "2"]);
+        assert_eq!(
+            page.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["0", "1", "2"]
+        );
     }
 }

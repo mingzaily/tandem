@@ -33,7 +33,7 @@ type Node = ReactElement<Record<string, any>>;
 function nodes(value: ReactNode): Node[] {
   if (Array.isArray(value)) return value.flatMap(nodes);
   if (!isValidElement<Record<string, any>>(value)) return [];
-  return [value, ...nodes(value.props.children)];
+  return [value, ...nodes(value.props.children), ...nodes(value.props.fallback)];
 }
 function fixture(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
   const onSend = vi.fn();
@@ -56,14 +56,14 @@ function fixture(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
 }
 
 describe('composer fenced-code appearance', () => {
-  it('switches to aligned code typography when a typed opening fence creates its empty block', () => {
+  it('activates structured editing when a typed opening fence creates its empty block', () => {
     const test = fixture();
     test.change('``');
     test.change('```');
     expect(test.render().props.value).toBe('```\n\n```');
-    expect(test.editorArea().props.className).toContain('composer-code-only');
+    expect(test.editorArea().props.className).toContain('composer-structured');
     test.change('说明\n```\ncode\n```');
-    expect(test.editorArea().props.className).not.toContain('composer-code-only');
+    expect(test.editorArea().props.className).toContain('composer-structured');
     expect(test.render().props.value).toBe('说明\n```\ncode\n```');
   });
   it('keeps pasted terminal output and its fences unchanged when sending', async () => {
@@ -72,7 +72,7 @@ describe('composer fenced-code appearance', () => {
       const test = fixture();
       const source = '```sh\n$ command --flag\n  result\n\t中文输出\n```';
       test.render().props.onChange({ currentTarget: { value: source, selectionStart: source.length }, nativeEvent: { isComposing: false, inputType: 'insertFromPaste' } });
-      expect(test.editorArea().props.className).toContain('composer-code-only');
+      expect(test.editorArea().props.className).toContain('composer-structured');
       expect(test.render().props.value).toBe(source);
       test.button('发送消息').props.onClick();
       await Promise.resolve();
@@ -219,6 +219,7 @@ describe('composer scroll after layout', () => {
     const source = kind === 'code' ? '```sh\n' + '  echo 中文\n'.repeat(100) + '```' : '长段落\n'.repeat(100) + '- 最后一项';
     test.change(source);
     commit();
+    vi.mocked(textareaLayout.revealTextareaCaret).mockClear();
     box.scrollTop = 840;
     const caret = kind === 'code' ? source.lastIndexOf('\n```') : source.length;
     const newline = kind === 'code' ? '\n  ' : '\n- ';

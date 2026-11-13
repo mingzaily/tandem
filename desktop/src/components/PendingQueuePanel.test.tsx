@@ -32,7 +32,7 @@ function render(count: number, paused: boolean, attachments: Attachment[] = []) 
       id: String(index), prompt: '待发送', attachments, options: { model: null, effort: null, permissionMode: null },
     })),
   };
-  return renderToStaticMarkup(<PendingQueuePanel queue={queue} onEdit={() => {}} onChange={() => {}} onError={() => {}} running onSteer={() => {}} />);
+  return renderToStaticMarkup(<PendingQueuePanel queue={queue} onEdit={() => {}} onChange={() => {}} onError={() => {}} running onSteer={() => {}} onNewTask={async () => {}} />);
 }
 
 describe('queue image and file summaries', () => {
@@ -45,11 +45,13 @@ describe('queue image and file summaries', () => {
     expect(html).not.toContain('lucide-paperclip');
     expect(html).not.toContain('aria-label="1 个文件"');
   });
-  it('labels multiple images as images and preserves their names in the tooltip', () => {
+  it('summarizes multiple images in one tooltip tag and preserves the inline count', () => {
     const html = render(1, false, [image('one'), image('two'), image('three')]);
     expect(html).toContain('aria-label="3 张图片"');
     expect(html).toMatch(/>3<\/span>/);
-    expect(html).toContain('one.png\ntwo.png\nthree.png');
+    expect(html).toContain('图片 × 3');
+    expect(html).toContain('data-tooltip="待发送"');
+    expect(html).not.toContain('one.png\ntwo.png\nthree.png');
     expect(html).not.toContain('lucide-paperclip');
   });
   it('counts only ordinary files next to a mixed image-and-file message', () => {

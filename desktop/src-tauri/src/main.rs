@@ -21,6 +21,7 @@ mod runner;
 mod session_titles;
 mod sessions;
 mod storage;
+mod task_archives;
 mod tray;
 mod titles;
 mod token_speed;
@@ -86,12 +87,14 @@ fn main() {
             commands::read_task,
             commands::generate_task_title,
             commands::rename_native_task,
+            commands::set_task_archived,
             commands::send_turn,
             commands::list_queues,
             commands::enqueue_turn,
             commands::steer_turn,
             commands::steer_queued_turn,
             commands::edit_queued_turn,
+            commands::take_queued_draft,
             commands::remove_queued_turn,
             commands::reorder_queued_turn,
             commands::resume_queue,

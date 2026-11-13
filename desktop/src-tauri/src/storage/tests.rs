@@ -3,6 +3,50 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 
 #[test]
+fn archive_updates_change_only_the_named_task_and_native_state_clears_duplicate_local_marks() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().to_owned());
+    store.update("state", json!({"taskMeta":{"pins":["one","other"],"archived":["one","old"],"titles":{"one":"alias","other":"keep"}},"projectOrder":["/code"]}).as_object().unwrap().clone()).unwrap();
+    let native = store.set_task_archived("one", true, true).unwrap();
+    assert_eq!(native.state.task_meta.archived, ["old"]);
+    assert_eq!(native.state.task_meta.pins, ["other"]);
+    assert_eq!(native.state.task_meta.titles["one"], "alias");
+    assert_eq!(native.state.project_order, ["/code"]);
+    let local = store.set_task_archived("two", true, false).unwrap();
+    assert_eq!(local.state.task_meta.archived, ["two","old"]);
+    let restored = store.set_task_archived("old", false, true).unwrap();
+    assert_eq!(restored.state.task_meta.archived, ["two"]);
+    assert_eq!(restored.state.task_meta.pins, ["other"]);
+}
+
+#[test]
+fn concurrent_archive_actions_preserve_each_others_task_metadata() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = std::sync::Arc::new(Store::open(dir.path().to_owned()));
+    let jobs: Vec<_> = (0..8).map(|index| {
+        let store = store.clone();
+        std::thread::spawn(move || store.set_task_archived(&index.to_string(), true, false).unwrap())
+    }).collect();
+    for job in jobs { job.join().unwrap(); }
+    let mut ids = store.snapshot().state.task_meta.archived;
+    ids.sort();
+    assert_eq!(ids, (0..8).map(|index| index.to_string()).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_failed_archive_metadata_write_keeps_the_previous_view_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("data");
+    let store = Store::open(root.clone());
+    store.update("state", json!({"taskMeta":{"pins":["one"],"archived":["old"]}}).as_object().unwrap().clone()).unwrap();
+    let before = store.snapshot().state;
+    fs::rename(&root, dir.path().join("preserved")).unwrap();
+    fs::write(&root, "blocked directory").unwrap();
+    assert!(store.set_task_archived("one", true, true).is_err());
+    assert_eq!(store.snapshot().state, before);
+}
+
+#[test]
 fn collapsed_sidebar_groups_survive_restart_and_other_preference_updates() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_owned();

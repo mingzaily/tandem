@@ -32,11 +32,19 @@ function fixture() {
     entries: Array.from({ length: 7 }, (_, index) => ({ id: `entry-${index}`, prompt: `message ${index}`, attachments: [], options: { model: null, effort: null, permissionMode: null } })),
   };
   const onExpand = vi.fn(), onChange = vi.fn(), onMoved = vi.fn(), onError = vi.fn();
-  const scroller = { current: { scrollTop: 0, getBoundingClientRect: () => ({ left: 20, right: 420, top: 100, bottom: 296 }) } as HTMLDivElement };
+  let captured: number | null = null;
+  const element = Object.assign(new EventTarget(), {
+    scrollTop: 0,
+    getBoundingClientRect: () => ({ left: 20, right: 420, top: 100, bottom: 296 }),
+    setPointerCapture: vi.fn((id: number) => { captured = id; }),
+    hasPointerCapture: (id: number) => captured === id,
+    releasePointerCapture: vi.fn(() => { captured = null; }),
+  });
+  const scroller = { current: element as unknown as HTMLDivElement };
   const hook = useQueueDrag({ queue, scroller, measurements: () => queue.entries.map((_, index) => ({ start: 6 + index * 32, end: 38 + index * 32 })), onExpand, onChange, onMoved, onError });
   const currentTarget = { focus: vi.fn(), closest: () => ({ getBoundingClientRect: () => ({ left: 20, top: 106, width: 400, height: 32 }) }) };
   const event = { button: 0, pointerId: 1, clientX: 30, clientY: 116, currentTarget, preventDefault: vi.fn() } as unknown as ReactPointerEvent<HTMLButtonElement>;
-  return { hook, queue, event, onExpand, onChange, onMoved, onError };
+  return { hook, queue, event, element, onExpand, onChange, onMoved, onError };
 }
 
 beforeEach(() => {
@@ -102,12 +110,53 @@ describe('queue drag lifecycle', () => {
     else if (reason === 'hidden') { documentEvents.visibilityState = 'hidden'; documentEvents.dispatchEvent(new Event('visibilitychange')); }
     else if (reason === 'outside') emit('pointerup', { pointerId: 1, clientX: 500, clientY: 200 });
     else if (reason === 'unmount') harness.cleanups[0]();
-    else emit(reason);
+    else emit(reason, { pointerId: 1 });
     await settle();
     expect(reorderQueuedTurn).not.toHaveBeenCalled();
     expect(vi.mocked(setQueueLock).mock.calls.map((call) => call[3])).toEqual([true, false]);
     expect(harness.states[0]).toBeNull();
     expect(frames.size).toBe(0);
+  });
+
+  it('ignores cancellation from a different pointer and commits only the initiating one', async () => {
+    const test = fixture();
+    vi.mocked(reorderQueuedTurn).mockResolvedValue({ ...test.queue, revision: 2 });
+    test.hook.startDrag(test.event, test.queue.entries[0], 0);
+    await settle();
+    emit('pointermove', { pointerId: 1, clientX: 30, clientY: 200 });
+    emit('pointercancel', { pointerId: 2 });
+    expect(harness.states[0]).not.toBeNull();
+    expect(test.element.hasPointerCapture(1)).toBe(true);
+    emit('pointerup', { pointerId: 2, clientX: 30, clientY: 200 });
+    expect(reorderQueuedTurn).not.toHaveBeenCalled();
+    emit('pointerup', { pointerId: 1, clientX: 30, clientY: 200 });
+    await settle();
+    expect(reorderQueuedTurn).toHaveBeenCalledExactlyOnceWith('task', 'entry-0', 2);
+    expect(test.element.releasePointerCapture).toHaveBeenCalledOnce();
+  });
+
+  it('cancels a lost capture and releases the queue lock without saving', async () => {
+    const test = fixture();
+    test.hook.startDrag(test.event, test.queue.entries[0], 0);
+    await settle();
+    emit('pointermove', { pointerId: 1, clientX: 30, clientY: 200 });
+    test.element.dispatchEvent(Object.assign(new Event('lostpointercapture'), { pointerId: 1 }));
+    await settle();
+    expect(reorderQueuedTurn).not.toHaveBeenCalled();
+    expect(test.element.releasePointerCapture).toHaveBeenCalledOnce();
+    expect(setQueueLock).toHaveBeenLastCalledWith('task', expect.any(String), null, false);
+    expect(harness.states[0]).toBeNull();
+  });
+
+  it('releases pointer capture and reports a rejected lock without entering drag mode', async () => {
+    vi.mocked(setQueueLock).mockRejectedValueOnce(new Error('lock failed'));
+    const test = fixture();
+    test.hook.startDrag(test.event, test.queue.entries[0], 0);
+    await settle();
+    expect(test.onExpand).not.toHaveBeenCalled();
+    expect(reorderQueuedTurn).not.toHaveBeenCalled();
+    expect(test.element.releasePointerCapture).toHaveBeenCalledOnce();
+    expect(test.onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message: 'lock failed' }));
   });
 
   it('cancels while the lock request is still pending without activating later', async () => {

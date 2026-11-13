@@ -13,6 +13,16 @@ vi.mock('@tanstack/react-virtual', () => ({
   }),
 }));
 
+describe('history loading on task switch', () => {
+  it('waits for the native history before displaying the destination task live tail', () => {
+    const html = renderToStaticMarkup(<MessageStream taskId="long-b" agent="pi" items={[
+      { type: 'user', id: 'b-live-user', text: 'B current input' },
+      { type: 'assistant', id: 'b-live-progress', text: 'B partial live tail before history arrives' },
+    ]} isRunning editableId={null} onEditLast={async () => {}} sendWithCmdEnter={false} isLoading cwd="/code" bottomPadding={200} />);
+    expect(html).toBe('');
+  });
+});
+
 describe('completed turn footer placement', () => {
   it('renders the reply, file changes and recorded time before the next running input', () => {
     const html = renderToStaticMarkup(<MessageStream taskId="task" agent="pi" items={[
@@ -33,6 +43,26 @@ describe('completed turn footer placement', () => {
     expect(next).toBeGreaterThan(time);
     expect(html.match(/data-reply-actions/g)).toHaveLength(1);
     expect(html).toMatch(/<time[^>]*>15:11<\/time>/);
+  });
+});
+
+describe('failed turn error visibility', () => {
+  it('keeps the failure reason outside work disclosures and before the next input', () => {
+    const html = renderToStaticMarkup(<MessageStream taskId="failed-task" agent="claude" items={[
+      { type: 'user', id: 'u', text: 'push the changes' },
+      { type: 'assistant', id: 'progress', text: 'The builds passed; checking the release.' },
+      { type: 'tool', id: 'checking', name: 'Bash', input: '{"command":"gh run list"}', result: 'completed', isError: false, truncated: false },
+      { type: 'error', id: 'failure', text: "You've hit your 5-hour limit · resets 1am (Asia/Shanghai)" },
+      { type: 'user', id: 'next', text: 'continue after the reset' },
+    ]} isRunning={false} editableId={null} onEditLast={async () => {}} sendWithCmdEnter={false} isLoading={false} cwd="/code" bottomPadding={150} />);
+    expect(html).toContain('The builds passed; checking the release.');
+    expect(html).toContain('data-work-group="completed"');
+    expect(html).toContain('已达到 5 小时用量上限');
+    expect(html).toContain('额度重置时间：1am (Asia/Shanghai)');
+    expect(html).not.toContain('<details');
+    expect(html.indexOf('已达到 5 小时用量上限')).toBeGreaterThan(html.indexOf('The builds passed; checking the release.'));
+    expect(html.indexOf('continue after the reset')).toBeGreaterThan(html.indexOf('额度重置时间：1am (Asia/Shanghai)'));
+    expect(html.match(/role="note"/g)).toHaveLength(1);
   });
 });
 

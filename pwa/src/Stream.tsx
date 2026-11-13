@@ -2,7 +2,6 @@ import { lazy, Suspense, useLayoutEffect, useMemo, useRef, useState } from 'reac
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   CirclePause,
-  CircleAlert,
   CircleHelp,
   Check,
   ChevronRight,
@@ -16,6 +15,8 @@ import {
 import { buildRows, visibleWorkItems, workGroupDefaultOpen, type Item, type Row } from './lib/items';
 import { t } from './lib/i18n';
 import { toolPresentation } from './lib/tools';
+import { ReplyError } from './ReplyError';
+import { QuestionAnswer } from './QuestionAnswer';
 const Markdown = lazy(() => import('./Markdown').then((m) => ({ default: m.Markdown })));
 
 export const duration = (ms: number) => {
@@ -105,6 +106,8 @@ function workGroupLabel(group: Extract<Row, { type: 'group' }>): string {
 function ItemRow({ item, expanded, toggle, active = true }: { item: Row; expanded: Map<string, boolean>; toggle: Toggle; active?: boolean }) {
   const open = expanded.get(item.id) ?? (item.type === 'group' && workGroupDefaultOpen(item));
   switch (item.type) {
+    case 'questionAnswer':
+      return <QuestionAnswer pairs={item.pairs} />;
     case 'user':
       return (
         <div className="user-message">
@@ -128,20 +131,7 @@ function ItemRow({ item, expanded, toggle, active = true }: { item: Row; expande
         </div>
       );
     case 'error':
-      return (
-        <div className="reply-error">
-          <CircleAlert size={16} aria-hidden />
-          <div>
-            <p>{t('replyFailed')}</p>
-            {item.text ? (
-              <details>
-                <summary><ChevronRight size={12} aria-hidden />{t('showDetails')}</summary>
-                <pre>{item.text}</pre>
-              </details>
-            ) : null}
-          </div>
-        </div>
-      );
+      return <ReplyError details={item.text} />;
     case 'notice':
       return (
         <div className="notice">

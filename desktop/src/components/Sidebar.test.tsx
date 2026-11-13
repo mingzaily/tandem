@@ -11,7 +11,7 @@ const props: Parameters<typeof TaskRow>[0] = {
   task: { id: 'task', agent: 'codex', cwd: '/project', title: 'Task', updatedAtMs: 0 },
   selectedId: null, menuAnchor: null, running: new Set(), waiting: new Set(), unread: new Set(), external: new Map(), meta: EMPTY_TASK_META,
   now: 100, depth: 1, isRenaming: false,
-  onSelect: () => {}, onMetaChange: () => {}, onRenameDone: () => {}, onOpenMenu: () => {}, generatingTitles: new Set(), onGenerateTitle: () => {},
+  onSelect: () => {}, onMetaChange: () => {}, onArchive: () => {}, onRenameDone: () => {}, onOpenMenu: () => {},
 };
 
 describe('started task rows', () => {
@@ -63,32 +63,29 @@ describe('saved sidebar folds', () => {
 });
 
 describe('sidebar quick actions', () => {
-  it('keeps pinning available for active tasks and offers title generation for archived tasks', () => {
-    expect(renderToStaticMarkup(<TaskRow {...props} />)).toContain('aria-label="置顶"');
-    const archived = renderToStaticMarkup(<TaskRow {...props} meta={{ ...EMPTY_TASK_META, archived: ['task'] }} />);
-    expect(archived).not.toContain('aria-label="置顶"');
-    expect(archived).toContain('aria-label="生成标题"');
+  it('offers only pin and archive while title generation moves to the header', () => {
+    const html = renderToStaticMarkup(<TaskRow {...props} />);
+    expect(html).toContain('aria-label="置顶"');
+    expect(html).toContain('aria-label="归档"');
+    expect(html).not.toContain('aria-label="生成标题"');
+    expect(html).not.toContain('aria-label="更多"');
+    expect(html.match(/sidebar-task-action /g)).toHaveLength(2);
+    expect(html).toContain('group-hover:pr-[54px]');
   });
-  it('marks only the task whose title is being generated as busy and disables its generation action', () => {
-    const generating = renderToStaticMarkup(<TaskRow {...props} generatingTitles={new Set(['task'])} />);
-    expect(generating).toMatch(/aria-label="正在生成标题…"[^>]*aria-busy="true"[^>]*disabled=""/);
-    const idle = renderToStaticMarkup(<TaskRow {...props} generatingTitles={new Set(['another-task'])} />);
-    expect(idle).toContain('aria-label="生成标题"');
-    expect(idle).not.toContain('aria-busy="true"');
-    expect(idle).not.toContain('disabled=""');
+  it('offers restore for an archived row and omits pinning', () => {
+    const html = renderToStaticMarkup(<TaskRow {...props} meta={{ ...EMPTY_TASK_META, archived: ['task'] }} />);
+    expect(html).not.toContain('aria-label="置顶"');
+    expect(html).toContain('aria-label="取消归档"');
   });
-  it('uses the same visible action surface on selected and ordinary rows and keeps loading highlighted', () => {
+  it('uses the same action surface on selected and ordinary rows', () => {
     for (const selectedId of [null, 'task']) {
       const html = renderToStaticMarkup(<TaskRow {...props} selectedId={selectedId} />);
-      const action = html.match(/<button[^>]*aria-label="生成标题"[^>]*>/)![0];
+      const action = html.match(/<button[^>]*aria-label="归档"[^>]*>/)![0];
       expect(action).toContain('enabled:hover:bg-[color-mix(in_srgb,currentColor_14%,transparent)]');
-      expect(action).toContain('data-tooltip="生成标题"');
+      expect(action).toContain('data-tooltip="归档"');
       expect(action).not.toContain(' title=');
-      const loading = renderToStaticMarkup(<TaskRow {...props} selectedId={selectedId} generatingTitles={new Set(['task'])} />);
-      expect(loading.match(/<button[^>]*aria-label="正在生成标题…"[^>]*>/)![0]).toContain(' bg-[color-mix(in_srgb,currentColor_14%,transparent)]');
     }
   });
-
   it('shows a finished unread task as a done dot in place of its time', () => {
     const html = renderToStaticMarkup(<TaskRow {...props} unread={new Set(['task'])} />);
     expect(html).toContain('aria-label="已完成，点击查看"');
@@ -96,22 +93,15 @@ describe('sidebar quick actions', () => {
     expect(html).not.toContain(`>${formatAge(0, 100)}<`);
     expect(renderToStaticMarkup(<TaskRow {...props} />)).toContain(`>${formatAge(0, 100)}<`);
   });
-  it('keeps sidebar actions unpressed when the same task menu is opened from its header', () => {
-    const html = renderToStaticMarkup(<TaskRow {...props} menuAnchor={{ source: 'header', id: 'task', x: 0, y: 0 }} />);
-    expect(html).toMatch(/aria-label="更多"[^>]*aria-pressed="false"/);
-    expect(html).not.toContain('bg-[hsl(var(--sidebar-item-active))]');
-  });
-  it('keeps the menu target hovered while its more button is pressed', () => {
-    const html = renderToStaticMarkup(<TaskRow {...props} selectedId="another-task" menuAnchor={{ source: 'sidebar', id: 'task', x: 0, y: 0 }} />);
-    expect(html).toContain('bg-[hsl(var(--sidebar-item-hover))]');
-    expect(html).not.toContain('bg-[hsl(var(--sidebar-item-active))]');
-    expect(html).not.toContain('aria-current="page"');
-    expect(html).toMatch(/aria-label="更多"[^>]*aria-pressed="true"/);
-  });
-  it('keeps the current task selected when another task menu is open', () => {
-    const html = renderToStaticMarkup(<TaskRow {...props} selectedId="task" menuAnchor={{ source: 'sidebar', id: 'another-task', x: 0, y: 0 }} />);
-    expect(html).toContain('aria-current="page"');
-    expect(html).toContain('bg-[hsl(var(--sidebar-item-active))]');
-    expect(html).toMatch(/aria-label="更多"[^>]*aria-pressed="false"/);
+  it('keeps only the sidebar context target hovered, while the current task stays selected', () => {
+    const context = renderToStaticMarkup(<TaskRow {...props} selectedId="another-task" menuAnchor={{ source: 'sidebar', id: 'task', x: 0, y: 0 }} />);
+    expect(context).toContain('bg-[hsl(var(--sidebar-item-hover))]');
+    expect(context).not.toContain('aria-current="page"');
+    expect(context).not.toContain('aria-label="更多"');
+    const header = renderToStaticMarkup(<TaskRow {...props} menuAnchor={{ source: 'header', id: 'task', x: 0, y: 0 }} />);
+    expect(header).not.toContain('!pr-[54px]');
+    const selected = renderToStaticMarkup(<TaskRow {...props} selectedId="task" menuAnchor={{ source: 'sidebar', id: 'another-task', x: 0, y: 0 }} />);
+    expect(selected).toContain('aria-current="page"');
+    expect(selected).toContain('bg-[hsl(var(--sidebar-item-active))]');
   });
 });

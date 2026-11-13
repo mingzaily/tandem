@@ -33,12 +33,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
 
+mod archive;
 mod rollout_images;
 
 const READER_IDLE: Duration = Duration::from_secs(60);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
 const LIST_LIMIT: u64 = 200;
+const MAX_LIST_PAGES: usize = 5;
 /// Very long threads show their most recent part. The rest stays available in Codex.
 const MAX_ITEMS: usize = 3000;
 const TITLE_CHARS: usize = 80;
@@ -194,21 +196,28 @@ impl Reader {
         });
     }
 
-    async fn list_threads(&self, cwds: Option<&[String]>) -> Result<Vec<Value>, String> {
+    async fn list_threads(&self, cwds: Option<&[String]>, archived: bool) -> Result<Vec<Value>, String> {
         let mut params = json!({
             "limit": LIST_LIMIT,
             "useStateDbOnly": true,
             "sortKey": "updated_at",
             "sourceKinds": SOURCE_KINDS,
+            "archived": archived,
         });
         if let Some(cwds) = cwds {
             params["cwd"] = json!(cwds);
         }
-        let mut results = self.call_all(vec![("thread/list", params)]).await?;
-        Ok(results
-            .pop()
-            .and_then(|result| result.get("data").and_then(Value::as_array).cloned())
-            .unwrap_or_default())
+        let mut threads = Vec::new();
+        for _ in 0..MAX_LIST_PAGES {
+            let mut results = self.call_all(vec![("thread/list", params.clone())]).await?;
+            let result = results.pop().ok_or("Codex 没有返回任务列表")?;
+            let page = result.get("data").and_then(Value::as_array).ok_or("Codex 任务列表格式无效")?;
+            threads.extend(page.iter().cloned());
+            let next = result.get("nextCursor").filter(|cursor| !cursor.is_null());
+            if page.is_empty() || next.is_none() || next == params.get("cursor") { break; }
+            params["cursor"] = next.cloned().unwrap_or(Value::Null);
+        }
+        Ok(threads)
     }
 
     /// Codex filters by exact folder, so `cwds` has to name each one.
@@ -216,7 +225,16 @@ impl Reader {
         if cwds.is_empty() || !is_installed().await {
             return Ok(Vec::new());
         }
-        let threads = self.list_threads(Some(cwds)).await?;
+        let mut tasks = HashMap::new();
+        let mut threads = Vec::new();
+        for archived in [false, true] {
+            for thread in self.list_threads(Some(cwds), archived).await? {
+                if let Some(task) = thread_summary(&thread) {
+                    tasks.insert(task.id.clone(), TaskSummary { archived: Some(archived), ..task });
+                }
+                threads.push(thread);
+            }
+        }
         let mut state = self.0.lock().await;
         for thread in &threads {
             if let (Some(id), Some(path)) = (
@@ -226,30 +244,39 @@ impl Reader {
                 state.paths.insert(id.to_owned(), path.into());
             }
         }
-        Ok(threads.iter().filter_map(thread_summary).collect())
+        let mut tasks: Vec<_> = tasks.into_values().collect();
+        tasks.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms).then_with(|| a.id.cmp(&b.id)));
+        Ok(tasks)
     }
 
     pub async fn discover_projects(&self) -> Result<Vec<DiscoveredProject>, String> {
         if !is_installed().await {
             return Ok(Vec::new());
         }
-        Ok(self
-            .list_threads(None)
-            .await?
-            .iter()
-            .filter_map(thread_summary)
-            .map(|task| DiscoveredProject { cwd: task.cwd, last_active_ms: task.updated_at_ms })
-            .collect())
+        let mut projects = Vec::new();
+        for archived in [false, true] {
+            projects.extend(self.list_threads(None, archived).await?.iter().filter_map(thread_summary)
+                .map(|task| DiscoveredProject { cwd: task.cwd, last_active_ms: task.updated_at_ms }));
+        }
+        Ok(projects)
     }
 
     pub async fn task_file(&self, id: &str) -> Option<PathBuf> {
         self.0.lock().await.paths.get(id).cloned()
     }
 
-    pub async fn read_task(&self, id: &str) -> Result<TaskContent, String> {
+    async fn read_thread(&self, id: &str) -> Result<Value, String> {
         require_uuid(id)?;
-        let mut thread = self.call_all(vec![("thread/read", json!({"threadId": id, "includeTurns": false}))]).await?;
-        let model_selection = thread.pop().and_then(|result| task_model(result.get("thread")?));
+        let mut results = self.call_all(vec![("thread/read", json!({"threadId": id, "includeTurns": false}))]).await?;
+        let thread = results.pop().and_then(|mut result| result.get_mut("thread").map(Value::take)).ok_or("Codex 没有返回任务")?;
+        if thread.get("id").and_then(Value::as_str) != Some(id) { return Err("Codex 返回的任务 ID 不一致".into()); }
+        if let Some(path) = thread.get("path").and_then(Value::as_str) { self.0.lock().await.paths.insert(id.to_owned(), path.into()); }
+        Ok(thread)
+    }
+
+    pub async fn read_task(&self, id: &str) -> Result<TaskContent, String> {
+        let thread = self.read_thread(id).await?;
+        let model_selection = task_model(&thread);
         let mut content = match self.read_turns(id).await {
             Err(error) if error.contains(BROKEN_LINEAGE) => {
                 let path = self.task_file(id).await.ok_or(error)?;
@@ -289,12 +316,24 @@ impl Reader {
     }
 
     pub async fn task_cwd(&self, id: &str) -> Result<String, String> {
-        require_uuid(id)?;
-        let mut results = self.call_all(vec![("thread/read", json!({"threadId": id, "includeTurns": false}))]).await?;
-        results
-            .pop()
-            .and_then(|result| result.get("thread")?.get("cwd")?.as_str().map(str::to_owned))
+        self.read_thread(id).await?.get("cwd").and_then(Value::as_str).map(str::to_owned)
             .ok_or_else(|| "The task has no working directory".to_owned())
+    }
+
+    pub async fn set_archived(&self, id: &str, archived: bool) -> Result<(), String> {
+        require_uuid(id)?;
+        let mut state = self.0.lock().await;
+        if state.conn.is_none() { state.conn = Some(Conn::open(&home_dir()?).await?); }
+        let result = archive::set_state(state.conn.as_mut().ok_or("codex is not running")?, id, archived).await;
+        let path = match result {
+            Ok(path) => path,
+            Err(error) => { state.conn = None; return Err(error); }
+        };
+        state.paths.insert(id.to_owned(), path);
+        state.last_used = Some(Instant::now());
+        drop(state);
+        self.close_when_idle();
+        Ok(())
     }
 
     pub async fn rename_task(&self, id: &str, title: &str) -> Result<(), String> {
@@ -470,6 +509,7 @@ fn thread_summary(thread: &Value) -> Option<TaskSummary> {
         cwd: thread.get("cwd")?.as_str()?.to_owned(),
         updated_at_ms: seconds * 1000,
         agent: Agent::Codex,
+        archived: thread.get("path").and_then(Value::as_str).and_then(|path| archive::path_state(path).ok()),
     })
 }
 
@@ -1075,6 +1115,7 @@ async fn open_thread(conn: &mut Conn, request: &TurnRequest) -> Result<(String, 
     let model = request.options.model.clone();
     let result = if let Some(id) = &request.task_id {
         require_uuid(id)?;
+        archive::set_state(conn, id, false).await?;
         let params = json!({"threadId": id, "excludeTurns": true, "sandbox": "read-only", "model": model});
         conn.call("thread/resume", params).await?
     } else {
@@ -1439,7 +1480,7 @@ mod tests {
             assert_eq!(questions[0]["allowCustom"], allow);
             assert_eq!(questions[0]["options"].as_array().unwrap().len(), 1);
             let answers = json!({"Pick": "my own answer"}).as_object().unwrap().clone();
-            let reply = decision_result(&request, &Decision::Answer { answers, custom: true }).unwrap();
+            let reply = decision_result(&request, &Decision::Answer { answers, custom: true, comment: None }).unwrap();
             assert_eq!(reply["answers"]["q"]["answers"][0], "my own answer");
         }
     }
@@ -1450,7 +1491,7 @@ mod tests {
         let pending = PendingRequest::for_codex(crate::runner::QUESTION_TOOL, questions);
         let mut answers = Map::new();
         answers.insert("Colour?".to_owned(), json!("Red"));
-        let result = decision_result(&pending, &Decision::Answer { answers, custom: false }).unwrap();
+        let result = decision_result(&pending, &Decision::Answer { answers, custom: false, comment: None }).unwrap();
         assert_eq!(result["answers"]["q1"]["answers"][0], "Red");
         assert!(result["answers"].get("q2").is_none());
 

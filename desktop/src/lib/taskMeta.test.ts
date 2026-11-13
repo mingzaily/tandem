@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptNativeTitle, EMPTY_TASK_META, renameTask, taskTitle, toggleArchived, togglePin, unarchive } from './taskMeta';
+import { acceptNativeTitle, archivedTaskIds, EMPTY_TASK_META, isTaskArchived, renameTask, taskTitle, togglePin } from './taskMeta';
 
 describe('taskMeta', () => {
   it('pins and unpins', () => {
@@ -8,15 +8,18 @@ describe('taskMeta', () => {
     expect(togglePin(pinned, 'a').pins).toEqual([]);
   });
 
-  it('removes the pin when archiving', () => {
-    const archived = toggleArchived(togglePin(EMPTY_TASK_META, 'a'), 'a');
-    expect(archived).toMatchObject({ pins: [], archived: ['a'] });
+  it('recognizes native Codex archives alongside existing local marks', () => {
+    const meta = { ...EMPTY_TASK_META, archived: ['local'] };
+    expect(isTaskArchived(meta, { id: 'native', archived: true })).toBe(true);
+    expect(isTaskArchived(meta, { id: 'local', archived: false })).toBe(true);
+    expect(isTaskArchived(meta, { id: 'active', archived: false })).toBe(false);
   });
 
-  it('brings an archived task back and leaves others untouched', () => {
-    const archived = toggleArchived(EMPTY_TASK_META, 'a');
-    expect(unarchive(archived, 'a').archived).toEqual([]);
-    expect(unarchive(archived, 'b')).toBe(archived);
+  it('deduplicates archived ids for attention counts without persisting native state', () => {
+    const meta = { pins: ['active'], archived: ['local', 'native'], titles: {} };
+    const tasks = ['native', 'active'].map((id) => ({ id, title: id, cwd: '/project', agent: 'codex' as const, updatedAtMs: 0, archived: id === 'native' }));
+    expect(archivedTaskIds(meta, tasks)).toEqual(['local', 'native']);
+    expect(meta).toEqual({ pins: ['active'], archived: ['local', 'native'], titles: {} });
   });
 
   it('a rename overrides the title and an empty one restores it', () => {

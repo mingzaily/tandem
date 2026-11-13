@@ -36,30 +36,31 @@ describe('composer text alignment', () => {
     expect(gutter + pixels(more, rootSize)).toBe(queueInset);
   });
 
-  it('gives fenced input a distinct input surface and keeps the editor and measuring mirror in the same code font', () => {
+  it('gives editable code a distinct theme surface and its own code font', () => {
     const surface = declarations('.composer-code-surface');
     expect(surface.get('background')).toBe('color-mix(in srgb, var(--chat-input-bg) 94%, var(--chat-input-text))');
     expect(surface.get('box-shadow')).toBe('inset 0 0 0 1px var(--chat-input-chip-border)');
-    expect(declarations('.composer-code-only .composer-editor').get('font-family')).toBe('var(--app-font-code-default)');
-    expect(declarations('.composer-code-only .composer-code-mirror').get('font-family')).toBe('var(--app-font-code-default)');
+    expect(surface.get('font-family')).toBe('var(--app-font-code-default)');
+    expect(declarations('.composer-code-surface code').get('font')).toBe('inherit');
   });
 
   it('uses the reference input inset without inheriting the queue handle space', () => {
     const editorInset = pixels(declarations('.composer-content-inset').get('padding-inline')!, 16);
     expect(editorInset).toBe(11);
     expect(pixels(values.get('--queue-content-inset')!, 16)).toBe(36);
-    const surfaceInset = pixels(declarations('.composer-code-surface').get('left')!, 16);
+    const surfaceInset = editorInset + Number.parseFloat(declarations('.composer-code-surface').get('margin')!.split(' ')[1]);
     expect(surfaceInset).toBeGreaterThanOrEqual(0);
     expect(surfaceInset).toBeLessThan(editorInset);
   });
 
-  it('puts the input, mirror, attachments, editing header and toolbar on the shared input inset', () => {
+  it('puts the plain and structured inputs, attachments, editing header and toolbar on the shared input inset', () => {
     const source = readFileSync(resolve(root, 'src/components/Composer.tsx'), 'utf8');
     expect(source).toMatch(/<textarea[\s\S]*?className="composer-content-inset /);
     expect(source).toContain('composer-content-inset flex flex-wrap');
     expect(source).toContain('composer-content-inset flex items-center justify-between');
     expect(source).toContain('composer-content-inset flex items-center justify-between gap-2 pb-2.5');
-    expect(readFileSync(resolve(root, 'src/components/CodeFenceBackdrop.tsx'), 'utf8')).toContain('composer-content-inset composer-code-mirror');
+    expect(declarations('.composer-rich-content').get('padding')).toContain('var(--composer-content-inset)');
+    expect(source).toContain("lazy(() => import('./CodeComposer'))");
     expect(source).not.toContain('px-6');
   });
 });

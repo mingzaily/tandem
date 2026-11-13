@@ -5,6 +5,16 @@
 
 各 CLI 的文件格式对照和早期设计见 [`reference/loom/architecture.md`](../reference/loom/architecture.md)，当时踩过的坑见同目录的其他文档，ccgui 的做法可以查 `docs/reference/repos/ccgui`。
 
+## 归档与恢复
+
+Codex 归档与恢复通过官方 app-server 的 `thread/archive`、`thread/unarchive` 完成。操作前后使用 `thread/read(includeTurns: false)` 核验任务 ID 与原生会话位置，原生文件移动与索引更新由 Codex 负责。Tandem 的任务列表分别读取进行中、已归档两类，每类每页 200 条、最多 5 页，按最近活动合并；项目发现也覆盖两类。原生归档状态随任务摘要返回，在侧栏、设置已归档页、角标和手机任务列表中统一使用。读取归档历史保持原生状态，续接前通过官方接口恢复；线程仍以 `sandbox: read-only` 续接。读取进程只使用元数据与控制请求，保持原有空闲退出周期。
+
+Claude Code 和 Pi 继续使用 `taskMeta.archived` 保存到 `~/.tandem/state.json` 的列表标记。当前接入的本地 CLI / RPC 没有等价的归档状态接口；会话继续保留，可从各自 resume 入口继续。Pi 的会话删除、Claude 的后台会话 `rm` 与项目 `purge` 沿用其删除或清理用途。Tandem 只调用已确认的归档接口，本地列表标记保持会话文件原位。
+
+侧栏、任务菜单与设置恢复共用 `set_task_archived` 后端命令。运行中、元数据操作中、其他进程占用或有待发送消息的任务先完成当前工作与队列；归档操作持有任务活动锁，期间发送、排队和其他元数据写入等待用户稍后重试。成功后移除置顶并更新归档视图，失败保留已确认状态并显示原因。Codex 原生已成功而本地设置保存失败时，明确报告部分完成并支持幂等重试。前端归档与设置保存串行，排队的置顶操作按新增／移除成员合并，异步别名保存只写本次变化。
+
+接入前已有的 Codex 本地归档标记继续生效，启动和刷新保持原生会话原样；用户下次归档或恢复该任务时调用官方接口并清除对应本地标记。新操作的原生归档状态直接来自 Codex，本地只保留置顶与别名。归档当前打开任务后转到同一项目的新建页，恢复入口继续位于“设置 → 已归档”。
+
 ## Claude Code
 
 **位置**：`$CLAUDE_CONFIG_DIR/projects/<编码后的目录>/<uuid>.jsonl`，默认是 `~/.claude`。不要用工作目录去计算编码后的目录名，超长路径会对不上，要扫描目录。工作目录从文件内容的 `cwd` 字段读取。
@@ -49,7 +59,7 @@ Claude 在每条用户记录上写 `permissionMode`。读取任务时取活动�
 
 全部通过 `codex app-server`（stdio 上的 JSON-RPC，`codex.rs`），不解析它的文件：`.zst` 压缩和分叉拼接都由它处理。协议类型可以用 `codex app-server generate-json-schema --out <目录>` 按已安装版本生成。
 
-**读取**：`thread/list`（`useStateDbOnly`，`sourceKinds` 去掉子 Agent）、`thread/turns/list`（`itemsView: full`，倒序分页，同时读取轮次终态与错误）、`model/list`、`account/rateLimits/read`。这个进程没有加载线程，不持有写入锁，空闲 60 秒退出。
+**读取**：`thread/list`（`useStateDbOnly`，`sourceKinds` 去掉子 Agent，`archived: false/true` 分别读取并按有界游标分页）、`thread/turns/list`（`itemsView: full`，倒序分页，同时读取轮次终态与错误）、`model/list`、`account/rateLimits/read`。这个进程没有加载线程，不持有写入锁，空闲 60 秒退出。
 
 **分叉断链的例外**：分叉出来的任务，父任务的 rollout 不在了时，历史分页会报 `invalid paginated history lineage … missing source rollout`。这时只读它自己的 rollout（`event_msg` 里的 `item_completed`，字段形状和官方接口不同，由 `normalized_item` 转换），分叉之前的历史缺失，分叉之后的内容正常显示。这是上面"不解析它的文件"唯一的例外，只在这个报错时走。
 
@@ -79,6 +89,10 @@ Claude 在每条用户记录上写 `permissionMode`。读取任务时取活动�
 
 **对话框**：扩展的 `confirm`、`select`、`input`、`editor` 显示成卡片，其他 `extension_ui_request` 只影响它自己的显示，忽略。`pi-ask-user` 把问题和背景按固定的 `\n\nContext:\n` 拼入 RPC 标题；宿主在主问题和背景都有效时增加 `Question.displayQuestion` 与 `context`，桌面和手机分别显示主问题、小号灰色的“背景说明”。`Question.question` 与原生请求中的问题保留完整原文，普通答案与自定义桥接继续用它作为匹配键。普通 `select` 归一化为 `allowCustom: false`，保留扩展完整选项。`pi-ask-user` 固定的 `✏️ Type custom response...` 选项由宿主识别为自由回答能力，页面使用本地化的“输入其他回答…”入口，打开输入和返回选项只保留本地草稿。提交时 `Decision::Answer.custom` 标明正文来自自由输入；宿主先回传固定原标签，再用正文自动回答同一问题的 `Type your answer...` 输入请求，原生 `select → input` 语义完整保留。桥接正文只在当前工具的内存中保存，工具结束时清除；其他标题、占位或普通选项仍走原生交互。`input`/`editor` 直接显示自由回答字段；扩展关闭自由回答时保持选项能力原样。
 
+当前 `ask_user` 工具的 `tool_execution_start.args` 用于补齐 RPC `select` 中省略的选项描述、多选和备注能力，标题按同一工具的原问题/背景/批次序号严格匹配。可选备注来自调用参数，省略时只读同一子进程的环境与 `ask-user.json` 默认值。`Question.allowComment` 让前端在提交前保留“选择 → 可选备注 → 返回选择”状态；提交时可选 `Decision::Answer.comment` 一并传入，宿主先发送原生选择，再自动回答紧随的同题 `Optional comment (press Enter to skip)...` 输入，空字符串表示保留选择且跳过备注。正文和备注桥接各消费一次，工具结束或新轮次清理，其他扩展请求使用原协议。
+
+Pi 的工具结果展示优先保留 `ask_user` 原生 `details` 内的题目、选择、自由回答、备注和取消状态，实时事件与历史读取共用提取。页面将有真实答案的工具投影为工作折叠之外的紧凑问答记录，原生历史文件保持原样；缺少可识别结果时继续显示普通工具记录。
+
 ## 已知限制
 
 见 [路线图](../roadmap.md)。见文件。
@@ -101,7 +115,7 @@ Codex App 会把附件说明和用户输入封装成 `Files mentioned by the use
 
 ## 回复失败记录
 
-一轮失败在消息流末尾显示“回复异常，本轮已结束”，原始错误放在可展开的详情里。下一次发送沿用原生用户消息顺序，失败记录保留在前一轮与新输入之间。输入框上方继续显示队列保存、加载、外部占用等当前操作错误；已归属到消息流的同一失败在该位置合并显示。
+一轮失败在所属消息流末尾直接显示可读原因。Claude 明确返回的小时额度上限与重置时间按界面语言展示，时间和时区沿用 CLI 原文；简短原因直接可见。多行或过长的诊断显示首行摘要并保留可展开的完整原文，结构化协议响应或缺少原因时显示“回复异常，本轮已结束”。展示处理只作用于页面，原生记录继续保留原始错误。下一次发送沿用原生用户消息顺序，失败记录保留在前一轮与新输入之间。输入框上方继续显示队列保存、加载、外部占用等当前操作错误；已归属到消息流的同一失败在该位置合并显示。
 
 历史读取使用 CLI 原生结果：Pi 的 `stopReason: error` 与 `errorMessage`，Claude 的 `isApiErrorMessage`，Codex 官方 `thread/turns/list` 的 `failed` 和 `error.message`。这些记录归一化为 `Message.kind: assistant`、`isError: true`，桌面和手机再呈现为独立错误行。同一输入下后续助手请求或工具调用成功时清除已恢复的中途失败；下一条用户输入保留上一轮的最终失败。只在运行过程中出现且 CLI 没有保存的进程或传输错误，随所属输入暂存于窗口内存，按时间与同文输入次序定位，原生错误优先；应用重启后以 CLI 记录为准。
 

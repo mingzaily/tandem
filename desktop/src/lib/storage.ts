@@ -57,6 +57,10 @@ export const DEFAULT_SNAPSHOT: PreferencesSnapshot = {
 
 type Patch = Record<string, unknown>;
 type Change = { target: 'config' | 'state'; patch: Patch };
+interface PinChange { added: string[]; removed: string[] }
+type PendingChange = Change & { pins?: PinChange };
+interface Operation { run: () => Promise<PreferencesSnapshot>; resolve: () => void; reject: (error: unknown) => void }
+type PendingWrite = PendingChange | Operation;
 const isObject = (value: unknown): value is Patch => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /** JSON merge patches preserve unrelated changes and remove deleted local aliases. */
@@ -92,7 +96,7 @@ function share<T>(before: T, after: T): T {
 export class PreferencesMemory {
   private canonical: PreferencesSnapshot;
   private snapshot: PreferencesSnapshot;
-  private pending: Change[] = [];
+  private pending: PendingWrite[] = [];
   private listeners = new Set<() => void>();
   private failure: string | null = null;
   private saving = false;
@@ -114,15 +118,35 @@ export class PreferencesMemory {
   change(target: Change['target'], next: Patch) {
     const patch = difference(this.snapshot[target], { ...this.snapshot[target], ...next }) as Patch | undefined;
     if (!patch || Object.keys(patch).length === 0) return;
-    this.pending.push({ target, patch });
+    const pins = target === 'state' && isObject(patch.taskMeta) && Array.isArray(patch.taskMeta.pins)
+      ? { added: (patch.taskMeta.pins as string[]).filter((id) => !this.snapshot.state.taskMeta.pins.includes(id)),
+          removed: this.snapshot.state.taskMeta.pins.filter((id) => !(patch.taskMeta as { pins: string[] }).pins.includes(id)) }
+      : undefined;
+    this.pending.push({ target, patch, pins });
     // Callers already update their React state. Do not notify synchronously from their setState
     // updater; the queued write and incoming backend events notify outside that render.
     this.rebuild(false);
     void this.flush();
   }
 
+  /** Native archive operations share the preference writer so queued pins keep their intent. */
+  async operation(run: () => Promise<PreferencesSnapshot>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      this.pending.push({ run, resolve, reject });
+      void this.flush();
+    });
+  }
+
+  private patch(change: PendingChange, snapshot: PreferencesSnapshot): Patch {
+    if (!change.pins) return change.patch;
+    const { added, removed } = change.pins;
+    const pins = [...added, ...snapshot.state.taskMeta.pins.filter((id) => !added.includes(id) && !removed.includes(id))];
+    return { ...change.patch, taskMeta: { ...(change.patch.taskMeta as Patch), pins } };
+  }
+
   private rebuild(notify = true) {
-    this.snapshot = this.pending.reduce((snapshot, { target, patch }) => ({ ...snapshot, [target]: merge(snapshot[target], patch) }), this.canonical);
+    this.snapshot = this.pending.reduce((snapshot, change) => 'run' in change ? snapshot
+      : { ...snapshot, [change.target]: merge(snapshot[change.target], this.patch(change, snapshot)) }, this.canonical);
     if (this.failure) this.snapshot = { ...this.snapshot, errors: [...this.snapshot.errors, this.failure] };
     if (notify) this.listeners.forEach((listener) => listener());
   }
@@ -132,11 +156,13 @@ export class PreferencesMemory {
     while (this.pending.length > 0) {
       const change = this.pending[0];
       try {
-        const saved = await this.write(change);
+        const saved = 'run' in change ? await change.run() : await this.write({ target: change.target, patch: this.patch(change, this.canonical) });
         if (saved.revision >= this.canonical.revision) this.canonical = share(this.canonical, saved);
         this.failure = null;
+        if ('run' in change) change.resolve();
       } catch (error) {
-        this.failure = String(error);
+        if ('run' in change) change.reject(error);
+        else this.failure = String(error);
       }
       this.pending.shift();
       this.rebuild();

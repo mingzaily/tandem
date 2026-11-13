@@ -1,11 +1,11 @@
-import { ChevronRight, ChevronsDownUp, ChevronsUpDown, CirclePlus, Folder, FolderOpen, GitBranch, GripVertical, Loader2, MessagesSquare, MoreHorizontal, Pin, PinOff, Plus, Search, Settings, Sparkles, SquareTerminal } from 'lucide-react';
+import { Archive, ArchiveRestore, ChevronRight, ChevronsDownUp, ChevronsUpDown, CirclePlus, Folder, FolderOpen, GitBranch, GripVertical, MessagesSquare, Pin, PinOff, Plus, Search, Settings, SquareTerminal } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import type { TaskSummary } from '../lib/api';
 import { t } from '../lib/i18n';
 import { CONVERSATION_CWD, groupRoot, isUnder, projectName, worktreeName } from '../lib/items';
-import { renameTask, taskTitle, togglePin, type TaskMeta } from '../lib/taskMeta';
+import { isTaskArchived, renameTask, taskTitle, togglePin, type TaskMeta } from '../lib/taskMeta';
 import { formatAge } from '../lib/tools';
 import { advanceHold, CLI_ORDER, cliTaskGroups, moveSidebarProject, orderSidebarProjects, projectMoveRange, toggleProjectPin, type PriorityContext, type SidebarOptions } from '../lib/sidebarModel';
 import { useSidebarDrag } from '../lib/useSidebarDrag';
@@ -14,6 +14,7 @@ import { FloatingMenu } from './FloatingMenu';
 import { MENU_ROW } from './ComposerMenu';
 import { AgentMark } from './AgentMark';
 import type { TaskMenuAnchor } from './TaskMenu';
+import { SidebarUpdate } from './AppUpdateControl';
 import { isImeKey } from '../lib/ime';
 
 const PREVIEW_COUNT = 5;
@@ -49,8 +50,6 @@ interface SidebarProps {
   onCollapsedGroupsChange: (keys: string[]) => void;
   options: SidebarOptions;
   menuAnchor: TaskMenuAnchor | null;
-  generatingTitles: Set<string>;
-  onGenerateTitle: (task: TaskSummary) => void;
   onProjectOrderChange: (order: string[]) => void;
   width: number;
   renamingId: string | null;
@@ -59,12 +58,14 @@ interface SidebarProps {
   onSelect: (id: string) => void;
   onNewTask: (cwd?: string) => void;
   onMetaChange: (meta: TaskMeta) => void;
+  onArchive: (task: TaskSummary, archived: boolean) => void;
+  archiving?: ReadonlySet<string>;
   onRenameDone: () => void;
   onOpenMenu: (anchor: TaskMenuAnchor) => void;
   onOpenSettings: () => void;
 }
 
-interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'unread' | 'external' | 'meta' | 'onSelect' | 'onMetaChange' | 'onRenameDone' | 'onOpenMenu' | 'menuAnchor' | 'generatingTitles' | 'onGenerateTitle'> {
+interface TaskRowProps extends Pick<SidebarProps, 'selectedId' | 'running' | 'waiting' | 'unread' | 'external' | 'meta' | 'onSelect' | 'onMetaChange' | 'onArchive' | 'archiving' | 'onRenameDone' | 'onOpenMenu' | 'menuAnchor'> {
   task: TaskSummary;
   /** 0 for top-level rows, then 8px more for each level, as in the reference's SessionItem. */
   depth: 0 | 1 | 2;
@@ -98,15 +99,15 @@ function RenameField({ title, onDone }: { title: string; onDone: (title: string 
 }
 
 export function TaskRow(props: TaskRowProps) {
-  const { task, depth, now, isRenaming, nativeReady = true, selectedId, running, waiting, unread, external, meta, onSelect, onMetaChange, onRenameDone, onOpenMenu, menuAnchor, generatingTitles, onGenerateTitle } = props;
+  const { task, depth, now, isRenaming, nativeReady = true, selectedId, running, waiting, unread, external, meta, onSelect, onMetaChange, onArchive, archiving, onRenameDone, onOpenMenu, menuAnchor } = props;
   const menuOpen = menuAnchor?.source === 'sidebar' && task.id === menuAnchor.id;
-  const isGeneratingTitle = generatingTitles.has(task.id);
-  const showActions = menuOpen || isGeneratingTitle;
+  const showActions = menuOpen;
   // The badges, dot and time step aside together while the row shows its actions, as in the reference.
   const slotHidden = !nativeReady ? '' : showActions ? 'hidden' : 'group-focus-within:hidden group-hover:hidden';
   const active = task.id === selectedId;
   const isRunning = running.has(task.id) || external.get(task.id) === true;
   const isWaiting = waiting.has(task.id);
+  const isArchived = isTaskArchived(meta, task);
   const status = isWaiting ? 'waiting' : unread.has(task.id) ? 'unread' : null;
   const worktree = worktreeName(task.cwd);
   const title = taskTitle(meta, task);
@@ -119,8 +120,16 @@ export function TaskRow(props: TaskRowProps) {
           : `text-foreground hover:bg-[hsl(var(--sidebar-item-hover))] ${menuOpen ? 'bg-[hsl(var(--sidebar-item-hover))]' : ''}`
       }`}
       onContextMenu={(event) => {
+        if (isRenaming) return;
         event.preventDefault();
         if (nativeReady) openMenuAt(event.clientX, event.clientY);
+      }}
+      onKeyDown={(event) => {
+        if (!nativeReady || isRenaming || isImeKey(event)) return;
+        if (event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
+        event.preventDefault();
+        const bounds = event.currentTarget.getBoundingClientRect();
+        openMenuAt(bounds.left, bounds.bottom + 4);
       }}
     >
       {isRenaming ? (
@@ -141,7 +150,7 @@ export function TaskRow(props: TaskRowProps) {
           type="button"
           onClick={() => onSelect(task.id)}
           aria-current={task.id === selectedId ? 'page' : undefined}
-          className={`${PILL_ROW} ${DEPTH_PADDING[depth]} pr-2 text-left font-medium ${!nativeReady ? '' : showActions ? '!pr-[76px]' : 'group-hover:pr-[76px] group-focus-within:pr-[76px]'}`}
+          className={`${PILL_ROW} ${DEPTH_PADDING[depth]} pr-2 text-left font-medium ${!nativeReady ? '' : showActions ? '!pr-[54px]' : 'group-hover:pr-[54px] group-focus-within:pr-[54px]'}`}
         >
           <span
             className={`flex w-[15px] shrink-0 items-center justify-center ${
@@ -191,13 +200,12 @@ export function TaskRow(props: TaskRowProps) {
       {isRenaming || !nativeReady ? null : (
         <div className={`absolute right-1.5 top-1.5 flex items-center gap-0.5 ${showActions ? 'opacity-100' : 'pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100'}`}>
           {[
-            ...(meta.archived.includes(task.id) ? [] : [{ label: t(meta.pins.includes(task.id) ? 'taskUnpin' : 'taskPin'), icon: meta.pins.includes(task.id) ? PinOff : Pin, action: () => onMetaChange(togglePin(meta, task.id)), pressed: undefined, busy: false }]),
-            { label: t(isGeneratingTitle ? 'taskGeneratingTitle' : 'taskGenerateTitle'), icon: isGeneratingTitle ? Loader2 : Sparkles, action: () => onGenerateTitle(task), pressed: undefined, busy: isGeneratingTitle },
-            { label: t('taskMenu'), icon: MoreHorizontal, action: (button: HTMLButtonElement) => { const bounds = button.getBoundingClientRect(); openMenuAt(bounds.left, bounds.bottom + 4); }, pressed: menuOpen, busy: false },
-          ].map(({ label, icon: Icon, action, pressed, busy }) => <button key={label} type="button" aria-label={label} data-tooltip={label} aria-pressed={pressed} aria-busy={busy || undefined} disabled={busy}
-            onClick={(event) => action(event.currentTarget)}
-            className={`sidebar-task-action flex size-5 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] enabled:hover:bg-[color-mix(in_srgb,currentColor_14%,transparent)] ${pressed || busy ? 'bg-[color-mix(in_srgb,currentColor_14%,transparent)]' : ''} ${active ? 'text-[var(--sidebar-item-active-foreground)]' : `${pressed || busy ? 'text-foreground' : 'text-[hsl(var(--sidebar-action-icon))]'} enabled:hover:text-foreground`}`}>
-            <Icon size={14} strokeWidth={2} aria-hidden className={busy ? 'motion-safe:animate-spin motion-safe:[animation-duration:var(--motion-spinner-cycle)]' : undefined} />
+            ...(isArchived ? [] : [{ label: t(meta.pins.includes(task.id) ? 'taskUnpin' : 'taskPin'), icon: meta.pins.includes(task.id) ? PinOff : Pin, action: () => onMetaChange(togglePin(meta, task.id)) }]),
+            { label: t(isArchived ? 'taskUnarchive' : 'taskArchive'), icon: isArchived ? ArchiveRestore : Archive, action: () => onArchive(task, !isArchived) },
+          ].map(({ label, icon: Icon, action }) => <button key={label} type="button" aria-label={label} data-tooltip={label} disabled={archiving?.has(task.id)} aria-busy={archiving?.has(task.id) || undefined}
+            onClick={action}
+            className={`sidebar-task-action flex size-5 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] enabled:hover:bg-[color-mix(in_srgb,currentColor_14%,transparent)] ${active ? 'text-[var(--sidebar-item-active-foreground)]' : 'text-[hsl(var(--sidebar-action-icon))] enabled:hover:text-foreground'}`}>
+            <Icon size={14} strokeWidth={2} aria-hidden />
           </button>)}
         </div>
       )}
@@ -227,14 +235,14 @@ export function Sidebar(props: SidebarProps) {
     !needle || `${taskTitle(meta, task)} ${task.cwd}`.toLowerCase().includes(needle);
   const pinned = useMemo(() => {
     const byId = new Map(tasks.map((task) => [task.id, task]));
-    return meta.pins.flatMap((id) => byId.get(id) ?? []);
-  }, [tasks, meta.pins]);
+    return meta.pins.flatMap((id) => { const task = byId.get(id); return task && !isTaskArchived(meta, task) ? [task] : []; });
+  }, [tasks, meta]);
 
   // Tasks arrive newest first, so groups and their rows keep that order.
   const groups = useMemo(() => {
     const byRoot = new Map<string, TaskSummary[]>();
     for (const task of tasks) {
-      if (meta.archived.includes(task.id) || meta.pins.includes(task.id)) continue;
+      if (isTaskArchived(meta, task) || meta.pins.includes(task.id)) continue;
       if (needle && !`${taskTitle(meta, task)} ${task.cwd}`.toLowerCase().includes(needle)) continue;
       const isConversation = conversationRoots.some((root) => isUnder(task.cwd, root));
       const root = isConversation ? CONVERSATION_CWD : groupRoot(task.cwd, extraProjects);
@@ -443,7 +451,9 @@ export function Sidebar(props: SidebarProps) {
         <img src={iconUrl} alt="" draggable={false} className="pointer-events-none size-7 shrink-0 select-none" />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-13 font-medium leading-[1.3] text-[var(--sidebar-user-card-text)]">Tandem</span>
-          <span className="truncate text-11 leading-[1.3] text-[var(--sidebar-list-muted)]">{version}</span>
+          <span className="flex min-w-0 items-center gap-1.5 text-11 leading-[1.3] text-[var(--sidebar-list-muted)]">
+            <span className="truncate">{version}</span><SidebarUpdate />
+          </span>
         </span>
         <button
           type="button"

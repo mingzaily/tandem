@@ -1,4 +1,4 @@
-import { Archive, ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
+import { Archive, ArrowLeft, Bot, ExternalLink, FolderOpen, FolderPlus, Info, Keyboard, Palette, RotateCcw, Settings, Smartphone, X, type LucideIcon } from 'lucide-react';
 import { lazy, Suspense, useCallback, useEffect, useId, useReducer, useRef, useState, type ReactNode } from 'react';
 import iconUrl from '../assets/tandem-icon.svg';
 import {
@@ -29,7 +29,8 @@ import {
   type RemoteState,
   type DiscoveredProject,
 } from '../lib/api';
-import { currentLanguage, t, type StringKey } from '../lib/i18n';
+import { APP_SHORTCUTS } from '../lib/keyboardShortcuts';
+import { t, type StringKey } from '../lib/i18n';
 import { projectName } from '../lib/items';
 import type { SidebarOptions, SidebarSort } from '../lib/sidebarModel';
 import { loadAgentStatus, saveAgentStatus } from '../lib/preferences';
@@ -46,16 +47,18 @@ import {
 import { AgentMark } from './AgentMark';
 import { SettingsSelect } from './SettingsSelect';
 import { SettingsButton } from './SettingsButton';
-import { UpdateAction, UpdateDetails, useAppUpdate } from './AppUpdateControl';
+import { UpdateAction, UpdateStatus, useAppUpdate } from './AppUpdateControl';
 
 const AgentResources = lazy(() => import('./AgentResources'));
+const ArchivedTasks = lazy(() => import('./ArchivedTasks'));
 const JOB_LINES = 8;
 
-type TabId = 'general' | 'appearance' | 'agents' | 'projects' | 'archived' | 'remote' | 'about';
+type TabId = 'general' | 'appearance' | 'shortcuts' | 'agents' | 'projects' | 'archived' | 'remote' | 'about';
 
 const TABS: { id: TabId; label: StringKey; icon: LucideIcon }[] = [
   { id: 'general', label: 'settingsGeneral', icon: Settings },
   { id: 'appearance', label: 'settingsAppearance', icon: Palette },
+  { id: 'shortcuts', label: 'settingsShortcuts', icon: Keyboard },
   { id: 'agents', label: 'settingsAgents', icon: Bot },
   { id: 'projects', label: 'settingsProjects', icon: FolderOpen },
   { id: 'archived', label: 'settingsArchived', icon: Archive },
@@ -122,6 +125,75 @@ const THEMES: { id: ThemeSetting; label: StringKey }[] = [
   { id: 'light', label: 'themeLight' },
   { id: 'dark', label: 'themeDark' },
 ];
+
+const KEY_NAMES: Record<string, string> = { '⌘': 'Command', '⌥': 'Option', '⇧': 'Shift', '↑': 'Arrow Up', '↓': 'Arrow Down', '→': 'Arrow Right' };
+
+function ShortcutKeys({ combinations }: { combinations: string[][] }) {
+  return <span className="flex flex-wrap items-center justify-end gap-1.5">
+    {combinations.map((keys, index) => <span key={keys.join('+')} className="inline-flex items-center gap-1">
+      {index > 0 ? <span aria-hidden className="mr-1 text-12 text-[var(--text-tertiary)]">/</span> : null}
+      {keys.map((key) => <kbd key={key} aria-label={KEY_NAMES[key] ?? key}
+        className="inline-flex h-6 min-w-6 items-center justify-center rounded-[4px] border border-[var(--border-default)] bg-[var(--surface-chip)] px-1.5 font-sans text-12 text-[var(--text-primary)]">{key}</kbd>)}
+    </span>)}
+  </span>;
+}
+
+export function ShortcutsTab({ settings, onChange }: TabProps) {
+  const primary = settings.sendWithCmdEnter ? ['⌘', 'Enter'] : ['Enter'];
+  const alternate = settings.sendWithCmdEnter ? ['⌘', '⇧', 'Enter'] : ['⌘', 'Enter'];
+  const newline = settings.sendWithCmdEnter ? ['Enter'] : ['⇧', 'Enter'];
+  const groups: { title: StringKey; rows: { label: StringKey; hint?: StringKey; keys: string[][] }[] }[] = [
+    { title: 'shortcutAppSection', rows: APP_SHORTCUTS.map(({ label, key }) => ({ label, keys: [['⌘', key.toUpperCase()]] })) },
+    { title: 'inputSection', rows: [
+      { label: 'shortcutSend', hint: 'shortcutSendHint', keys: [primary] },
+      { label: 'shortcutSteer', hint: 'shortcutSteerHint', keys: [alternate] },
+      { label: 'shortcutNewline', keys: [newline] },
+      { label: 'shortcutInputHistory', hint: 'shortcutInputHistoryHint', keys: [['↑'], ['↓']] },
+    ] },
+    { title: 'shortcutQueueSection', rows: [
+      { label: 'shortcutContextMenu', hint: 'shortcutContextMenuHint', keys: [['⇧', 'F10']] },
+      { label: 'shortcutMoveQueue', hint: 'shortcutQueueFocusHint', keys: [['↑'], ['↓']] },
+      { label: 'shortcutQueueEnds', hint: 'shortcutQueueFocusHint', keys: [['Home'], ['End']] },
+    ] },
+    { title: 'shortcutProjectSection', rows: [
+      { label: 'shortcutMoveProject', hint: 'shortcutProjectFocusHint', keys: [['⌥', '↑'], ['⌥', '↓']] },
+      { label: 'shortcutProjectEnds', hint: 'shortcutProjectFocusHint', keys: [['⌥', 'Home'], ['⌥', 'End']] },
+    ] },
+    { title: 'shortcutCodeSection', rows: [
+      { label: 'shortcutCodeIndent', hint: 'shortcutCodeFocusHint', keys: [['Tab']] },
+      { label: 'shortcutCodeExit', hint: 'shortcutCodeLastLineHint', keys: [['↓']] },
+      { label: 'shortcutCodeUndo', hint: 'shortcutCodeFocusHint', keys: [['⌘', 'Z']] },
+      { label: 'shortcutCodeRedo', hint: 'shortcutCodeFocusHint', keys: [['⌘', '⇧', 'Z']] },
+    ] },
+    { title: 'shortcutResizeSection', rows: [
+      { label: 'shortcutResizeInput', hint: 'shortcutResizeFocusHint', keys: [['↑'], ['↓']] },
+      { label: 'shortcutResizeReset', hint: 'shortcutResizeFocusHint', keys: [['Home']] },
+      { label: 'shortcutResizeMax', hint: 'shortcutResizeFocusHint', keys: [['End']] },
+    ] },
+    { title: 'shortcutConfirmSection', rows: [
+      { label: 'permissionAllowOnce', hint: 'shortcutPermissionHint', keys: [['Enter']] },
+      { label: 'shortcutAllowTask', hint: 'shortcutAllowTaskHint', keys: [['⌘', 'Enter']] },
+      { label: 'permissionDeny', hint: 'shortcutPermissionHint', keys: [['Esc']] },
+      { label: 'shortcutChooseAnswer', hint: 'shortcutChooseAnswerHint', keys: [['1–9']] },
+      { label: 'shortcutCloseMenu', hint: 'shortcutCloseMenuHint', keys: [['Esc']] },
+    ] },
+  ];
+  return <>
+    <p className="mb-6 text-13 leading-relaxed text-[var(--text-secondary)]">{t('shortcutIntro')}</p>
+    {groups.map(({ title, rows }) => <Section key={title} title={t(title)}>
+      {title === 'inputSection' ? <>
+        <Row label={t('cmdEnterLabel')} hint={t('cmdEnterHint')}>
+          <Switch label={t('cmdEnterLabel')} checked={settings.sendWithCmdEnter} onChange={(sendWithCmdEnter) => onChange({ ...settings, sendWithCmdEnter })} />
+        </Row>
+        <div className={DIVIDER} />
+      </> : null}
+      {rows.map(({ label, hint, keys }, index) => <div key={label}>
+        {index > 0 ? <div className={DIVIDER} /> : null}
+        <Row label={t(label)} hint={hint ? t(hint) : undefined}><ShortcutKeys combinations={keys} /></Row>
+      </div>)}
+    </Section>)}
+  </>;
+}
 
 function AppearanceTab({ settings, onChange }: TabProps) {
   return (
@@ -228,15 +300,6 @@ function GeneralTab({ settings, onChange }: TabProps) {
               <ExternalLink size={14} aria-hidden />{t('notificationSystemSettings')}
             </SettingsButton>
           </div>
-        </Row>
-      </Section>
-      <Section title={t('inputSection')}>
-        <Row label={t('cmdEnterLabel')} hint={t('cmdEnterHint')}>
-          <Switch
-            label={t('cmdEnterLabel')}
-            checked={settings.sendWithCmdEnter}
-            onChange={(sendWithCmdEnter) => onChange({ ...settings, sendWithCmdEnter })}
-          />
         </Row>
       </Section>
     </>
@@ -428,7 +491,7 @@ export function RelayVersionRow({ state }: { state: Pick<RemoteState, 'status' |
   const version = state.status === 'online'
     ? state.relayVersion ?? t('remoteRelayVersionUnknown') : t('remoteRelayVersionOffline');
   return <Row label={t('remoteRelayVersion')}>
-    <span className={"selectable text-13 text-[var(--text-secondary)]"}>{version}</span>
+    <span className="inline-flex h-8 items-center text-13 text-[var(--text-secondary)]">{version}</span>
   </Row>;
 }
 
@@ -539,7 +602,7 @@ function RemoteTab() {
         </button>
       }>
         <Row label={t('remoteEnable')} hint={
-          state.enabled ? <span role="status">{statusText} · {enableHint}</span> : enableHint
+          state.enabled ? <span role="status">{state.error ? statusText : <>{statusText} · {enableHint}</>}</span> : enableHint
         }>
           <Switch label={t('remoteEnable')} checked={state.enabled} disabled={busy || !!loadError || (!state.enabled && !canEnable)}
             onChange={(enabled) => void run('toggle', () => remoteConfigure(enabled, state.relayUrl, null))} />
@@ -564,8 +627,8 @@ function RemoteTab() {
             () => updateForm({ type: 'saved', relayUrl }));
         }}>
           <Row label={t('remoteRelayUrl')}>
-            <input type="url" required value={form.relayUrl} aria-label={t('remoteRelayUrl')}
-              placeholder="wss://relay.example.com/ws" spellCheck={false} disabled={busy}
+            <input type="text" required value={form.relayUrl} aria-label={t('remoteRelayUrl')}
+              placeholder="relay.example.com" spellCheck={false} autoCapitalize="off" autoCorrect="off" disabled={busy}
               onChange={(event) => edit('editUrl', event.target.value)} className={REMOTE_INPUT} />
           </Row>
           <div className={DIVIDER} />
@@ -720,15 +783,17 @@ export function AboutTab({ version, settings, onChange }: { version: string } & 
   return (
     <>
       <Section title="Tandem">
-        <div className="flex flex-wrap items-center gap-3 px-4 py-4">
+        <div className="flex items-center gap-3 px-4 py-4">
           <img src={iconUrl} alt="" draggable={false} className="size-11 shrink-0" />
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className={ROW_LABEL}>Tandem</span>
-            <span className={ROW_HINT}>{t('aboutVersion', { version })}</span>
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className={ROW_LABEL + ' truncate'}>Tandem</span>
+            <span className={ROW_HINT + ' truncate'}>{t('aboutVersion', { version })}</span>
           </span>
-          <UpdateAction {...update} />
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <UpdateStatus state={update.state} />
+            <UpdateAction {...update} />
+          </div>
         </div>
-        <UpdateDetails state={update.state} />
         <div className={DIVIDER} />
         <Row label={t('updateAutomatic')} hint={t('updateAutomaticHint')}>
           <Switch label={t('updateAutomatic')} checked={settings.autoUpdate} onChange={(autoUpdate) => onChange({ ...settings, autoUpdate })} />
@@ -829,34 +894,22 @@ interface AgentListProps {
 interface ArchivedProps {
   archivedGroups: ArchivedGroup[];
   onUnarchive: (id: string) => void;
+  archiving?: ReadonlySet<string>;
+  archiveError?: string | null;
 }
 
-const archivedDate = (ms: number) =>
-  new Date(ms).toLocaleString(currentLanguage() === 'zh' ? 'zh-CN' : 'en-US', { year: 'numeric', month: 'long', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-
 /** Archived tasks stay out of the sidebar; this is the one place to see them and bring them back. */
-function ArchivedTab({ archivedGroups, onUnarchive }: ArchivedProps) {
+export function ArchivedTab({ archivedGroups, onUnarchive, archiving, archiveError }: ArchivedProps) {
+  const error = archiveError ? <p role="alert" className="px-1 text-13 text-[var(--text-danger)]">{archiveError}</p> : null;
   if (archivedGroups.length === 0) {
-    return <Section title={t('settingsArchived')}><Row label={t('archivedNone')} hint={t('archivedHint')} /></Section>;
+    return <>{error}<Section title={t('settingsArchived')}><Row label={t('archivedNone')} hint={t('archivedHint')} /></Section></>;
   }
   return <>
+    {error}
+    <p className={`${ROW_HINT} px-1`}>{t('archivedHint')}</p>
     {archivedGroups.map(({ name, tasks }) => (
       <Section key={name} title={name} action={<span className="text-12 text-[var(--text-tertiary)]">{t('archivedTaskCount', { count: String(tasks.length) })}</span>}>
-        {tasks.map((task, index) => (
-          <div key={task.id}>
-            {index > 0 ? <div className={DIVIDER} /> : null}
-            <div className={ROW}>
-              <span className="flex min-w-0 items-center gap-2.5">
-                <span className="flex w-[15px] shrink-0 justify-center text-[var(--text-tertiary)]"><AgentMark agent={task.agent} /></span>
-                <span className="flex min-w-0 flex-col gap-1">
-                  <span className={`${ROW_LABEL} truncate`}>{task.title || t('untitled')}</span>
-                  <span className={ROW_HINT}>{archivedDate(task.updatedAtMs)}</span>
-                </span>
-              </span>
-              <SettingsButton onClick={() => onUnarchive(task.id)}>{t('taskUnarchive')}</SettingsButton>
-            </div>
-          </div>
-        ))}
+        <Suspense fallback={<Row label={t('archivedLoading')} />}><ArchivedTasks tasks={tasks} onUnarchive={onUnarchive} archiving={archiving} /></Suspense>
       </Section>
     ))}
   </>;
@@ -869,7 +922,7 @@ interface SettingsViewProps extends TabProps, ProjectsProps, ArchivedProps, Agen
   onBack: () => void;
 }
 
-export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, sidebarOptions, onSidebarOptionsChange, archivedGroups, onUnarchive, hiddenAgents, onHiddenAgentsChange, version, onBack, currentProject, initialTab = 'general' }: SettingsViewProps) {
+export function SettingsView({ settings, onChange, extraProjects, onExtraProjectsChange, defaultConversationDir, sidebarOptions, onSidebarOptionsChange, archivedGroups, onUnarchive, archiving, archiveError, hiddenAgents, onHiddenAgentsChange, version, onBack, currentProject, initialTab = 'general' }: SettingsViewProps) {
   const [tab, setTab] = useState<TabId>(initialTab);
   const active = TABS.find(({ id }) => id === tab) ?? TABS[0];
   return (
@@ -913,12 +966,13 @@ export function SettingsView({ settings, onChange, extraProjects, onExtraProject
           <h2 className="pb-6 text-20 font-medium leading-[1.3] text-[var(--settings-section-title)]">{t(active.label)}</h2>
           {tab === 'general' ? <GeneralTab settings={settings} onChange={onChange} /> : null}
           {tab === 'appearance' ? <AppearanceTab settings={settings} onChange={onChange} /> : null}
+          {tab === 'shortcuts' ? <ShortcutsTab settings={settings} onChange={onChange} /> : null}
           {tab === 'agents' ? <AgentsTab currentProject={currentProject} projects={extraProjects} hiddenAgents={hiddenAgents} onHiddenAgentsChange={onHiddenAgentsChange} /> : null}
           {tab === 'remote' ? <RemoteTab /> : null}
           {tab === 'projects' ? (
             <ProjectsTab settings={settings} onChange={onChange} extraProjects={extraProjects} onExtraProjectsChange={onExtraProjectsChange} defaultConversationDir={defaultConversationDir} sidebarOptions={sidebarOptions} onSidebarOptionsChange={onSidebarOptionsChange} />
           ) : null}
-          {tab === 'archived' ? <ArchivedTab archivedGroups={archivedGroups} onUnarchive={onUnarchive} /> : null}
+          {tab === 'archived' ? <ArchivedTab archivedGroups={archivedGroups} onUnarchive={onUnarchive} archiving={archiving} archiveError={archiveError} /> : null}
           {tab === 'about' ? <AboutTab version={version} settings={settings} onChange={onChange} /> : null}
         </div>
       </div>

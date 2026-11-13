@@ -49,7 +49,7 @@ pub enum AttachmentKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
-    id: String,
+    pub(crate) id: String,
     name: String,
     kind: AttachmentKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,6 +242,29 @@ impl Attachments {
     /// Capture first; release the draft's ids only after the queue file has been written.
     pub fn capture(&self, ids: &[String]) -> Result<Vec<SavedAttachment>, String> {
         capture(&*self.0.lock().map_err(|error| error.to_string())?, ids)
+    }
+
+    /// Restore queue attachments under fresh draft IDs before their queue files are reclaimed.
+    pub fn restore(&self, saved: &[SavedAttachment], image_dir: &Path) -> Result<Vec<Attachment>, String> {
+        let prepared = Prepared::from_saved(saved, image_dir)?;
+        let mut images = prepared.images.iter();
+        let restored: Vec<_> = saved.iter().map(|attachment| {
+            let stored = match &attachment.stored {
+                SavedStored::Image { name, .. } | SavedStored::ImageFile { name, .. } => {
+                    let (media_type, data) = images.next().expect("prepared images follow saved attachments");
+                    Stored::Image { name: name.clone(), media_type: media_type.clone(), data: data.clone() }
+                }
+                SavedStored::File { name, path } => Stored::File { name: name.clone(), path: path.clone() },
+            };
+            (Uuid::new_v4().to_string(), stored)
+        }).collect();
+        let mut held = self.0.lock().map_err(|error| error.to_string())?;
+        if held.len() + restored.len() > MAX_HELD {
+            return Err(format!("At most {MAX_HELD} attachments can wait to be sent"));
+        }
+        let ids: Vec<_> = restored.iter().map(|(id, _)| id.clone()).collect();
+        held.extend(restored);
+        Ok(capture(&held, &ids)?.iter().map(|attachment| attachment.presentation("")).collect())
     }
 
     pub fn release(&self, ids: &[String]) {

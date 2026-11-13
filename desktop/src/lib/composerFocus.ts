@@ -4,7 +4,7 @@ export function isComposerBlankTarget(container: Element, target: Element): bool
 }
 
 /** A completed send restores the caret while a later choice of another control keeps focus. */
-export function canRestoreComposerFocus(editor: HTMLTextAreaElement): boolean {
+export function canRestoreComposerFocus(editor: HTMLElement): boolean {
   const { activeElement, body, documentElement } = editor.ownerDocument;
-  return activeElement === editor || activeElement === body || activeElement === documentElement;
+  return activeElement === editor || activeElement === body || activeElement === documentElement || Boolean(activeElement && editor.contains(activeElement));
 }

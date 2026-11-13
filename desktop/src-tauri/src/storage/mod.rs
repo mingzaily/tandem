@@ -162,6 +162,10 @@ impl Store {
             "state" => self.update_state(&mut data, patch),
             _ => Err("存储目标使用 config 或 state".into()),
         };
+        self.finish_update(&mut data, target, result)
+    }
+
+    fn finish_update(&self, data: &mut Data, target: &str, result: Result<(), String>) -> Result<Snapshot, String> {
         if let Err(error) = &result {
             crate::diagnostics::error("storage", format!("saving {target} failed: {error}"));
         }
@@ -171,7 +175,7 @@ impl Store {
             .map(|error| format!("保存本地设置失败：{error}"));
         data.revision += 1;
         result
-            .map(|()| snapshot(&data, self.ownership.as_ref().err()))
+            .map(|()| snapshot(data, self.ownership.as_ref().err()))
             .map_err(|error| format!("保存本地设置失败：{error}"))
     }
 
@@ -194,14 +198,33 @@ impl Store {
         Ok(())
     }
 
+    /// Only the named task changes; concurrent pins, aliases and other tasks keep their latest values.
+    pub fn set_task_archived(&self, id: &str, archived: bool, native: bool) -> Result<Snapshot, String> {
+        self.ensure_writable()?;
+        let mut data = self.data.lock().map_err(|error| error.to_string())?;
+        let result = self.edit_state(&mut data, |mut state| {
+            state.task_meta.archived.retain(|task| task != id);
+            if archived && !native { state.task_meta.archived.insert(0, id.to_owned()); }
+            if archived { state.task_meta.pins.retain(|task| task != id); }
+            Ok(state)
+        });
+        self.finish_update(&mut data, "state", result)
+    }
+
     fn update_state(&self, data: &mut Data, patch: Map<String, Value>) -> Result<(), String> {
+        self.edit_state(data, |current| {
+            let mut value = serde_json::to_value(current).expect("view state serializes");
+            config::merge(&mut value, &Value::Object(patch));
+            serde_json::from_value(value).map_err(|error| error.to_string())
+        })
+    }
+
+    fn edit_state(&self, data: &mut Data, edit: impl FnOnce(ViewState) -> Result<ViewState, String>) -> Result<(), String> {
         let (current, error) = read_state(&self.root.join("state.json"), true)?;
         if error.is_some() {
             data.state_error = error;
         }
-        let mut value = serde_json::to_value(current).expect("view state serializes");
-        config::merge(&mut value, &Value::Object(patch));
-        let state: ViewState = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        let state = edit(current)?;
         if !state.sidebar_width.is_finite() || !(180.0..=480.0).contains(&state.sidebar_width) {
             return Err("侧栏宽度范围为 180–480".into());
         }

@@ -1,4 +1,5 @@
 import type { Message, TurnEvent } from './types';
+import { questionAnswers, type QuestionAnswerPair } from './questionAnswers';
 
 interface Timed {
   id: string;
@@ -34,7 +35,8 @@ export type WorkGroup = {
   isSummary: boolean;
   hasFinalReply?: boolean;
 };
-export type Row = Item | WorkGroup;
+export type QuestionAnswerRow = { type: 'questionAnswer'; id: string; pairs: QuestionAnswerPair[]; source: ToolItem };
+export type Row = Item | WorkGroup | QuestionAnswerRow;
 
 const ATTACHED_FILE_PREFIX = 'Attached file, readable with your tools even outside the workspace: ';
 
@@ -280,6 +282,14 @@ export function buildRows(items: Item[], isRunning: boolean): Row[] {
   let turn: Item[] = [];
   let startAt: number | undefined;
   for (const [index, item] of items.entries()) {
+    const answered = item.type === 'tool' ? questionAnswers(item) : null;
+    if (answered?.length && item.type === 'tool') {
+      if (turn.length) pushTurn(rows, turn, startAt, false, hasFinalReply);
+      turn = [];
+      rows.push({ type: 'questionAnswer', id: `answer-${item.id}`, pairs: answered, source: item });
+      startAt = item.at;
+      continue;
+    }
     if (item.type === 'thinking' && !item.text.trim()) continue;
     if (item.type === 'user' || item.type === 'compaction' || item.type === 'notice' || item.type === 'error') {
       if (turn.length) pushTurn(rows, turn, startAt, false, hasFinalReply);

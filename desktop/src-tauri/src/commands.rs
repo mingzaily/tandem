@@ -67,6 +67,14 @@ pub async fn rename_native_task(
     }
 }
 
+#[tauri::command]
+pub async fn set_task_archived(
+    app: AppHandle, window: WebviewWindow, reader: State<'_, codex::Reader>, agent: Agent, id: String, archived: bool,
+) -> Result<crate::task_archives::ArchiveResult, String> {
+    if window.label() != "main" { return Err("请在主窗口整理任务".into()); }
+    crate::task_archives::set_archived(&app, reader.inner(), agent, id, archived).await
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendRequest {
@@ -205,6 +213,16 @@ pub async fn edit_queued_turn(
     queue::announce(&app, &snapshot);
     queue::kick(app, task_id);
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn take_queued_draft(app: AppHandle, task_id: String, entry_id: String) -> Result<queue::SteeredEntry, String> {
+    let id = task_id.clone();
+    let target = app.clone();
+    let result = queue::access(&app, move |store| store.take_draft(&id, &entry_id, &target.state::<attachments::Attachments>())).await?;
+    queue::announce(&app, &result.queue);
+    queue::kick(app, task_id);
+    Ok(result)
 }
 
 #[tauri::command]

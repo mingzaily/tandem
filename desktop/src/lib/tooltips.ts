@@ -21,6 +21,15 @@ export class TooltipDelay<T> {
   }
 }
 
+/** Optional labels are plain text, independent of the tooltip body. */
+export function tooltipTags(source: string): string[] {
+  if (!source) return [];
+  try {
+    const tags: unknown = JSON.parse(source);
+    return Array.isArray(tags) ? tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0) : [];
+  } catch { return []; }
+}
+
 export function tooltipPosition(anchor: { left: number; right: number; top: number; bottom: number }, tip: { width: number; height: number }, viewport: { width: number; height: number }) {
   const gap = 6;
   const inset = 8;

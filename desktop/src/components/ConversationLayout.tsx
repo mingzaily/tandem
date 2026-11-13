@@ -7,7 +7,7 @@ export function ConversationLayout({ messages, children }: {
   children: ReactNode;
 }) {
   const overlay = useRef<HTMLDivElement>(null);
-  const [bottomPadding, setBottomPadding] = useState(0);
+  const [bottomPadding, setBottomPadding] = useState<number | null>(null);
 
   useLayoutEffect(() => {
     const element = overlay.current!;
@@ -26,7 +26,7 @@ export function ConversationLayout({ messages, children }: {
 
   return (
     <section className="conversation-layout relative min-h-0 flex-1 overflow-hidden">
-      {messages(bottomPadding)}
+      {bottomPadding === null ? null : messages(bottomPadding)}
       <div ref={overlay} className="conversation-composer pointer-events-none absolute bottom-0 flex max-h-full flex-col">
         <div aria-hidden className="pointer-events-none h-8 shrink-0 bg-gradient-to-t from-[hsl(var(--content-area))] to-transparent" />
         <div className="pointer-events-auto min-h-0 overflow-y-auto bg-[hsl(var(--content-area))] pb-5">

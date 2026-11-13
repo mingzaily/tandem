@@ -83,6 +83,62 @@ describe('backend-owned preferences', () => {
     expect(write.mock.calls[1][0]).toEqual({ target: 'config', patch: { ui_font_size: 16 } });
   });
 
+  it('serializes native archive operations with view writes and rebases queued pin changes', async () => {
+    const initial = snapshot();
+    initial.state.taskMeta.pins = ['archiving', 'other'];
+    const first = deferred<PreferencesSnapshot>(), native = deferred<PreferencesSnapshot>();
+    const write = vi.fn().mockReturnValueOnce(first.promise).mockImplementationOnce(async ({ patch }) => ({
+      ...archived, revision: 3, state: { ...archived.state, taskMeta: { ...archived.state.taskMeta, pins: patch.taskMeta.pins } },
+    }));
+    const run = vi.fn(() => native.promise);
+    const memory = new PreferencesMemory(initial, write);
+    memory.change('config', { theme: 'dark' });
+    const archived = structuredClone(initial);
+    archived.revision = 2; archived.config.theme = 'dark'; archived.state.taskMeta.pins = ['other'];
+    const operation = memory.operation(run);
+    memory.change('state', { taskMeta: { ...memory.get().state.taskMeta, pins: ['new', 'archiving', 'other'] } });
+    expect(run).not.toHaveBeenCalled();
+    first.resolve({ ...initial, revision: 1, config: { ...initial.config, theme: 'dark' } });
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce());
+    expect(write).toHaveBeenCalledTimes(1);
+    native.resolve(archived);
+    await operation;
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    expect(write.mock.calls[1][0]).toEqual({ target: 'state', patch: { taskMeta: { pins: ['new', 'other'] } } });
+    await vi.waitFor(() => expect(memory.get().state.taskMeta.pins).toEqual(['new', 'other']));
+  });
+
+  it('releases the preference writer after a native archive failure and keeps confirmed state', async () => {
+    const native = deferred<PreferencesSnapshot>();
+    const initial = snapshot();
+    const write = vi.fn(async ({ patch }) => ({ ...initial, revision: 1, config: { ...initial.config, ...patch } }));
+    const memory = new PreferencesMemory(initial, write);
+    const operation = memory.operation(() => native.promise);
+    const rejected = expect(operation).rejects.toThrow('native failed');
+    memory.change('config', { theme: 'dark' });
+    expect(write).not.toHaveBeenCalled();
+    native.reject(new Error('native failed'));
+    await rejected;
+    await vi.waitFor(() => expect(memory.get().config.theme).toBe('dark'));
+    expect(memory.get().state.taskMeta.archived).toEqual([]);
+    expect(write).toHaveBeenCalledOnce();
+  });
+
+  it('saves a late alias change without bringing back archive marks or pins from its stale source', async () => {
+    const initial = snapshot();
+    const previous = { pins: ['one'], archived: ['older'], titles: { one: 'old' } };
+    initial.state.taskMeta = { pins: ['other'], archived: [], titles: { one: 'old', two: 'newer alias' } };
+    vi.stubGlobal('window', { __TANDEM_PREFERENCES__: initial });
+    const write = vi.fn(async (_target: string, patch: object) => ({ ...initial, revision: 1, state: merge(initial.state, patch) }));
+    vi.doMock('./api', () => ({ updatePreferences: write }));
+    vi.resetModules();
+    const { saveTaskMeta } = await import('./preferences');
+    saveTaskMeta({ ...previous, titles: { one: 'saved title' } }, previous);
+    await vi.waitFor(() => expect(write).toHaveBeenCalledExactlyOnceWith('state', { taskMeta: { titles: { one: 'saved title' } } }));
+    const { preferencesSnapshot } = await import('./storage');
+    expect(preferencesSnapshot().state.taskMeta).toEqual({ pins: ['other'], archived: [], titles: { one: 'saved title', two: 'newer alias' } });
+  });
+
   it('shows a failed save and rolls it back to the valid backend configuration', async () => {
     const change = deferred<PreferencesSnapshot>();
     const memory = new PreferencesMemory(snapshot(), () => change.promise);

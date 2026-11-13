@@ -1,9 +1,9 @@
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Check, ChevronDown, ChevronRight, CirclePause, CircleHelp, FileText, ImageOff, Layers, Loader2, Sparkles, X } from 'lucide-react';
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../lib/i18n';
 import type { Agent } from '../lib/api';
-import type { Item, Row, TextItem, ToolItem, WorkGroup } from '../lib/items';
+import type { Item, Row, TextItem, ToolItem, WorkGroup, QuestionAnswerRow } from '../lib/items';
 import { completedReplyIds, visibleWorkItems, workGroupDefaultOpen } from '../lib/items';
 import { buildMessageRows } from '../lib/fileChanges';
 import { describeTool, formatDuration } from '../lib/tools';
@@ -11,10 +11,13 @@ import { ZoomableImage } from './ImageLightbox';
 import { TaskFileContext } from './Markdown';
 import { AssistantReply } from './AssistantReply';
 import { ReplyError } from './ReplyError';
+import { QuestionAnswer } from './QuestionAnswer';
+import { JumpToBottomChip } from './JumpToBottomChip';
+import { useJumpToBottomVisibility } from '../lib/useJumpToBottomVisibility';
 import { FileChangeSummary } from './FileChangeSummary';
+import { countAddedMessages, followTailAfterScroll } from '../lib/streamScroll';
 import { EditableUserMessage } from './UserMessageEdit';
 
-const BOTTOM_THRESHOLD_PX = 48;
 const ESTIMATED_ROW_PX = 40;
 const ACTIVITY_ROW =
   'group flex w-full items-center gap-1.5 rounded-[8px] px-2 py-[3px] text-14 leading-5 text-left outline-none select-none cursor-pointer transition-colors duration-[var(--motion-fast)] ease-[var(--motion-ease-out)] hover:bg-[var(--msg-code-inline-bg)] focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] motion-reduce:transition-none';
@@ -33,7 +36,7 @@ interface MessageStreamProps {
   editableId: string | null;
   onEditLast: (id: string, text: string) => Promise<void>;
   sendWithCmdEnter: boolean;
-  /** A long task takes a moment to read, and is not empty in the meantime. */
+  /** A resumed task's native history is ready before its live tail is mounted. */
   isLoading: boolean;
   cwd: string | null;
   /** Includes the composer's gradient, status, queue, input and footer. */
@@ -42,9 +45,29 @@ interface MessageStreamProps {
 
 const expandedMemory = new Map<string, Map<string, boolean>>();
 
-export default function MessageStream({ taskId, agent, items, isRunning, editableId, onEditLast, sendWithCmdEnter, isLoading, cwd, bottomPadding }: MessageStreamProps) {
+export default function MessageStream(props: MessageStreamProps) {
+  if (props.isLoading) return null;
+  return <ReadyMessageStream key={props.taskId} {...props} />;
+}
+
+function ReadyMessageStream({ taskId, agent, items, isRunning, editableId, onEditLast, sendWithCmdEnter, cwd, bottomPadding }: MessageStreamProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const followBottom = useRef(true);
+  const previousTop = useRef(0);
+  const jumping = useRef(false);
+  const [away, setAway] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const displayedUnread = useRef(0);
+  if (unread > 0) displayedUnread.current = unread;
+  const previousMessages = useRef(items);
+  const jump = useJumpToBottomVisibility();
+  useEffect(() => {
+    const before = previousMessages.current;
+    previousMessages.current = items;
+    if (followBottom.current) { setUnread(0); return; }
+    const added = countAddedMessages(before, items);
+    if (added) setUnread((count) => count + added);
+  }, [items]);
   const rows = useMemo(() => buildMessageRows(items, isRunning, cwd), [items, isRunning, cwd]);
   const copyableReplies = useMemo(() => completedReplyIds(items, isRunning), [items, isRunning]);
   // Explicit open and closed choices survive virtualized rows; absent entries use their default.
@@ -55,6 +78,8 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
     estimateSize: () => ESTIMATED_ROW_PX,
     getItemKey: (index) => rows[index].id,
     overscan: 8,
+    // Start with the tail window while real row heights and the viewport are measured.
+    initialOffset: () => rows.length * ESTIMATED_ROW_PX + bottomPadding,
     paddingEnd: bottomPadding,
     scrollPaddingEnd: bottomPadding,
   });
@@ -62,9 +87,10 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
 
   useLayoutEffect(() => {
     if (followBottom.current && rows.length > 0) {
-      virtualizer.scrollToIndex(rows.length - 1, { align: 'end' });
+      virtualizer.scrollToEnd({ behavior: jumping.current ? 'smooth' : 'auto' });
+      previousTop.current = scroller.current?.scrollTop ?? 0;
     }
-  }, [rows, totalSize, virtualizer]);
+  }, [rows, totalSize, bottomPadding, virtualizer]);
 
   const toggle = useCallback((id: string, defaultOpen = false) => {
     setExpanded((current) => {
@@ -76,7 +102,6 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
   }, [taskId]);
 
   if (rows.length === 0) {
-    if (isLoading) return null;
     return (
       <div className="flex h-full items-center justify-center text-14 text-[var(--text-secondary)]">
         {t('empty')}
@@ -86,13 +111,29 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
 
   return (
     <TaskFileContext.Provider value={{ agent, id: taskId, cwd }}>
+    <div className="relative h-full min-h-0">
     <div
       ref={scroller}
       className="message-scroll h-full overflow-y-auto"
+      onWheel={(event) => {
+        const element = event.currentTarget;
+        if (event.ctrlKey || event.deltaY >= 0 || element.scrollHeight <= element.clientHeight) return;
+        followBottom.current = false;
+        jumping.current = false;
+        setAway(true);
+        jump.clear();
+        virtualizer.cancelScroll();
+      }}
       onScroll={(event) => {
         const element = event.currentTarget;
-        followBottom.current =
-          element.scrollHeight - element.scrollTop - element.clientHeight < BOTTOM_THRESHOLD_PX;
+        const next = followTailAfterScroll(followBottom.current, previousTop.current, element);
+        const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 48;
+        if (!jumping.current) jump.onScroll(element.scrollTop - previousTop.current, nearBottom);
+        if (nearBottom) { jumping.current = false; setUnread(0); }
+        if (followBottom.current && !next) { jumping.current = false; virtualizer.cancelScroll(); }
+        followBottom.current = next;
+        setAway(!next);
+        previousTop.current = element.scrollTop;
       }}
     >
       <div className="relative w-full" style={{ height: totalSize }}>
@@ -115,6 +156,8 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
                   <AssistantReply text={row.text} at={row.at} copyable={copyableReplies.has(row.id)}>
                     <FileChangeSummary summary={row.changes} cwd={cwd} expanded={expanded.get(row.changes.id) ?? false} onToggle={() => toggle(row.changes.id)} />
                   </AssistantReply>
+                ) : row.type === 'questionAnswer' ? (
+                  <QuestionAnswer pairs={row.pairs} />
                 ) : row.type === 'changes' ? (
                   <FileChangeSummary summary={row} cwd={cwd} expanded={expanded.get(row.id) ?? false} onToggle={() => toggle(row.id)} />
                 ) : row.type === 'group' ? (
@@ -132,6 +175,12 @@ export default function MessageStream({ taskId, agent, items, isRunning, editabl
         })}
       </div>
     </div>
+    <JumpToBottomChip visible={away && (jump.visible || unread > 0)} unread={away && unread === 0 ? 0 : displayedUnread.current} bottomOffset={bottomPadding + 12} onClick={() => {
+      followBottom.current = true; jumping.current = true; setAway(false); setUnread(0); jump.clear();
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      virtualizer.scrollToEnd({ behavior: reduced ? 'auto' : 'smooth' });
+    }} />
+    </div>
     </TaskFileContext.Provider>
   );
 }
@@ -143,8 +192,10 @@ interface RowProps {
   active?: boolean;
 }
 
-function ItemRow({ item, expanded, onToggle, copyable = false, active = true }: RowProps & { item: Item; copyable?: boolean }) {
+function ItemRow({ item, expanded, onToggle, copyable = false, active = true }: RowProps & { item: Item | QuestionAnswerRow; copyable?: boolean }) {
   switch (item.type) {
+    case 'questionAnswer':
+      return <QuestionAnswer pairs={item.pairs} />;
     case 'user':
       return (
         <div className="flex flex-col items-end gap-2">

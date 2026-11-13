@@ -1,6 +1,6 @@
 import type { Agent, AgentStatus, CliInfo } from './api';
 import type { TurnPrefs } from './composerStatus';
-import { preferencesSnapshot, saveConfig, saveViewState } from './storage';
+import { difference, merge, preferencesSnapshot, saveConfig, saveViewState } from './storage';
 import type { TaskMeta } from './taskMeta';
 
 // Rebuildable CLI discoveries stay in memory. Persistence belongs to the Rust stores.
@@ -17,7 +17,11 @@ export const saveSidebarCollapsed = (collapsed: boolean) => saveViewState({ side
 export const loadSidebarWidth = () => preferencesSnapshot().state.sidebarWidth;
 export const saveSidebarWidth = (width: number) => saveViewState({ sidebarWidth: width });
 export const loadTaskMeta = () => preferencesSnapshot().state.taskMeta;
-export const saveTaskMeta = (meta: TaskMeta) => saveViewState({ taskMeta: meta });
+/** Pin and alias edits carry their own delta; archive state belongs to the backend action. */
+export const saveTaskMeta = (meta: TaskMeta, previous: TaskMeta = loadTaskMeta()) => {
+  const patch = difference({ pins: previous.pins, titles: previous.titles }, { pins: meta.pins, titles: meta.titles });
+  if (patch !== undefined) saveViewState({ taskMeta: merge(loadTaskMeta(), patch) });
+};
 export const loadExtraProjects = () => preferencesSnapshot().config.projects;
 export const saveExtraProjects = (cwds: string[]) => saveConfig({ projects: cwds });
 export const loadProjectOrder = () => preferencesSnapshot().state.projectOrder;

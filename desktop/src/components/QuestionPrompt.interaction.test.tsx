@@ -51,6 +51,58 @@ function fixture(question: Question = { question: '选一个', options: [{ label
   return { onAnswer, render };
 }
 
+describe('question optional comment flow', () => {
+  const question: Question = { question: '选一个', options: [{ label: 'A', description: '第一项的说明' }, { label: 'B' }], allowCustom: true, allowComment: true };
+  it('keeps selection local, accepts an empty optional note and submits the original question key', () => {
+    const test = fixture(question);
+    test.render().button('A')!.props.onClick();
+    expect(test.onAnswer).not.toHaveBeenCalled();
+    expect(test.render().input!.props['aria-label']).toBe('备注（可选）');
+    test.render().button('提交')!.props.onClick();
+    expect(test.onAnswer).toHaveBeenCalledExactlyOnceWith({ kind: 'answer', answers: { 选一个: 'A' }, comment: '' });
+  });
+  it('submits the selected answer rather than cancelling when skipping an optional note', () => {
+    const test = fixture(question);
+    test.render().button('A')!.props.onClick();
+    test.render().input!.props.onChange({ target: { value: '尚未确认的备注' } });
+    test.render().button('不加备注')!.props.onClick();
+    expect(test.onAnswer).toHaveBeenCalledExactlyOnceWith({ kind: 'answer', answers: { 选一个: 'A' }, comment: '' });
+  });
+
+  it('returns to choices, preserves the note draft and allows correcting the choice before submission', () => {
+    const test = fixture(question);
+    test.render().button('A')!.props.onClick();
+    test.render().input!.props.onChange({ target: { value: '保留备注' } });
+    test.render().button('返回选项')!.props.onClick();
+    expect(test.render().input).toBeUndefined();
+    test.render().button('B')!.props.onClick();
+    expect(test.render().input!.props.value).toBe('保留备注');
+    test.render().button('提交')!.props.onClick();
+    expect(test.onAnswer).toHaveBeenCalledExactlyOnceWith({ kind: 'answer', answers: { 选一个: 'B' }, comment: '保留备注' });
+  });
+  it('allows an additional multi-select answer to pass through the note step once', () => {
+    const test = fixture({ ...question, multiSelect: true });
+    test.render().button('A')!.props.onClick();
+    test.render().button('输入其他回答…')!.props.onClick();
+    test.render().input!.props.onChange({ target: { value: '补充选项' } });
+    test.render().button('提交')!.props.onClick();
+    expect(test.onAnswer).not.toHaveBeenCalled();
+    test.render().input!.props.onChange({ target: { value: '备注内容' } });
+    test.render().button('提交')!.props.onClick();
+    expect(test.onAnswer).toHaveBeenCalledExactlyOnceWith({ kind: 'answer', answers: { 选一个: 'A, 补充选项' }, comment: '备注内容' });
+  });
+
+  it('returns from notes with Escape while an input-method candidate Enter leaves the note intact', () => {
+    const test = fixture(question);
+    test.render().button('A')!.props.onClick();
+    test.render().input!.props.onKeyDown({ key: 'Enter', nativeEvent: { isComposing: true }, preventDefault: vi.fn() });
+    expect(test.onAnswer).not.toHaveBeenCalled();
+    test.render().input!.props.onKeyDown({ key: 'Escape', nativeEvent: { isComposing: false }, preventDefault: vi.fn(), stopPropagation: vi.fn() });
+    expect(test.render().input).toBeUndefined();
+    expect(test.onAnswer).not.toHaveBeenCalled();
+  });
+});
+
 describe('question custom-answer navigation', () => {
   it.each([false, true])('keeps the complete native question as the answer key with custom=%s', (custom) => {
     const original = '选择下一步？\n\nContext:\n当前改动已保存。';

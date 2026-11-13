@@ -28,6 +28,9 @@ pub struct TaskSummary {
     pub cwd: String,
     pub updated_at_ms: u64,
     pub agent: Agent,
+    /// Native list state is provided by Codex; other CLIs use Tandem view metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default)]
@@ -746,6 +749,7 @@ fn summarize(path: &Path, updated_at_ms: u64) -> Option<TaskSummary> {
         cwd,
         updated_at_ms,
         agent: Agent::Claude,
+        archived: None,
     })
 }
 

@@ -1,5 +1,5 @@
 import { ArrowUp, FileText, ListPlus, Plus, Square, X } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   addPastedImage,
   onAttachmentDrag,
@@ -15,12 +15,13 @@ import { canRestoreComposerFocus, isComposerBlankTarget } from '../lib/composerF
 import { ZoomableImage } from './ImageLightbox';
 import { isImeKey } from '../lib/ime';
 import { continueList } from '../lib/listContinuation';
-import { completeCodeFence, codeKeyEdit, isCodeOnly, type CodeEdit } from '../lib/fencedCode';
-import { CodeFenceBackdrop } from './CodeFenceBackdrop';
+import { codeRanges, completeCodeFence, codeKeyEdit, type CodeEdit } from '../lib/fencedCode';
+import type { CodeComposerHandle, ComposerKeyEvent } from '../lib/composerEditor';
 import { useComposerResize } from '../lib/useComposerResize';
 import { browseInputHistory, inputHistoryDirection, type InputHistoryNavigation } from '../lib/recallInput';
 import { revealTextareaCaret } from '../lib/textareaLayout';
 
+const CodeComposer = lazy(() => import('./CodeComposer'));
 const MAX_HEIGHT_PX = 240;
 const ACTION_BUTTON =
   'relative flex h-7 shrink-0 items-center justify-center rounded-full bg-[var(--send-btn-bg)] text-[var(--send-btn-icon)] transition-[color,background-color,transform] duration-[var(--motion-fast)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring-soft)] focus-visible:ring-offset-2 enabled:hover:bg-[var(--send-btn-hover-bg)] enabled:active:scale-[0.98] enabled:active:bg-[var(--send-btn-pressed-bg)] disabled:cursor-default disabled:opacity-40';
@@ -40,11 +41,7 @@ function readAsBase64(file: File): Promise<string> {
   });
 }
 
-/**
- * Unsent text and attachments outlive the composer: leaving for settings or another task and
- * coming back finds them as they were. Memory only, like the rest of the page's state.
- */
-const drafts = new Map<string, { value: string; attachments: Attachment[] }>();
+import { composerDrafts as drafts } from '../lib/composerDrafts';
 
 interface ComposerProps {
   /** Which draft this composer edits: a task's id, or the new-task page. */
@@ -116,6 +113,11 @@ export function Composer({
   const attachmentTarget = useRef({ editing: Boolean(editing), added: new Set<string>(), active: true, pending: 0 });
   const submittingRef = useRef(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
+  const codeEditor = useRef<CodeComposerHandle | null>(null);
+  const inputElement = () => codeEditor.current?.dom ?? textarea.current;
+  const focusInput = () => codeEditor.current ? codeEditor.current.focus() : textarea.current?.focus({ preventScroll: true });
+  const [activatedCodeEditor, setActivatedCodeEditor] = useState(false);
+  const codeConversion = useRef<{ before: string; after: string } | null>(null);
   const inputArea = useRef<HTMLDivElement>(null);
   const resize = useComposerResize(inputArea, draftKey, variant);
   /** Programmatic edits restore the viewport and caret after the final height is measured. */
@@ -123,14 +125,15 @@ export function Composer({
   const restoreFocus = useRef(false);
   const historyNavigation = useRef<InputHistoryNavigation | null>(null);
   const text = editing ? editValue : value;
-  const codeOnly = useMemo(() => isCodeOnly(text), [text]);
+  const hasCode = useMemo(() => codeRanges(text).some((range) => range.bodyFrom <= text.length), [text]);
+  const structured = activatedCodeEditor || hasCode;
+  useEffect(() => { if (hasCode) setActivatedCodeEditor(true); }, [hasCode]);
   const displayedAttachments = editing ? editAttachments : attachments;
   const canSend = (text.trim().length > 0 || displayedAttachments.length > 0) && !disabled && !submitting && addingAttachments === 0;
 
   useEffect(() => {
-    const editor = textarea.current!;
     const cancelRestore = (event: PointerEvent) => {
-      if (!editor.contains(event.target as Node)) restoreFocus.current = false;
+      if (!inputElement()?.contains(event.target as Node)) restoreFocus.current = false;
     };
     document.addEventListener('pointerdown', cancelRestore, true);
     return () => document.removeEventListener('pointerdown', cancelRestore, true);
@@ -139,8 +142,8 @@ export function Composer({
   useLayoutEffect(() => {
     if (submitting || !restoreFocus.current) return;
     restoreFocus.current = false;
-    const editor = textarea.current!;
-    if (canRestoreComposerFocus(editor)) editor.focus({ preventScroll: true });
+    const editor = inputElement();
+    if (editor && canRestoreComposerFocus(editor)) focusInput();
   }, [submitting]);
 
   useEffect(() => { historyNavigation.current = null; }, [draftKey]);
@@ -158,7 +161,7 @@ export function Composer({
       setEditAttachments((current) => [...current, ...added]);
     } else setAttachments((current) => [...current, ...added]);
     setAttachError(errors.length > 0 ? errors.join('\n') : null);
-    textarea.current?.focus();
+    focusInput();
   }, []);
 
   useLayoutEffect(() => {
@@ -170,7 +173,7 @@ export function Composer({
     if (editing) {
       setEditValue(editing.prompt);
       setEditAttachments(editing.attachments);
-      textarea.current?.focus();
+      focusInput();
     }
     return () => {
       target.active = false;
@@ -227,10 +230,11 @@ export function Composer({
     if (!fill) return;
     historyNavigation.current = null;
     setValue(fill.text);
-    textarea.current?.focus();
+    focusInput();
   }, [fill]);
 
   useLayoutEffect(() => {
+    if (codeEditor.current) { pendingCaret.current = null; return; }
     const element = textarea.current;
     if (!element) return;
     const pending = pendingCaret.current;
@@ -243,11 +247,12 @@ export function Composer({
     if (pending) element.setSelectionRange(pending.at, pending.at);
     element.scrollTop = scrollTop;
     if (pending) revealTextareaCaret(element, pending.at);
-    pendingCaret.current = null;
-  }, [text, resize.height]);
+    if (!structured) pendingCaret.current = null;
+  }, [text, resize.height, structured]);
 
   const applyEdit = (edit: CodeEdit) => {
     historyNavigation.current = null;
+    if (codeEditor.current) { codeEditor.current.replaceSource(edit.value, edit.caret); return; }
     const element = textarea.current;
     const scrollTop = element?.scrollTop ?? 0;
     if (edit.value === text && element) {
@@ -261,10 +266,57 @@ export function Composer({
     else setValue(edit.value);
   };
 
+  const handleKeyDown = (event: ComposerKeyEvent) => {
+    // Enter also confirms an input method's candidate, which must not send the message.
+    if (isImeKey(event)) return;
+    const box = event.currentTarget;
+    const direction = inputHistoryDirection(event);
+    if (!disabled && !submitting && addingAttachments === 0 && displayedAttachments.length === 0 && !editing && direction) {
+      const next = browseInputHistory(inputHistory, historyNavigation.current, text, direction);
+      if (next) {
+        event.preventDefault();
+        historyNavigation.current = next.navigation;
+        pendingCaret.current = { at: next.value.length, scrollTop: box.scrollTop };
+        if (next.value === text) {
+          box.setSelectionRange(next.value.length, next.value.length);
+          pendingCaret.current = null;
+        }
+        if (codeEditor.current) codeEditor.current.replaceSource(next.value, next.value.length);
+        else setValue(next.value);
+        return;
+      }
+    }
+    if (event.key !== 'Enter') {
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, event.key);
+        if (edit) { event.preventDefault(); applyEdit(edit); }
+      }
+      return;
+    }
+    // Resolve sending before code editing so the shortcut applies throughout the draft.
+    const primary = sendWithCmdEnter ? event.metaKey && !event.shiftKey : !event.shiftKey && !event.metaKey;
+    const alternate = sendWithCmdEnter ? event.metaKey && event.shiftKey : event.metaKey && !event.shiftKey;
+    if (primary || alternate) {
+      event.preventDefault();
+      void submit(alternate);
+      return;
+    }
+    if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+      const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, 'Enter');
+      if (edit) { event.preventDefault(); applyEdit(edit); return; }
+    }
+    // Newline shortcuts carry a typed list on to its next item.
+    if (box.selectionStart !== box.selectionEnd) return;
+    const edit = continueList(box.value, box.selectionStart);
+    if (!edit) return;
+    event.preventDefault();
+    applyEdit(edit);
+  };
+
   const submit = async (alternate = false) => {
     if (!canSend || attachmentTarget.current.pending > 0 || submittingRef.current) return;
     historyNavigation.current = null;
-    restoreFocus.current = document.activeElement === textarea.current;
+    restoreFocus.current = Boolean(inputElement()?.contains(document.activeElement));
     submittingRef.current = true;
     setSubmitting(true);
     try {
@@ -279,6 +331,43 @@ export function Composer({
     } catch (error) { setAttachError(String(error)); }
     finally { submittingRef.current = false; setSubmitting(false); }
   };
+
+  const plainInput = (
+        <textarea
+          ref={textarea}
+          autoFocus
+          rows={1}
+          disabled={submitting}
+          value={text}
+          placeholder={placeholder}
+          aria-label={editing ? t('queueEditing') : placeholder}
+          onChange={(event) => {
+            historyNavigation.current = null;
+            const box = event.currentTarget;
+            const input = event.nativeEvent as InputEvent;
+            const edit = !input.isComposing && input.inputType === 'insertText'
+              ? completeCodeFence(text, box.value, box.selectionStart) : null;
+            if (edit) {
+              if (!structured) codeConversion.current = { before: text, after: edit.value };
+              applyEdit(edit);
+            } else {
+              if (codeRanges(box.value).some((range) => range.bodyFrom <= box.value.length)) {
+                if (!structured) codeConversion.current = { before: text, after: box.value };
+                pendingCaret.current = { at: box.selectionStart, scrollTop: box.scrollTop };
+              }
+              if (editing) setEditValue(box.value); else setValue(box.value);
+            }
+          }}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files];
+            if (files.length === 0) return;
+            event.preventDefault();
+            void loadAttachments(() => paste(files));
+          }}
+          onKeyDown={handleKeyDown}
+          className="composer-content-inset composer-editor selectable relative block min-h-[52px] w-full resize-none bg-transparent pb-1 pt-3 text-15 leading-[1.467] text-[var(--chat-input-text)] outline-none placeholder:text-[var(--chat-input-placeholder)]"
+        />
+  );
 
   return (
     <div
@@ -306,7 +395,7 @@ export function Composer({
         onMouseDown={(event) => {
           if (event.button !== 0 || !isComposerBlankTarget(event.currentTarget, event.target as Element)) return;
           event.preventDefault();
-          textarea.current!.focus({ preventScroll: true });
+          focusInput();
         }}
       >
         {editing ? (
@@ -314,7 +403,7 @@ export function Composer({
             <span>{t('queueEditing')}</span>
             <button type="button" aria-label={t('queueCancelEdit')} data-tooltip={t('queueCancelEdit')} disabled={submitting} onClick={() => {
               onCancelEdit?.();
-              textarea.current!.focus({ preventScroll: true });
+              focusInput();
             }}
               className="flex size-6 shrink-0 items-center justify-center rounded-[6px] enabled:hover:bg-[var(--surface-hover)] enabled:hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] disabled:cursor-default disabled:opacity-40"><X size={13} aria-hidden /></button>
           </div>
@@ -349,79 +438,18 @@ export function Composer({
             ))}
           </div>
         ) : null}
-        <div data-composer-editor className={`relative min-h-[52px] ${resize.height === null ? '' : 'flex-1'} ${codeOnly ? 'composer-code-only' : ''}`}>
-        <CodeFenceBackdrop value={text} editor={textarea} />
-        <textarea
-          ref={textarea}
-          autoFocus
-          rows={1}
-          disabled={submitting}
-          value={text}
-          placeholder={placeholder}
-          aria-label={editing ? t('queueEditing') : placeholder}
-          onChange={(event) => {
-            historyNavigation.current = null;
-            const box = event.currentTarget;
-            const input = event.nativeEvent as InputEvent;
-            const edit = !input.isComposing && input.inputType === 'insertText'
-              ? completeCodeFence(text, box.value, box.selectionStart) : null;
-            if (edit) applyEdit(edit);
-            else if (editing) setEditValue(box.value);
-            else setValue(box.value);
-          }}
-          onPaste={(event) => {
-            const files = [...event.clipboardData.files];
-            if (files.length === 0) return;
-            event.preventDefault();
-            void loadAttachments(() => paste(files));
-          }}
-          onKeyDown={(event) => {
-            // Enter also confirms an input method's candidate, which must not send the message.
-            if (isImeKey(event)) return;
-            const box = event.currentTarget;
-            const direction = inputHistoryDirection(event);
-            if (!disabled && !submitting && addingAttachments === 0 && displayedAttachments.length === 0 && !editing && direction) {
-              const next = browseInputHistory(inputHistory, historyNavigation.current, text, direction);
-              if (next) {
-                event.preventDefault();
-                historyNavigation.current = next.navigation;
-                pendingCaret.current = { at: next.value.length, scrollTop: box.scrollTop };
-                if (next.value === text) {
-                  box.setSelectionRange(next.value.length, next.value.length);
-                  pendingCaret.current = null;
-                }
-                setValue(next.value);
-                return;
-              }
-            }
-            if (event.key !== 'Enter') {
-              if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
-                const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, event.key);
-                if (edit) { event.preventDefault(); applyEdit(edit); }
-              }
-              return;
-            }
-            // Resolve sending before code editing so the shortcut applies throughout the draft.
-            const primary = sendWithCmdEnter ? event.metaKey && !event.shiftKey : !event.shiftKey && !event.metaKey;
-            const alternate = sendWithCmdEnter ? event.metaKey && event.shiftKey : event.metaKey && !event.shiftKey;
-            if (primary || alternate) {
-              event.preventDefault();
-              void submit(alternate);
-              return;
-            }
-            if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-              const edit = codeKeyEdit(box.value, box.selectionStart, box.selectionEnd, 'Enter');
-              if (edit) { event.preventDefault(); applyEdit(edit); return; }
-            }
-            // Newline shortcuts carry a typed list on to its next item.
-            if (box.selectionStart !== box.selectionEnd) return;
-            const edit = continueList(box.value, box.selectionStart);
-            if (!edit) return;
-            event.preventDefault();
-            applyEdit(edit);
-          }}
-          className="composer-content-inset composer-editor selectable relative block min-h-[52px] w-full resize-none bg-transparent pb-1 pt-3 text-15 leading-[1.467] text-[var(--chat-input-text)] outline-none placeholder:text-[var(--chat-input-placeholder)]"
-        />
+        <div data-composer-editor className={`relative min-h-[52px] ${resize.height === null ? '' : 'flex-1 min-h-0'} ${structured ? 'composer-structured' : ''}`}>
+          {structured ? <Suspense fallback={plainInput}>
+            <CodeComposer value={text} label={editing ? t('queueEditing') : placeholder} placeholder={placeholder}
+              disabled={submitting} resetKey={editing?.id ?? draftKey} editorRef={codeEditor}
+              initialCaret={pendingCaret.current?.at}
+              previousSource={codeConversion.current?.after === text ? codeConversion.current.before : undefined}
+              onReady={() => { codeConversion.current = null; pendingCaret.current = null; }}
+              onChange={(source, userInput) => {
+                if (userInput) historyNavigation.current = null;
+                if (editing) setEditValue(source); else setValue(source);
+              }} onKeyDown={handleKeyDown} onPasteImages={(files) => void loadAttachments(() => paste(files))} />
+          </Suspense> : plainInput}
         </div>
         {attachError ? (
           <p role="alert" className="composer-content-inset selectable max-h-[60px] shrink-0 overflow-y-auto whitespace-pre-wrap pb-1 text-12 text-[var(--text-danger)]">
@@ -446,7 +474,7 @@ export function Composer({
             {toolbarRight}
             <div className="flex items-center gap-1" onMouseDown={(event) => {
               // Pointer activation keeps the caret; keyboard focus still belongs to the button.
-              if (event.button === 0 && document.activeElement === textarea.current) event.preventDefault();
+              if (event.button === 0 && inputElement()?.contains(document.activeElement)) event.preventDefault();
             }}>
               {running ? (
                 <button type="button" aria-label={stopLabel} data-tooltip={stopLabel} onClick={onStop} className={SEND_BUTTON}>

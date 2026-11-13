@@ -1,9 +1,11 @@
 import { ArrowDownToLine, RefreshCw, RotateCw } from 'lucide-react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { checkAppUpdate, downloadAppUpdate, installAppUpdate, onAppUpdateChanged, readAppUpdate } from '../lib/api';
 import { acceptUpdate, INITIAL_UPDATE, observeAppUpdate, updateBusy, type UpdateState } from '../lib/appUpdate';
 import { t } from '../lib/i18n';
 import { SettingsButton } from './SettingsButton';
+
+const UpdateDetails = lazy(() => import('./UpdateDetails').then((module) => ({ default: module.UpdateDetails })));
 
 export function useAppUpdate() {
   const [state, setState] = useState(INITIAL_UPDATE);
@@ -39,7 +41,13 @@ export function UpdateAction({ state, check, download, install }: {
   </SettingsButton>;
 }
 
-export function UpdateDetails({ state }: { state: UpdateState }) {
+export function SidebarUpdate() {
+  const { state } = useAppUpdate();
+  return <UpdateStatus state={state} compact />;
+}
+
+export function UpdateStatus({ state, compact = false }: { state: UpdateState; compact?: boolean }) {
+  const [open, setOpen] = useState(false);
   const status = state.phase === 'checking' ? t('updateChecking')
     : state.phase === 'downloading' ? t('updateDownloading')
     : state.phase === 'ready' ? t('updateReady')
@@ -48,11 +56,22 @@ export function UpdateDetails({ state }: { state: UpdateState }) {
     : state.update ? t('updateAvailable', { version: state.update.version }) : null;
   const progress = state.progress?.total ? Math.min(100, Math.floor(state.progress.downloaded / state.progress.total * 100)) : null;
   if (!status && !state.error) return null;
-  return <div className="px-4 pb-4">
-    {status ? <p className="text-13 font-medium text-[var(--settings-section-title)]" role="status" aria-live="polite">{status}{state.phase === 'downloading' && progress !== null ? ` ${progress}%` : ''}</p> : null}
-    {state.phase === 'downloading' ? <progress aria-label={t('updateDownloading')} className="mt-2 h-1 w-full accent-[var(--status-bar-accent)]" max={100} value={progress ?? undefined} /> : null}
-    {state.update?.notes ? <p className="selectable mt-2 max-h-40 overflow-y-auto whitespace-pre-wrap break-words text-12 text-[var(--text-secondary)]">{state.update.notes}</p> : null}
-    {state.phase === 'ready' ? <p className="mt-2 text-12 text-[var(--text-secondary)]">{t('updateRestartHint')}</p> : null}
-    {state.error ? <p role="alert" className="selectable mt-2 break-words text-12 text-[var(--text-danger)]">{t('updateFailed')} {state.error}</p> : null}
-  </div>;
+  const label = state.error ? t('updateFailedBadge')
+    : `${status}${state.phase === 'downloading' && progress !== null ? ` ${progress}%` : ''}`;
+  const hint = [
+    label,
+    state.update?.notes,
+    state.phase === 'ready' ? t('updateRestartHint') : null,
+    state.error ? `${t('updateFailed')} ${state.error}` : null,
+  ].filter(Boolean).join('\n\n');
+  const compactLabel = state.phase === 'available' ? t('updateNewBadge') : label;
+  return <>
+    <button type="button" onClick={() => setOpen(true)} aria-haspopup="dialog"
+      aria-label={`${hint}\n\n${t('updateViewDetails')}`} data-tooltip={`${label}\n${t('updateViewDetails')}`}
+      className={`inline-flex min-w-0 shrink items-center whitespace-nowrap rounded-full border border-[var(--border-default)] bg-[var(--surface-chip)] cursor-pointer hover:bg-[var(--surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus-ring)] ${compact ? 'h-5 max-w-[112px] px-2 text-11' : 'h-7 max-w-[240px] px-2.5 text-12'} ${state.error ? 'text-[var(--text-danger)]' : 'text-[var(--text-secondary)]'}`}>
+      <span className="truncate">{compact ? compactLabel : label}</span>
+    </button>
+    <span className="sr-only" role={state.error ? 'alert' : 'status'} aria-live={state.error ? 'assertive' : 'polite'}>{label}</span>
+    {open ? <Suspense fallback={null}><UpdateDetails state={state} onClose={() => setOpen(false)} /></Suspense> : null}
+  </>;
 }

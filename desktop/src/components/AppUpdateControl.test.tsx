@@ -1,13 +1,13 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterAll, describe, expect, it, vi } from 'vitest';
-import { UpdateAction, UpdateDetails } from './AppUpdateControl';
+import { UpdateAction, UpdateStatus } from './AppUpdateControl';
 import { AboutTab } from './SettingsView';
 import { DEFAULT_SETTINGS } from '../lib/settings';
 import type { UpdateState } from '../lib/appUpdate';
 vi.hoisted(() => vi.stubGlobal('navigator', { language: 'zh-CN' }));
 afterAll(() => vi.unstubAllGlobals());
 const action = (phase: UpdateState['phase']) => renderToStaticMarkup(<UpdateAction state={{ phase, revision: 1 }} check={() => {}} download={() => {}} install={() => {}} />);
-const details = (state: Omit<UpdateState, 'revision'>) => renderToStaticMarkup(<UpdateDetails state={{ revision: 1, ...state }} />);
+const status = (state: Omit<UpdateState, 'revision'>) => renderToStaticMarkup(<UpdateStatus state={{ revision: 1, ...state }} />);
 
 describe('about page updates', () => {
   it('offers checks, downloads and restart as settings buttons in the correct phase', () => {
@@ -27,17 +27,23 @@ describe('about page updates', () => {
     expect(html).toContain('安装和重启由你确认');
     expect(html).not.toContain('role="menu"');
   });
-  it('shows progress, escaped notes and the install confirmation hint', () => {
+  it('keeps status and progress in one chip, with full notes and restart guidance in its tooltip', () => {
     const update = { version: '0.1.2026111102', notes: '<script>alert(1)</script>' };
-    const html = details({ phase: 'downloading', progress: { downloaded: 50, total: 100 }, update });
+    const html = status({ phase: 'downloading', progress: { downloaded: 50, total: 100 }, update });
     expect(html).toContain('50%');
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;');
-    expect(details({ phase: 'ready', update })).toContain('请先等待运行中的任务结束');
+    expect(html).toContain('data-tooltip=');
+    expect(html).not.toContain('<p');
+    expect(html).not.toContain('<progress');
+    expect(status({ phase: 'ready', update })).toContain('请先等待运行中的任务结束');
+    expect(status({ phase: 'available', update })).toContain('<span class="truncate">发现新版本 0.1.2026111102</span>');
   });
-  it('shows failures inline and keeps idle layout compact', () => {
-    expect(details({ phase: 'idle', error: 'HTTP 404' })).toContain('role="alert"');
-    expect(details({ phase: 'idle', error: 'HTTP 404' })).toContain('HTTP 404');
-    expect(details({ phase: 'idle' })).toBe('');
+  it('shows a compact failure with the full reason and keeps idle layout empty', () => {
+    const html = status({ phase: 'idle', error: 'HTTP 404' });
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('HTTP 404');
+    expect(html).toContain('<span class="truncate">更新失败</span>');
+    expect(status({ phase: 'idle' })).toBe('');
   });
 });

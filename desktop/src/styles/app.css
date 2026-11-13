@@ -174,8 +174,17 @@
     grid-row: 2;
   }
 }
-.remote-revoke-dialog::backdrop {
+.remote-revoke-dialog::backdrop,
+.update-details-dialog::backdrop {
   background: var(--overlay-modal);
+}
+
+.update-details-dialog {
+  color-scheme: light;
+}
+
+.dark .update-details-dialog {
+  color-scheme: dark;
 }
 
 /* Breathes once per burst of activity, and never loops. */
@@ -248,35 +257,48 @@ body.sidebar-dragging * {
   .reply-actions { transition: none; }
 }
 
-.composer-editor,
-.composer-code-mirror {
+.composer-editor {
   tab-size: 2;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.composer-code-only .composer-editor,
-.composer-code-only .composer-code-mirror {
-  font-family: var(--app-font-code-default);
+.composer-rich-editor { min-height: 52px; }
+.composer-rich-content {
+  position: relative;
+  min-height: 52px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--space-3) var(--composer-content-inset) var(--space-1);
+  outline: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+  font-size: var(--text-15);
+  line-height: 1.467;
+  color: var(--chat-input-text);
 }
-.composer-code-backdrop {
+.composer-rich-content p { margin: 0; min-height: 1.467em; }
+.composer-rich-content[data-empty="true"]::before {
   position: absolute;
-  inset: 0;
-  overflow: hidden;
+  content: attr(data-placeholder);
+  color: var(--chat-input-placeholder);
   pointer-events: none;
 }
-.composer-code-mirror {
-  visibility: hidden;
-  padding-top: var(--space-3);
-  padding-bottom: var(--space-1);
-}
+.composer-structured.flex-1 .composer-rich-editor,
+.composer-structured.flex-1 .composer-rich-content { height: 100%; }
+.composer-structured.flex-1 .composer-rich-content { max-height: none; }
 .composer-code-surface {
-  position: absolute;
-  left: calc(var(--composer-content-inset) - var(--space-1_5));
-  right: calc(var(--composer-content-inset) - var(--space-1_5));
+  margin: 4px -6px;
+  padding: 6px;
+  min-height: 1.467em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--chat-input-bg) 94%, var(--chat-input-text));
   box-shadow: inset 0 0 0 1px var(--chat-input-chip-border);
+  font-family: var(--app-font-code-default);
 }
+.composer-code-surface code { font: inherit; }
 
 body.composer-resizing,
 body.composer-resizing * { cursor: ns-resize !important; user-select: none !important; }

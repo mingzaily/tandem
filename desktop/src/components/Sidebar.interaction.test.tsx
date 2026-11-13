@@ -42,8 +42,8 @@ function fixture(collapsedGroups: string[] = []) {
     tasks: [task('alpha-pi', '/code/alpha'), task('alpha-claude', '/code/alpha', 'claude'), task('beta', '/code/beta'), task('chat', '/conversations/one')],
     loaded: true, selectedId: 'alpha-pi', running: new Set(['alpha-pi']), waiting: new Set(), unread: new Set(), external: new Map(), meta: EMPTY_TASK_META,
     extraProjects: ['/code/alpha', '/code/beta'], conversationRoots: ['/conversations'], projectOrder: [], pinnedProjects: [], collapsedGroups,
-    options: { groupByCli: false, sort: 'time' }, width: 260, renamingId: null, menuAnchor: null, generatingTitles: new Set(), version: '0.1.0',
-    onSelect() {}, onMetaChange() {}, onRenameDone() {}, onOpenMenu() {}, onGenerateTitle() {}, onProjectOrderChange() {}, onPinnedProjectsChange() {}, onWidthChange() {}, onNewTask() {}, onOpenSettings() {}, onCollapsedGroupsChange() {},
+    options: { groupByCli: false, sort: 'time' }, width: 260, renamingId: null, menuAnchor: null, version: '0.1.0',
+    onSelect() {}, onMetaChange() {}, onArchive() {}, onRenameDone() {}, onOpenMenu() {}, onProjectOrderChange() {}, onPinnedProjectsChange() {}, onWidthChange() {}, onNewTask() {}, onOpenSettings() {}, onCollapsedGroupsChange() {},
   };
   const save = vi.fn((keys: string[]) => { props.collapsedGroups = keys; });
   props.onCollapsedGroupsChange = save;
@@ -53,6 +53,66 @@ function fixture(collapsedGroups: string[] = []) {
   const visible = () => render().filter((node) => node.type === TaskRow).map((node) => node.props.task.id);
   return { props, save, render, project, action, visible };
 }
+
+describe('sidebar task operation handlers', () => {
+  const rowTree = (test: ReturnType<typeof fixture>, id = 'alpha-pi') => {
+    const row = test.render().find((node) => node.type === TaskRow && node.props.task.id === id)!;
+    return nodes(TaskRow(row.props as Parameters<typeof TaskRow>[0]));
+  };
+
+  it('requests archiving through the shared action and keeps the row until confirmed metadata arrives', () => {
+    const test = fixture();
+    test.props.meta = { pins: ['alpha-pi', 'beta'], archived: ['older'], titles: { 'alpha-pi': 'Saved title' } };
+    const originalTasks = [...test.props.tasks];
+    const archive = vi.fn(), save = vi.fn();
+    test.props.onArchive = archive;
+    test.props.onMetaChange = save;
+    rowTree(test).find((node) => node.type === 'button' && node.props['aria-label'] === '归档')!.props.onClick();
+    expect(archive).toHaveBeenCalledExactlyOnceWith(test.props.tasks[0], true);
+    expect(save).not.toHaveBeenCalled();
+    expect(test.visible()).toContain('alpha-pi');
+    test.props.meta = { pins: ['beta'], archived: ['alpha-pi', 'older'], titles: { 'alpha-pi': 'Saved title' } };
+    expect(test.visible()).not.toContain('alpha-pi');
+    expect(test.props.tasks).toEqual(originalTasks);
+    expect(test.visible()).toContain('alpha-claude');
+  });
+
+  it('hides native archived tasks from both pinned and ordinary sections', () => {
+    const test = fixture();
+    test.props.tasks = test.props.tasks.map((task) => task.id === 'alpha-pi' ? { ...task, archived: true } : task);
+    test.props.meta = { ...test.props.meta, pins: ['alpha-pi'] };
+    expect(test.visible()).not.toContain('alpha-pi');
+    expect(test.visible()).toContain('alpha-claude');
+  });
+
+  it('opens the right task menu by pointer or Shift+F10 without selecting another task', () => {
+    const test = fixture();
+    const open = vi.fn(), select = vi.fn();
+    test.props.onOpenMenu = open;
+    test.props.onSelect = select;
+    const row = rowTree(test, 'alpha-claude')[0];
+    const pointer = { clientX: 180, clientY: 120, preventDefault: vi.fn() };
+    row.props.onContextMenu(pointer);
+    expect(open).toHaveBeenLastCalledWith({ source: 'sidebar', id: 'alpha-claude', x: 180, y: 120 });
+    const keyboard = { key: 'F10', shiftKey: true, nativeEvent: { isComposing: false }, preventDefault: vi.fn(), currentTarget: { getBoundingClientRect: () => ({ left: 20, bottom: 160 }) } };
+    row.props.onKeyDown(keyboard);
+    expect(open).toHaveBeenLastCalledWith({ source: 'sidebar', id: 'alpha-claude', x: 20, y: 164 });
+    expect(select).not.toHaveBeenCalled();
+    expect(test.props.selectedId).toBe('alpha-pi');
+  });
+
+  it('keeps pending native tasks free of archive actions and file-dependent menus', () => {
+    const test = fixture();
+    test.props.pendingTaskIds = new Set(['alpha-pi']);
+    const open = vi.fn();
+    test.props.onOpenMenu = open;
+    const tree = rowTree(test);
+    expect(tree.some((node) => node.props['aria-label'] === '归档')).toBe(false);
+    tree[0].props.onContextMenu({ clientX: 20, clientY: 30, preventDefault() {} });
+    tree[0].props.onKeyDown({ key: 'ContextMenu', preventDefault() {} });
+    expect(open).not.toHaveBeenCalled();
+  });
+});
 
 describe('sidebar activity refresh', () => {
   it('reorders the existing task and advances its age from the same activity timestamp', () => {

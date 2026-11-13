@@ -23,6 +23,9 @@ use std::time::{Duration, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader as AsyncBufReader};
 use tokio::process::Command;
 
+mod questions;
+use questions::DialogReplies;
+
 const TITLE_CHARS: usize = 80;
 const MAX_TEXT_BYTES: usize = 20 * 1024;
 const MAX_TASKS: usize = 500;
@@ -133,6 +136,7 @@ pub fn list_tasks(sessions: &Path, roots: &[String]) -> Vec<TaskSummary> {
                 cwd,
                 updated_at_ms,
                 agent: Agent::Pi,
+                archived: None,
             })
         })
         .take(MAX_TASKS)
@@ -221,7 +225,7 @@ fn entry_messages(entry: &Value) -> Vec<Message> {
         Some("user") => user_messages(inner, id, timestamp),
         Some("assistant") => assistant_messages(inner, id, timestamp),
         Some("toolResult") => {
-            let (text, truncated) = clip(&text_of(inner.get("content")));
+            let (text, truncated) = clip(&questions::result_text(inner, inner.get("toolName").and_then(Value::as_str)));
             let mut result = message(id.to_owned(), MessageKind::ToolResult, text, timestamp);
             result.tool_use_id = inner.get("toolCallId").and_then(Value::as_str).map(str::to_owned);
             result.is_error = inner.get("isError").and_then(Value::as_bool).unwrap_or(false);
@@ -528,7 +532,7 @@ fn stream_events(value: &Value, state: &mut TurnState) -> Vec<TurnEvent> {
             vec![TurnEvent::ToolUse { id, name: page_name, input }]
         }
         Some("tool_execution_end") => {
-            let text = text_of(value.get("result").and_then(|result| result.get("content")));
+            let text = questions::result_text(value.get("result").unwrap_or(&Value::Null), value.get("toolName").and_then(Value::as_str));
             vec![TurnEvent::ToolResult {
                 tool_use_id: value.get("toolCallId").and_then(Value::as_str).unwrap_or_default().to_owned(),
                 text: clip(&text).0,
@@ -592,7 +596,7 @@ pub fn ui_reply(id: &str, request: &PendingRequest, method: &str, decision: &Dec
     let reply = match (method, decision) {
         (_, Decision::Deny) => json!({"type": "extension_ui_response", "id": id, "cancelled": true}),
         ("confirm", Decision::Allow) => json!({"type": "extension_ui_response", "id": id, "confirmed": true}),
-        ("select", Decision::Answer { answers, custom: true }) => {
+        ("select", Decision::Answer { answers, custom: true, .. }) => {
             if request.input.get("customOption").and_then(Value::as_bool) != Some(true) {
                 return Err("当前选项没有自定义回答入口".into());
             }
@@ -600,6 +604,11 @@ pub fn ui_reply(id: &str, request: &PendingRequest, method: &str, decision: &Dec
             let answer = answers.get(question).and_then(Value::as_str).filter(|answer| !answer.trim().is_empty()).ok_or("请填写自定义回答")?;
             // The runner sends select -> input only after the user submits the local draft.
             json!({"type": CUSTOM_ANSWER_COMMAND, "id": id, "question": question, "answer": answer})
+        }
+        (_, Decision::Answer { answers, comment, .. }) if request.input.get("allowComment").and_then(Value::as_bool) == Some(true) => {
+            let question = request.input.get("question").and_then(Value::as_str).unwrap_or_default();
+            let answer = answers.get(question).and_then(Value::as_str).filter(|answer| !answer.trim().is_empty()).ok_or("请选择回答")?;
+            json!({"type":questions::SELECTION_COMMAND, "id":id, "question":question, "prompt":request.input.get("prompt"), "multiSelect":request.input.get("multiSelect"), "answer":answer, "comment":comment.as_deref().unwrap_or_default()})
         }
         (_, Decision::Answer { answers, .. }) => {
             let question = request.input.get("question").and_then(Value::as_str).unwrap_or_default();
@@ -611,29 +620,6 @@ pub fn ui_reply(id: &str, request: &PendingRequest, method: &str, decision: &Dec
     Ok(reply.to_string())
 }
 
-/// pi-ask-user's two RPC dialogs share one local answer; returning to options stays in the UI.
-#[derive(Default)]
-struct DialogReplies {
-    custom: HashMap<String, String>,
-}
-
-impl DialogReplies {
-    fn outbound(&mut self, line: &str) -> Result<String, String> {
-        let value: Value = serde_json::from_str(line).map_err(|error| error.to_string())?;
-        if value.get("type").and_then(Value::as_str) != Some(CUSTOM_ANSWER_COMMAND) { return Ok(line.to_owned()); }
-        let question = value.get("question").and_then(Value::as_str).ok_or("自定义回答缺少原问题")?;
-        let answer = value.get("answer").and_then(Value::as_str).ok_or("自定义回答缺少正文")?;
-        self.custom.insert(question.to_owned(), answer.to_owned());
-        Ok(json!({"type":"extension_ui_response", "id":value["id"], "value":ASK_USER_CUSTOM_OPTION}).to_string())
-    }
-
-    fn follow_up(&mut self, request: &Value) -> Option<String> {
-        if request.get("method")?.as_str()? != "input" || request.get("placeholder")?.as_str()? != "Type your answer..." { return None; }
-        let title = request.get("title")?.as_str()?;
-        let answer = self.custom.remove(title)?;
-        Some(json!({"type":"extension_ui_response", "id":request["id"], "value":answer}).to_string())
-    }
-}
 
 fn prompt_line(prompt: &str, attachments: &Prepared) -> String {
     let content = attachments.content(prompt);
@@ -809,7 +795,7 @@ async fn run_turn(
                             stdin.write_all(format!("{reply}\n").as_bytes()).await.map_err(|error| error.to_string())?;
                             continue;
                         }
-                        if let Some((id, event, pending)) = ui_request(&value) {
+                        if let Some((id, event, pending)) = dialogs.present(&value) {
                             runs.add_pending_request(task_id, id, pending);
                             emit(event)?;
                         }
@@ -824,7 +810,9 @@ async fn run_turn(
                         });
                     }
                     _ => {
-                        if matches!(value.get("type").and_then(Value::as_str), Some("tool_execution_end" | "agent_start")) { dialogs.custom.clear(); }
+                        let ask_start = value.get("type").and_then(Value::as_str) == Some("tool_execution_start") && value.get("toolName").and_then(Value::as_str) == Some("ask_user");
+                        let default_comment = if ask_start { questions::comment_default(env).await } else { false };
+                        dialogs.observe(&value, default_comment);
                         let assistant_message = value.pointer("/message/role").and_then(Value::as_str) == Some("assistant");
                         if assistant_message && value.get("type").and_then(Value::as_str) == Some("message_start") {
                             sink.generation_request()?;
@@ -1098,7 +1086,7 @@ mod tests {
         assert_eq!(questions[0]["options"].as_array().unwrap().len(), 2);
         let mut answers = serde_json::Map::new();
         answers.insert("Pick".to_owned(), json!("B"));
-        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
+        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false, comment: None }).unwrap()).unwrap();
         assert_eq!(reply["value"], "B");
 
         for method in ["input", "editor"] {
@@ -1107,7 +1095,7 @@ mod tests {
             assert_eq!(questions[0]["allowCustom"], true);
             assert!(questions[0]["options"].as_array().unwrap().is_empty());
             let answers = json!({"Your answer": "我的自定义回答"}).as_object().unwrap().clone();
-            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true }).unwrap()).unwrap();
+            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true, comment: None }).unwrap()).unwrap();
             assert_eq!(reply["value"], "我的自定义回答");
         }
         let native_custom = "✏️ Type custom response...";
@@ -1116,7 +1104,7 @@ mod tests {
         assert_eq!(questions[0]["options"].as_array().unwrap().len(), 2);
         assert_eq!(questions[0]["allowCustom"], true);
         let answers = json!({"Pick": "B"}).as_object().unwrap().clone();
-        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
+        let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, "select", &Decision::Answer { answers, custom: false, comment: None }).unwrap()).unwrap();
         assert_eq!(reply["value"], "B");
 
         assert!(ui_request(&json!({"id": "3", "method": "setStatus"})).is_none());
@@ -1133,11 +1121,11 @@ mod tests {
             assert_eq!(questions[0]["context"], "当前改动已保存。\n接下来选择验证范围。");
             assert_eq!(pending.input["question"], title);
             let answers = [(title.to_owned(), json!("继续"))].into_iter().collect();
-            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: false }).unwrap()).unwrap();
+            let reply: Value = serde_json::from_str(&ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: false, comment: None }).unwrap()).unwrap();
             assert_eq!(reply["value"], "继续");
             if method == "select" {
                 let answers = [(title.to_owned(), json!("自定义下一步"))].into_iter().collect();
-                let command = ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true }).unwrap();
+                let command = ui_reply(&id, &pending, method, &Decision::Answer { answers, custom: true, comment: None }).unwrap();
                 let mut dialogs = DialogReplies::default();
                 dialogs.outbound(&command).unwrap();
                 let follow_up = dialogs.follow_up(&json!({"id":"input", "method":"input", "title":title, "placeholder":"Type your answer..."})).unwrap();
@@ -1164,7 +1152,7 @@ mod tests {
         assert_eq!(questions[0]["options"], json!([{"label":"原选项"}]));
         assert_eq!(questions[0]["allowCustom"], true);
         let answers = json!({"选一个":"我的中文回答"}).as_object().unwrap().clone();
-        let command = ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true }).unwrap();
+        let command = ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true, comment: None }).unwrap();
         let mut dialogs = DialogReplies::default();
         let sent: Value = serde_json::from_str(&dialogs.outbound(&command).unwrap()).unwrap();
         assert_eq!(sent, json!({"type":"extension_ui_response", "id":"select", "value":ASK_USER_CUSTOM_OPTION}));
@@ -1180,7 +1168,7 @@ mod tests {
     fn ordinary_selects_and_cancelled_drafts_keep_their_native_values() {
         let (_, _, pending) = ui_request(&json!({"id":"select", "method":"select", "title":"选择", "options":["A", "B"]})).unwrap();
         let answers = json!({"选择":"自定义"}).as_object().unwrap().clone();
-        assert!(ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true }).is_err());
+        assert!(ui_reply("select", &pending, "select", &Decision::Answer { answers, custom: true, comment: None }).is_err());
         let mut dialogs = DialogReplies::default();
         let cancel = ui_reply("select", &pending, "select", &Decision::Deny).unwrap();
         let wire: Value = serde_json::from_str(&dialogs.outbound(&cancel).unwrap()).unwrap();

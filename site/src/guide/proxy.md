@@ -1,6 +1,6 @@
 # HTTPS 与反向代理
 
-容器监听明文 HTTP 和 WS。网关对外提供 HTTPS 与 WSS，桌面端填写 `wss://relay.example.com/ws`。手机可<a href="../app/" target="_self">打开官网手机端</a>，中转地址由配对码提供；自托管手机页面位于 `https://relay.example.com`。
+容器监听明文 HTTP 和 WS。网关对外提供 HTTPS 与 WSS。桌面端填写域名，例如 `relay.example.com`；完整的 `wss://relay.example.com/ws` 仍然有效。手机可<a href="../app/" target="_self">打开官网手机端</a>，中转地址由配对码提供。打开 `https://relay.example.com` 只会看到部署状态。
 
 ## nginx
 

@@ -40,7 +40,6 @@ try {
   ], { capture: true });
   await docker(['start', container]);
   await healthy();
-  assert.equal(await docker(['inspect', '--format', '{{.Config.User}}', container], { capture: true }), '65532:65532');
   await docker(['exec', container, '/tandem-relay', 'healthcheck']);
   const address = await docker(['port', container, '8787/tcp'], { capture: true });
   await run('pnpm', ['--dir', 'pwa', 'test:container'], { env: { PWA_ORIGIN: `http://${address}` }, signal: stop.signal });
@@ -56,7 +55,7 @@ try {
   assert.deepEqual(await readFile(after), saved, '重启保留数据卷中的准入信息');
   await docker(['stop', '--timeout', '10', container]);
   assert.equal(await docker(['inspect', '--format', '{{.State.ExitCode}}', container], { capture: true }), '0', 'SIGTERM 正常退出');
-  console.info('容器启动、非 root、健康检查、PWA 配对、持久化、重启与 SIGTERM 通过。');
+  console.info('容器启动、健康检查、PWA 配对、持久化、重启与 SIGTERM 通过。');
 } catch (error) {
   if (container) await run('docker', ['logs', container]);
   throw error;

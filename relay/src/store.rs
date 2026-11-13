@@ -33,17 +33,19 @@ impl Store {
         let grants = tokio::task::spawn_blocking(move || load(&source))
             .await
             .map_err(io::Error::other)??;
+        ensure_writable(&path)?;
         let (writes, mut receiver) = mpsc::unbounded_channel::<WriteRequest>();
         let task = tokio::spawn(async move {
             while let Some(request) = receiver.recv().await {
                 let file = path.clone();
+                let logged = file.display().to_string();
                 let result =
                     tokio::task::spawn_blocking(move || atomic_write(&file, &request.snapshot))
                         .await
                         .map_err(io::Error::other)
                         .and_then(|r| r);
-                if result.is_err() {
-                    eprintln!("PERSIST_FAILED");
+                if let Err(error) = &result {
+                    eprintln!("准入文件写入失败：{logged}：{error}");
                 }
                 let _ = request.done.send(result);
             }
@@ -70,10 +72,15 @@ fn load(path: &Path) -> io::Result<HashMap<String, Grant>> {
     let data = match fs::read(path) {
         Ok(data) => data,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
-        Err(e) => return Err(io::Error::new(e.kind(), format!(
-            "读取准入文件 {} 失败：{e}；请检查文件权限，或将该路径改名保留后重启中转；桌面端重连会重新登记已配对设备的令牌，请保留电脑上的配对配置",
-            path.display()
-        ))),
+        Err(e) => {
+            return Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "读取准入文件 {} 失败：{e}；请检查文件权限，或将该路径改名保留后重启中转；桌面端重连会重新登记已配对设备的令牌，请保留电脑上的配对配置",
+                    path.display()
+                ),
+            ));
+        }
     };
     let entries: Snapshot = serde_json::from_slice(&data).map_err(|_| invalid_data(path))?;
     if entries.iter().any(|(h, g)| {
@@ -82,6 +89,46 @@ fn load(path: &Path) -> io::Result<HashMap<String, Grant>> {
         return Err(invalid_data(path));
     }
     Ok(entries.into_iter().collect())
+}
+
+fn ensure_writable(path: &Path) -> io::Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(parent)
+        .map_err(|error| write_access_error(parent, error))?;
+    let probe = parent.join(".tandem-write-probe");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&probe)
+        .and_then(|mut file| file.write_all(b"ok"))
+        .and_then(|_| fs::remove_file(&probe))
+        .map_err(|error| write_access_error(parent, error))
+}
+
+fn write_access_error(directory: &Path, error: io::Error) -> io::Error {
+    io::Error::new(
+        error.kind(),
+        format!(
+            "数据目录不可写：{}。请确认这个目录存在，并且容器可以写入。{error}",
+            directory.display()
+        ),
+    )
 }
 
 fn invalid_data(path: &Path) -> io::Error {
@@ -146,7 +193,30 @@ mod tests {
             Err(error) => error.to_string(),
         };
         assert!(error.contains(&path.display().to_string()), "{error}");
-        assert!(error.contains("改名") && error.contains("重启") && error.contains("重新登记"), "{error}");
+        assert!(
+            error.contains("改名") && error.contains("重启") && error.contains("重新登记"),
+            "{error}"
+        );
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn startup_requires_a_writable_data_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let restore = dir.path().to_path_buf();
+        struct Restore(std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o755));
+            }
+        }
+        let _restore = Restore(restore.clone());
+        fs::set_permissions(&restore, fs::Permissions::from_mode(0o555)).unwrap();
+        let error = match Store::open(restore.join("tokens.json")).await {
+            Ok(_) => panic!("a read-only data directory must not start"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("不可写"), "{error}");
     }
     #[tokio::test]
     async fn failed_write_does_not_poison_the_next_write() {

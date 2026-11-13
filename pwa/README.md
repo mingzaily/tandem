@@ -71,7 +71,7 @@ PWA_ORIGIN=http://127.0.0.1:映射端口 pnpm test:container
 
 官网手机端入口为 `https://mingzaily.github.io/tandem/app/`。`pwa/` 保持顶层独立项目，由 Pages 发布脚本以 `/tandem/app/` base 构建，再组合到官网产物；中转由使用者自己部署，地址来自配对码。
 
-默认 `pnpm build` 生成 HTTPS 根路径使用的 `dist/`，继续用于 Rust relay / Docker 镜像自托管。子路径构建使用 `pnpm build --base=/tandem/app/`；图标、manifest、安装入口和 Service Worker 跟随 base。离线缓存按部署路径独立命名，更新时只清理同一应用路径的旧版本。用户部署、反向代理、手机配对与排错文档位于 [site/src/guide/](../site/src/guide/index.md)。
+默认 `pnpm build` 生成 HTTPS 根路径使用的 `dist/`，镜像继续携带这份构建结果。中转域名的 `/` 由 relay 返回部署状态页，手机端入口是官网 `/tandem/app/`。子路径构建使用 `pnpm build --base=/tandem/app/`；图标、manifest、安装入口和 Service Worker 跟随 base。离线缓存按部署路径独立命名，更新时只清理同一应用路径的旧版本。用户部署、反向代理、手机配对与排错文档位于 [site/src/guide/](../site/src/guide/index.md)。
 
 在 `site/` 运行 `pnpm build:pages && pnpm test` 构建并检查组合产物；在 `pwa/` 运行 `pnpm test:hosting` 验证官网入口、安装资源、离线缓存与根路径自托管。完整协议浏览器测试可设置 `PWA_BASE=/tandem/app/`，使用已按该 base 构建的产物运行 `pnpm exec tsx test/browser.e2e.ts`。
 

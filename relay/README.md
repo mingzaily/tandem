@@ -61,7 +61,7 @@ PWA 浏览器测试：在 `pwa/` 运行 `SHOTS=/绝对路径/pwa- pnpm test:brow
 docker build -f relay/Dockerfile -t tandem-relay:local .
 ```
 
-多阶段构建使用 Node 构建 PWA、Rust/musl 构建静态二进制。最终使用 scratch 镜像，以 UID/GID `65532` 运行，包含二进制、PWA 和 `/licenses/` 中的 LICENSE / NOTICE，没有 Node、nginx、证书或 TLS。`relay/Dockerfile.dockerignore` 将构建上下文限制到源码和设计 token。
+多阶段构建使用 Node 构建 PWA、Rust/musl 构建静态二进制。最终使用 scratch 镜像，不指定运行用户，包含二进制、PWA 和 `/licenses/` 中的 LICENSE / NOTICE，没有 Node、nginx、证书或 TLS。`relay/Dockerfile.dockerignore` 将构建上下文限制到源码和设计 token。
 
 部署时使用[compose.yaml](./compose.yaml)，在同目录的 `.env` 设置随机的 `TANDEM_RELAY_HOST_TOKEN`。默认镜像地址为 `ghcr.io/mingzaily/tandem-relay:latest`，relay 及镜像依赖改动进入 `main` 后自动发布，首次使用需要该工作流成功。也可将 compose 的 image 换为本地构建的 tag。
 
@@ -72,7 +72,7 @@ docker compose exec relay /tandem-relay healthcheck
 curl http://127.0.0.1:8787/healthz
 ```
 
-健康接口返回 `{"ok":true,"v":1}`，PWA 入口是 `/`，WebSocket 是 `/ws`。镜像内置健康检查子命令，无需 curl。命名卷 `/data` 保存准入文件；绑定宿主目录时，将所有者设为 `65532:65532`。SIGINT/SIGTERM 会关闭 HTTP 和所有 WebSocket，完成已排队的写入后退出。
+健康接口返回 `{"ok":true,"v":1}`，域名根路径显示部署状态，WebSocket 是 `/ws`。镜像内置健康检查子命令，无需 curl。命名卷或绑定目录 `/data` 保存准入文件。compose 不需要设置 `user`。SIGINT/SIGTERM 会关闭 HTTP 和所有 WebSocket，完成已排队的写入后退出。
 
 容器内部使用 HTTP 和 WS；网关对外提供 HTTPS 和 WSS。WebCrypto 要求安全上下文，桌面端也只接受本机地址的 `ws://`。反向代理应转发 WebSocket 升级头，读超时大于 90 秒。只有入口受保护并正确传递来源地址时，才启用 `TANDEM_RELAY_TRUST_PROXY=1`。[用户文档](../site/src/guide/proxy.md)提供 nginx 和 Caddy 完整配置。
 
@@ -91,9 +91,7 @@ pnpm build
 # Return to relay and set TANDEM_RELAY_STATIC_DIR to the absolute pwa/dist path.
 ```
 
-中转直接托管构建目录，保留 `index.html` 的 CSP，设置 `nosniff` 与 `Cache-Control: no-cache`。Service Worker 只缓存固定外壳资源，不缓存任务内容与网络响应。也可独立托管 PWA；本地不设置静态目录时，只提供健康检查与 WebSocket。
-
-公共手机端由官网的 `/tandem/app/` 提供，连接配对码中的用户自建中转。官网、手机端与中转保留独立的源码和构建；Docker 镜像继续附带根路径版本，供用户选择自托管页面。
+域名根路径返回部署状态页。镜像仍携带手机端构建目录，供资源文件使用；手机端入口是官网的 `/tandem/app/`，不在中转域名上。中转对静态文件设置 `nosniff` 与 `Cache-Control: no-cache`。本地不设置静态目录时，根路径仍是部署状态页，并提供健康检查与 WebSocket。
 
 ## 真实桌面端互通
 

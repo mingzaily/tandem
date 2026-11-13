@@ -2,13 +2,13 @@
 
 ## 电脑上
 
-1. 打开 Tandem 的“设置 → 远程”，在“中转服务”中填写中转地址 `wss://relay.example.com/ws`，部署令牌填写服务器的 `TANDEM_RELAY_HOST_TOKEN`，点击“保存更改”。
+1. 打开 Tandem 的“设置 → 远程”，在“中转服务”中填写中转域名 `relay.example.com`，部署令牌填写服务器的 `TANDEM_RELAY_HOST_TOKEN`，点击“保存更改”。
 2. 开启“允许手机访问”，等待状态显示“已连接”。
 3. 点击“已配对设备”右侧的“配对新设备”。配对码使用一次，最长五分钟有效；点击“取消配对”可提前结束。
 
 ## 手机上
 
-1. <a href="../app/" target="_self">打开官网手机端</a>，也可以使用自托管中转附带的 `https://relay.example.com` 页面。
+1. <a href="../app/" target="_self">打开官网手机端</a>。中转域名只显示部署状态，不提供手机页面。
 2. **iOS：先通过 Safari 的“分享 → 添加到主屏幕”安装，然后从主屏幕打开 Tandem。** Safari 和主屏幕 PWA 使用各自的存储，在 Safari 中配对的身份无法带入主屏幕 PWA。
 3. Android 使用浏览器菜单中的安装应用或添加到主屏幕，再从安装后的应用打开。
 4. 输入设备名称，粘贴电脑给出的 `tandem-pair:` 配对码，或允许相机扫描电脑上的二维码。

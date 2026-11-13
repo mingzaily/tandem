@@ -13,14 +13,13 @@ RUN apk add --no-cache musl-dev
 WORKDIR /build
 COPY relay/Cargo.toml relay/Cargo.lock ./
 COPY relay/src/ ./src/
-RUN cargo build --locked --release && mkdir /data && chown 65532:65532 /data
+RUN cargo build --locked --release && mkdir /data
 
 FROM scratch
 COPY LICENSE NOTICE /licenses/
 COPY --from=rust /build/target/release/tandem-relay /tandem-relay
-COPY --from=rust --chown=65532:65532 /data/ /data/
+COPY --from=rust /data/ /data/
 COPY --from=pwa /build/pwa/dist/ /pwa/
-USER 65532:65532
 ENV HOST=0.0.0.0 PORT=8787 TANDEM_RELAY_DATA_FILE=/data/tokens.json TANDEM_RELAY_STATIC_DIR=/pwa
 VOLUME ["/data"]
 EXPOSE 8787

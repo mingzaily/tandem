@@ -67,7 +67,7 @@ if (args[0]==='rm') fs.unlinkSync(base+'/container');
 if (args[0]==='volume' && args[1]==='rm') fs.unlinkSync(base+'/volume');
 if (args[0]==='inspect') {
  if (args[2].includes('.State}}')) console.log(JSON.stringify({Status:'running', Health:{Status:'healthy'}}));
- else console.log(args[2].includes('.Config.User') ? '65532:65532' : '0');
+ else console.log('0');
 }
 if (args[0]==='port') console.log('127.0.0.1:8787');
 if (args[0]==='cp') fs.writeFileSync(args[2], '[['+JSON.stringify('hash')+',{}]]', {mode:0o600});`;

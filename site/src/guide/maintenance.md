@@ -18,7 +18,7 @@ docker compose exec relay /tandem-relay healthcheck
 
 运行 `docker compose ps`、`docker compose logs relay`。确认部署令牌已设置、端口可用、数据卷可写。容器内部检查命令是 `/tandem-relay healthcheck`，无需安装 curl。
 
-`PERSIST_FAILED` 表示设备准入信息写入失败。检查磁盘空间和 `/data` 权限；绑定目录的 UID/GID 应为 `65532:65532`。修复后，等待桌面端重新连接，再生成配对码。
+`准入文件写入失败` 会写出文件路径和系统报错，随后关闭连接 `1011`。检查磁盘空间和该路径是否允许容器写入。修复后，等待桌面端重新连接，再生成配对码。
 
 准入文件 `tokens.json` 损坏或读取失败时，启动日志会显示实际路径和恢复办法。先停止中转，检查 `TANDEM_RELAY_DATA_FILE`、文件类型和权限；路径应指向可读写的文件。修正路径或权限后重启即可。
 

@@ -75,7 +75,11 @@ pub async fn serve(
         hello_timeout: config.hello_timeout,
     });
     let mut app = Router::new()
-        .route("/healthz", get(|| async { Json(json!({"ok":true,"v":1,"version":env!("CARGO_PKG_VERSION")})) }))
+        .route(
+            "/healthz",
+            get(|| async { Json(json!({"ok":true,"v":1,"version":env!("CARGO_PKG_VERSION")})) }),
+        )
+        .route("/", get(|| async { deployment_page() }))
         .route("/ws", get(upgrade));
     if let Some(directory) = config.static_dir {
         // The PWA uses root-relative assets and keeps its CSP in index.html.
@@ -116,6 +120,52 @@ pub async fn serve(
     drop(relay);
     persistence.await.map_err(io::Error::other)?;
     result
+}
+
+fn deployment_page() -> Response {
+    let version = env!("CARGO_PKG_VERSION");
+    let body = format!(
+        r#"<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>中转已部署</title>
+<style>
+  :root {{ color-scheme: light dark; }}
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center; background: #f3f1ea; color: #1c1b19;
+    font: 16px/1.6 ui-sans-serif, system-ui, sans-serif; }}
+  main {{ width: min(440px, calc(100% - 48px)); }}
+  p {{ margin: 0; }}
+  .status {{ font-size: 13px; color: #2f6f3e; }}
+  h1 {{ margin: 8px 0 0; font-size: 32px; line-height: 1.25; font-weight: 650; letter-spacing: -0.03em; }}
+  .intro {{ margin-top: 16px; color: #5e5a52; }}
+  .intro + .intro {{ margin-top: 8px; }}
+  .version {{ margin-top: 20px; font-size: 13px; color: #8a847a; }}
+  @media (prefers-color-scheme: dark) {{
+    body {{ background: #161616; color: #f3f1ea; }}
+    .status {{ color: #8dcc98; }}
+    .intro {{ color: #b9b3a8; }}
+    .version {{ color: #8d887f; }}
+  }}
+</style>
+</head>
+<body>
+<main>
+  <p class="status">部署成功</p>
+  <h1>中转正在运行</h1>
+  <p class="intro">这里只在你的电脑和手机之间转发加密消息，不会读取内容。</p>
+  <p class="intro">手机从 Tandem 官网打开。桌面端填写这个域名和部署令牌，再生成配对码。</p>
+  <p class="version">版本 {version}</p>
+</main>
+</body>
+</html>"#
+    );
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .body(Body::from(body))
+        .expect("deployment page response is valid")
 }
 
 fn client_ip(socket: SocketAddr, forwarded: Option<&str>, trust: bool) -> String {
@@ -167,7 +217,7 @@ async fn upgrade(
                 .await;
                 connection(ws, relay, ip, permit).await;
             }
-            Err(_) => eprintln!("UPGRADE_FAILED"),
+            Err(error) => eprintln!("WebSocket 升级失败：{error}"),
         }
     });
     response.map(|_| Body::empty())
@@ -175,8 +225,25 @@ async fn upgrade(
 
 type Socket = WebSocketStream<AdmissionIo<TokioIo<hyper::upgrade::Upgraded>>>;
 
+fn log_close(code: u16) {
+    let reason = match code {
+        1000 => "连接正常结束",
+        1001 => "中转正在停止，或对端超过 90 秒没有响应",
+        1009 => "单条消息超过大小限制",
+        1011 => "准入文件没有写入成功",
+        4400 => "收到的消息无法解析",
+        4401 => "部署令牌或配对码不正确",
+        4409 => "新的桌面端替换了这个连接",
+        4410 => "这台手机的准入已撤销",
+        4411 => "桌面端断开了这台手机",
+        4429 => "这个地址的连接或失败次数达到上限",
+        _ => "没有更具体的原因",
+    };
+    eprintln!("关闭连接 {code}：{reason}");
+}
+
 async fn close(socket: &mut Socket, code: u16) {
-    eprintln!("closed {code}");
+    log_close(code);
     let frame = CloseFrame {
         code: CloseCode::from(code),
         reason: "".into(),
@@ -254,7 +321,14 @@ async fn connection(
             return;
         }
     };
-    eprintln!("connected");
+    eprintln!(
+        "{}",
+        if peer.host {
+            "桌面端已接入"
+        } else {
+            "手机已接入"
+        }
+    );
     socket.get_mut().admitted = true;
     let (mut sink, mut source) = socket.split();
     let stopped = relay.shutdown.clone();
@@ -290,11 +364,11 @@ async fn connection(
                     };
                     if closing_code.is_none() { writer_out.delivered(bytes); }
                     if result.is_err() { return; }
-                    if let Some(code) = closing_code { eprintln!("closed {code}"); return; }
+                    if let Some(code) = closing_code { log_close(code); return; }
                 }
             }
         };
-        eprintln!("closed {code}");
+        log_close(code);
         let _ = timeout(
             Duration::from_secs(1),
             sink.send(Message::Close(Some(CloseFrame {
@@ -327,7 +401,7 @@ async fn connection(
                         }
                         Some(Ok(Message::Close(_))) | None => { out.close(1000); return; }
                         Some(Err(WsError::Capacity(_))) => { out.close(1009); return; }
-                        Some(Err(_)) => { eprintln!("SOCKET_ERROR"); return; }
+                        Some(Err(error)) => { eprintln!("读取连接失败：{error}"); return; }
                         _ => { out.close(4400); return; }
                     };
                     if raw.len() > MAX_MESSAGE { out.send(json!({"t":"error","code":"PAYLOAD_TOO_LARGE"})); continue; }
@@ -357,7 +431,14 @@ async fn connection(
         .lock()
         .expect("hub mutex is healthy")
         .disconnected(&peer);
-    eprintln!("disconnected");
+    eprintln!(
+        "{}",
+        if peer.host {
+            "桌面端已断开"
+        } else {
+            "手机已断开"
+        }
+    );
 }
 
 #[cfg(test)]

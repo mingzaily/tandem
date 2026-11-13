@@ -27,6 +27,8 @@ pnpm test
 
 日常使用 `/Applications/Tandem.app`，不要打开 `target/` 里的产物：`target/release/tandem` 是未打包的程序，没有系统通知和 Dock 角标；`target/.../Tandem.app` 会被下一次构建原地替换，正在运行的应用会和磁盘上的应用包对不上。`pnpm install:app` 在 `~/Library/Caches/tandem-install-target` 单独构建，只在 Tandem 未运行时替换已安装的应用。
 
+本机自用的 `pnpm install:app` / `pnpm dev:install` 在构建时读取 Git commit 和工作区状态，通过构建环境嵌入页面；左下角显示 8 位短 commit，有未提交修改时加 `-dirty`，悬停显示完整 commit。应用 `Info.plist` 同时写入 `TandemBuildCommit`、`TandemLocalBuild` 和 `TandemBuildDirty`，用于核对实际安装包。官方 CI 包继续显示发布版本，应用版本、更新清单和版本比较保持 SemVer。
+
 构建目录会被 Spotlight 收录，搜索时出现多个 Tandem 和编译缓存文件夹。在“系统设置 → Spotlight → 搜索隐私”中加入 `desktop/src-tauri/target` 即可，只留下“应用程序”里的那一个。
 
 正式分发由 `main` 的 push 自动触发 CI：分配递增版本、执行检查、分别构建 Apple Silicon 和 Intel 安装包，再发布 GitHub Release。本机和 CI 都用 Tandem 自签名证书签名，产物与重跑规则见 [CI 与本地验证](ci-validation.md#桌面自动发布)。本机命令用于开发验证，CI 构建使用独立的临时工作区。

@@ -49,6 +49,7 @@ const zh = {
 
   turnFailed: '本轮回复失败',
   replyFailed: '回复异常，本轮已结束',
+  replyMalformedStream: '模型响应流格式异常，本轮已结束',
   replyUsageLimit: '已达到 {hours} 小时用量上限',
   replyUsageReset: '额度重置时间：{reset}',
   showDetails: '查看错误详情',
@@ -200,6 +201,7 @@ const en: Record<keyof typeof zh, string> = {
 
   turnFailed: 'This reply failed',
   replyFailed: 'Reply failed. This turn has ended.',
+  replyMalformedStream: 'The model response stream was malformed. This turn has ended.',
   replyUsageLimit: 'The {hours}-hour usage limit has been reached.',
   replyUsageReset: 'Quota resets at {reset}',
   showDetails: 'Show error details',

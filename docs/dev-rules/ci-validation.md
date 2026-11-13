@@ -62,7 +62,7 @@ node .github/scripts/container-smoke.mjs tandem-relay:local
 | `.github/workflows/site-pages.yml` | site / PWA、共享 token 及 Pages 构建工具改动进入 main；手动触发 | 共享检查成功后上传组合产物并发布 Pages；浏览器检查属于发布门禁 |
 | `.github/workflows/relay-image.yml` | relay、镜像内 PWA / token 及构建工具改动进入 main；手动选择 main 执行 | 预留独立递增版本，先通过共享检查和 amd64 容器验收，再推送 amd64 / arm64 版本与 SHA 标签 |
 
-通用 CI 覆盖 relay、PWA、官网、共享设计 token、相关自动化、协议、测试向量和镜像许可证。桌面源码和桌面发布脚本由独立桌面工作流检查。桌面检查通过可复用工作流在 `macos-15` 上运行，包含发布脚本测试、版本一致性、typecheck、前端测试、Rust 测试与 `cargo clippy --all-targets -- -D warnings`。main 上的桌面相关 push 随发布执行桌面检查，桌面相关 PR 直接触发同一可复用工作流；relay 发布只依赖共享检查。第三方 Action 固定到 commit SHA。构建任务使用只读仓库权限；桌面版本预留与发布任务使用 `contents: write`，GHCR 写权限只授予镜像发布与版本晋升任务。桌面端窗口验收和原生互通仍按桌面开发文档执行。
+通用 CI 覆盖 relay、PWA、官网、共享设计 token、相关自动化、协议、测试向量和镜像许可证。桌面源码和桌面发布脚本由独立桌面工作流检查。桌面检查通过可复用工作流在 `macos-15` 上运行，包含发布脚本测试、版本一致性、typecheck、前端测试、本机构建标识脚本测试、Rust 测试与 `cargo clippy --all-targets -- -D warnings`。main 上的桌面相关 push 随发布执行桌面检查，桌面相关 PR 直接触发同一可复用工作流；relay 发布只依赖共享检查。第三方 Action 固定到 commit SHA。构建任务使用只读仓库权限；桌面版本预留与发布任务使用 `contents: write`，GHCR 写权限只授予镜像发布与版本晋升任务。桌面端窗口验收和原生互通仍按桌面开发文档执行。
 
 ## 路径与发布边界
 

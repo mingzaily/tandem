@@ -84,6 +84,7 @@ function ReadyMessageStream({ taskId, agent, items, isRunning, editableId, onEdi
     scrollPaddingEnd: bottomPadding,
   });
   const totalSize = virtualizer.getTotalSize();
+  const virtualRows = virtualizer.getVirtualItems();
 
   useLayoutEffect(() => {
     if (followBottom.current && rows.length > 0) {
@@ -136,16 +137,16 @@ function ReadyMessageStream({ taskId, agent, items, isRunning, editableId, onEdi
         previousTop.current = element.scrollTop;
       }}
     >
-      <div className="relative w-full" style={{ height: totalSize }}>
-        {virtualizer.getVirtualItems().map((virtualRow) => {
+      {/* Mounted rows stay in flow while asynchronous measurements catch up with growing content. */}
+      <div className="w-full" style={{ paddingTop: virtualRows[0]?.start ?? 0, paddingBottom: Math.max(0, totalSize - (virtualRows.at(-1)?.end ?? 0)) }}>
+        {virtualRows.map((virtualRow) => {
           const row = rows[virtualRow.index];
           return (
             <div
               key={virtualRow.key}
               data-index={virtualRow.index}
               ref={virtualizer.measureElement}
-              className="absolute left-0 w-full"
-              style={{ top: virtualRow.start }}
+              className="w-full"
             >
               <div
                 className={`message-column ${
@@ -313,9 +314,10 @@ function WorkChildren({ rows, expanded, onToggle, active }: RowProps & { rows: R
     ? <Group key={row.id} group={row} expanded={expanded} onToggle={onToggle} active={active} />
     : <ItemRow key={row.id} item={row} expanded={expanded} onToggle={onToggle} active={active} />;
   if (!virtualized) return <>{rows.map(render)}</>;
+  const mounted = virtual.getVirtualItems();
   return <div ref={scroller} className="h-[420px] overflow-y-auto overscroll-contain">
-    <div className="relative w-full" style={{ height: virtual.getTotalSize() }}>
-      {virtual.getVirtualItems().map((row) => <div key={row.key} data-index={row.index} ref={virtual.measureElement} className="absolute left-0 w-full" style={{ top: row.start }}>{render(rows[row.index])}</div>)}
+    <div className="w-full" style={{ paddingTop: mounted[0]?.start ?? 0, paddingBottom: Math.max(0, virtual.getTotalSize() - (mounted.at(-1)?.end ?? 0)) }}>
+      {mounted.map((row) => <div key={row.key} data-index={row.index} ref={virtual.measureElement} className="w-full">{render(rows[row.index])}</div>)}
     </div>
   </div>;
 }

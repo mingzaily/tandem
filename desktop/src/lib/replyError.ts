@@ -10,6 +10,7 @@ interface ReplyErrorPresentation {
 export function replyErrorPresentation(raw: string): ReplyErrorPresentation {
   const text = raw.trim();
   if (!text) return { message: t('replyFailed') };
+  if (text === 'Error reading response: malformed server-sent event JSON.') return { message: t('replyMalformedStream'), details: raw };
   const limit = /^You['’]ve hit your ([1-9]\d*)-hour limit(?:\s*[·•]\s*resets\s+([^\r\n]+))?$/i.exec(text);
   if (limit) return {
     message: t('replyUsageLimit', { hours: limit[1] }),

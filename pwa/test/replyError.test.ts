@@ -15,9 +15,17 @@ test('quota failures show their cause and reported reset time directly on mobile
 });
 
 test('a short readable failure is visible in the normal text column', () => {
-  const html = render('Error reading response: malformed server-sent event JSON.');
-  assert.match(html, /<p>Error reading response: malformed server-sent event JSON\.<\/p>/);
+  const html = render('Provider connection was closed.');
+  assert.match(html, /<p>Provider connection was closed\.<\/p>/);
   assert.doesNotMatch(html, /<details|<pre/);
+});
+
+test('the exact malformed SSE error has a localized reason and keeps the native diagnostic', () => {
+  const html = render('Error reading response: malformed server-sent event JSON.');
+  assert.match(html, /模型响应流格式异常，本轮已结束/);
+  assert.match(html, /<details>/);
+  assert.doesNotMatch(html, /open=""/);
+  assert.match(html, /malformed server-sent event JSON/);
 });
 
 test('long diagnostics retain their complete original text with a visible first-line reason', () => {

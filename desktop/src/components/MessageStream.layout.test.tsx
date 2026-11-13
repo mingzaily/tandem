@@ -34,7 +34,10 @@ beforeEach(() => {
   vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockReturnValue(900);
   vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(900);
   vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
-    return this.classList.contains('message-scroll') ? Number.parseFloat((this.firstElementChild as HTMLElement)?.style.height || '0') : height(this);
+    if (!this.classList.contains('message-scroll')) return height(this);
+    const content = this.firstElementChild as HTMLElement | null;
+    return content ? Number.parseFloat(content.style.paddingTop || '0') + Number.parseFloat(content.style.paddingBottom || '0')
+      + [...content.children].reduce((total, row) => total + height(row), 0) : 0;
   });
   vi.spyOn(HTMLElement.prototype, 'scrollTo').mockImplementation(function (this: HTMLElement, options: number | ScrollToOptions) {
     const top = typeof options === 'number' ? options : options.top ?? this.scrollTop;
@@ -98,6 +101,28 @@ describe('message stream task-switch layout', () => {
     await test.render();
     expect(test.scroll().scrollHeight - test.scroll().scrollTop - test.scroll().clientHeight).toBeLessThanOrEqual(1);
     expect(test.host.textContent).toContain('A reply 39');
+  });
+
+  it('keeps a growing Markdown table and its next work group in natural flow before resize notifications', async () => {
+    const test = await fixture();
+    test.props.isRunning = true;
+    test.props.items = [
+      { type: 'user', id: 'table-user', text: 'compare archives' },
+      { type: 'assistant', id: 'table-reply', text: '| A | B |\n|---|---|\n| one | two |' },
+      { type: 'tool', id: 'after-table', name: 'read', input: '{}', result: 'done', isError: false, truncated: false },
+    ];
+    await test.render();
+    const content = test.scroll().firstElementChild as HTMLElement;
+    const mounted = [...content.children] as HTMLElement[];
+    expect(content.style.height).toBe('');
+    expect(mounted.some((row) => row.querySelector('table'))).toBe(true);
+    expect(mounted.at(-1)?.querySelector('[data-work-group]')).not.toBeNull();
+    for (const row of mounted) { expect(row.classList.contains('absolute')).toBe(false); expect(row.style.top).toBe(''); }
+    heights.set(1, 700);
+    test.props.items = test.props.items.map((item) => item.id === 'table-reply' && item.type === 'assistant' ? { ...item, text: item.text + '\n| taller | content |' } : item);
+    await test.render();
+    expect(content.style.height).toBe('');
+    expect(test.scroll().scrollHeight).toBeGreaterThanOrEqual(700);
   });
 
   it('keeps the tail visible as actual row height or the composer inset changes', async () => {

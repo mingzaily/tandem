@@ -15,6 +15,7 @@ import { MENU_ROW } from './ComposerMenu';
 import { AgentMark } from './AgentMark';
 import type { TaskMenuAnchor } from './TaskMenu';
 import { SidebarUpdate } from './AppUpdateControl';
+import { buildLabel, localBuildIdentity } from '../lib/buildIdentity';
 import { isImeKey } from '../lib/ime';
 
 const PREVIEW_COUNT = 5;
@@ -452,7 +453,7 @@ export function Sidebar(props: SidebarProps) {
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-13 font-medium leading-[1.3] text-[var(--sidebar-user-card-text)]">Tandem</span>
           <span className="flex min-w-0 items-center gap-1.5 text-11 leading-[1.3] text-[var(--sidebar-list-muted)]">
-            <span className="truncate">{version}</span><SidebarUpdate />
+            <span className={`truncate ${localBuildIdentity ? 'font-mono' : ''}`} data-tooltip={localBuildIdentity ? t('localBuildCommit', { commit: localBuildIdentity.commit }) + (localBuildIdentity.dirty ? t('localBuildDirty') : '') : undefined}>{buildLabel(version)}</span><SidebarUpdate />
           </span>
         </span>
         <button

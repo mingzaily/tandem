@@ -619,9 +619,9 @@ main {
   color: var(--text-danger);
 }
 .reply-error {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  column-gap: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   border: 1px solid var(--border-default);
   border-radius: 12px;
   background: var(--surface-elevated);
@@ -629,13 +629,11 @@ main {
 }
 .reply-error-icon {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 20px;
+  flex-shrink: 0;
+  margin-top: 2px;
   color: var(--error-fg);
 }
-.reply-error > div { min-width: 0; }
+.reply-error > div { min-width: 0; flex: 1; }
 .reply-error p {
   margin: 0;
   color: var(--text-primary);
@@ -648,36 +646,31 @@ main {
   color: var(--text-secondary);
   font-size: var(--text-12);
 }
-.reply-error details { margin-top: 4px; }
+.reply-error details { margin-top: 8px; }
 .reply-error summary {
-  position: relative;
-  display: flex;
-  align-items: center;
-  width: fit-content;
-  min-height: 28px;
-  padding-right: 4px;
-  border-radius: 4px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: var(--text-12);
-  list-style: none;
-}
-.reply-error summary:hover { color: var(--text-primary); }
-.reply-error summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.reply-error summary::-webkit-details-marker { display: none; }
-.reply-error-chevron {
-  position: absolute;
-  left: -24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 20px;
+  gap: 6px;
+  width: fit-content;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: var(--text-13);
+  font-weight: 500;
+  list-style: none;
 }
+.reply-error summary:hover { background: var(--button-secondary-hover); }
+.reply-error summary:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.reply-error summary::-webkit-details-marker { display: none; }
+.reply-error-chevron { display: inline-flex; flex-shrink: 0; }
 .reply-error summary svg { transition: transform var(--motion-fast) var(--motion-ease-out); }
 .reply-error details[open] summary svg { transform: rotate(90deg); }
 .reply-error pre {
-  margin: 4px 0 0 -8px;
+  margin: 8px 0 0;
   max-height: 160px;
   overflow: auto;
   white-space: pre-wrap;

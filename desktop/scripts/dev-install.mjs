@@ -3,7 +3,8 @@
 // The project's own target directory is never touched, and a running Tandem keeps its bundle:
 // it would otherwise keep running old code from a bundle that now holds another build.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { localBuildIdentity, localBuildPlist } from './local-build.mjs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,7 +26,13 @@ function running() {
 }
 
 if (!process.argv.includes('--no-build')) {
-  run('pnpm', ['tauri', 'build', '--bundles', 'app'], { cwd: desktop, env: { ...process.env, CARGO_TARGET_DIR: target } });
+  const identity = localBuildIdentity(desktop);
+  const infoPlist = join(target, 'local-build.plist');
+  mkdirSync(target, { recursive: true });
+  writeFileSync(infoPlist, localBuildPlist(identity));
+  console.log(`本机构建：${identity.commit.slice(0, 8)}${identity.dirty ? '-dirty' : ''}`);
+  run('pnpm', ['tauri', 'build', '--bundles', 'app', '--config', JSON.stringify({ bundle: { macOS: { infoPlist } } })],
+    { cwd: desktop, env: { ...process.env, CARGO_TARGET_DIR: target, TANDEM_BUILD_COMMIT: identity.commit, TANDEM_BUILD_DIRTY: identity.dirty ? '1' : '0' } });
 }
 if (!existsSync(built)) {
   console.error(`没有找到开发构建：${built}`);
@@ -34,7 +41,7 @@ if (!existsSync(built)) {
 run('codesign', ['--verify', '--deep', '--strict', built]);
 if (running()) {
   console.log(`Tandem 正在运行，没有替换。开发构建在 ${built}`);
-  console.log('退出 Tandem 后运行 pnpm dev:install --no-build 完成安装。');
+  console.log('退出 Tandem 后运行 pnpm install:app --no-build 完成安装。');
   process.exit(0);
 }
 run('rm', ['-rf', installed]);

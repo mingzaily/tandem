@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/*.check.mjs",
     "tauri": "tauri",
     "dev:install": "node scripts/dev-install.mjs",
     "install:app": "node scripts/dev-install.mjs"

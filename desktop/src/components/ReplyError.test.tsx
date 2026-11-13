@@ -14,15 +14,26 @@ describe('failed reply timeline record', () => {
     expect(html).toContain('额度重置时间：1am (Asia/Shanghai)');
     expect(html).not.toContain('<details');
     expect(html).not.toContain('<pre');
-    expect(html).not.toContain('查看错误详情');
+    expect(html).not.toContain('查看原始错误');
     expect(html).toContain('aria-label="回复异常，本轮已结束"');
   });
 
   it('shows a short readable reason directly in the normal text column', () => {
-    const html = render('Error reading response: malformed server-sent event JSON.');
-    expect(html).toMatch(/<p[^>]*>Error reading response: malformed server-sent event JSON\.<\/p>/);
+    const html = render('Provider connection was closed.');
+    expect(html).toMatch(/<p[^>]*>Provider connection was closed\.<\/p>/);
     expect(html).not.toContain('<details');
     expect(html).not.toContain('<pre');
+  });
+
+  it('localizes the exact malformed SSE error and keeps the raw diagnostic folded', () => {
+    const html = render('Error reading response: malformed server-sent event JSON.');
+    expect(html).toContain('模型响应流格式异常，本轮已结束');
+    expect(html).toContain('Error reading response: malformed server-sent event JSON.');
+    expect(html).toContain('查看原始错误');
+    expect(html).toContain('<details');
+    expect(html).not.toContain('open=""');
+    expect(html).not.toContain('-left-6');
+    expect(html).not.toContain('grid-cols-');
   });
 
   it('keeps a readable first-line reason visible while only the diagnostics are folded', () => {
@@ -40,7 +51,7 @@ describe('failed reply timeline record', () => {
     expect(html).toContain('rounded-xl');
     expect(html).toContain('bg-[var(--surface-elevated)]');
     expect(html).toContain('text-[var(--text-primary)]');
-    expect(html).toContain('查看错误详情');
+    expect(html).toContain('查看原始错误');
     expect(html).toContain('<details');
     expect(html).not.toContain('open=""');
     expect(html).toContain('provider rejected');

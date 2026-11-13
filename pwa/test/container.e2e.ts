@@ -10,7 +10,12 @@ assert.equal(healthBody.v, 1);
 assert.match(healthBody.version, /^\d+\.\d+\.\d+$/);
 const index = await fetch(origin);
 assert.equal(index.headers.get('x-content-type-options'), 'nosniff');
-assert.match(await index.text(), /Content-Security-Policy/);
+const home = await index.text();
+assert.match(home, /部署成功/);
+assert.match(home, /中转正在运行/);
+const phone = await fetch(origin + '/index.html');
+assert.equal(phone.status, 200);
+assert.match(await phone.text(), /Content-Security-Policy/);
 const host = await fakeHost(origin.replace('http:', 'ws:') + '/ws', 'container-fixture', async () => true);
 let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
 try {
@@ -19,12 +24,14 @@ try {
   const errors: string[] = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(origin);
+  await page.getByRole('heading', { name: '中转正在运行' }).waitFor();
+  await page.goto(origin + '/index.html');
   await page.getByRole('heading', { name: '电脑上的事，接着做。' }).waitFor();
   await page.getByRole('textbox', { name: '粘贴配对码' }).fill(host.pairCode);
   await page.getByRole('button', { name: '配对桌面端', exact: true }).click();
   await page.getByRole('button', { name: /手机上的第一个任务/ }).waitFor();
   assert.deepEqual(errors, []);
-  console.log('容器 /healthz、CSP、PWA 页面、WebSocket 配对与任务列表通过。');
+  console.log('容器 /healthz、部署状态页、手机页、WebSocket 配对与任务列表通过。');
 } finally {
   await browser?.close();
   await host.close();

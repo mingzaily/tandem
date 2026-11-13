@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { latestVersion, shouldPromote, registryImage, prepareRelay, stampRelay, relaySource, publishRelayRelease, pullNotes } from './relay-release.mjs';
+import { imageVersion, latestVersion, shouldPromote, registryImage, prepareRelay, stampRelay, relaySource, publishRelayRelease, pullNotes } from './relay-release.mjs';
 import { nextVersion } from './release-version.mjs';
 
 for (const [candidate, current, expected] of [
@@ -221,7 +221,24 @@ test('relay Release 不抢桌面的 Latest，重跑保留已有说明', async ()
 test('relay 说明给出带版本的拉取命令和部署文档', () => {
   const { zh, en } = pullNotes('relay-v0.1.2', 'ghcr.io/mingzaily/tandem-relay', 'mingzaily/tandem');
   for (const text of [zh, en]) {
-    assert.match(text, /docker pull ghcr\.io\/mingzaily\/tandem-relay:relay-v0\.1\.2/);
+    assert.match(text, /docker pull ghcr\.io\/mingzaily\/tandem-relay:0\.1\.2\n/);
     assert.match(text, /blob\/relay-v0\.1\.2\/relay\/README\.md/);
   }
+});
+
+test('镜像标签不带 relay- 前缀，latest 晋升同时认新旧两种格式', async () => {
+  assert.equal(imageVersion('0.1.2').version, '0.1.2');
+  assert.equal(imageVersion('relay-v0.1.1').version, '0.1.1');
+  assert.equal(imageVersion('v0.1.1'), undefined);
+  assert.equal(shouldPromote('relay-v0.1.2', 'relay-v0.1.1'), true);
+  assert.equal(shouldPromote('relay-v0.1.3', '0.1.2'), true);
+  assert.equal(shouldPromote('relay-v0.1.2', '0.1.2'), false);
+  const reads = [];
+  const client = gitFixture([gitTag('relay-v0.1.1', sourceSha)]);
+  const plan = await prepareRelay(client, {
+    base: '0.1.0', sha: sourceSha, now: date,
+    readImage: async (reference) => { reads.push(reference); return { ...imageRecord, version: '0.1.1' }; },
+  });
+  assert.deepEqual(reads, ['0.1.1']);
+  assert.equal(plan.digest, imageDigest);
 });

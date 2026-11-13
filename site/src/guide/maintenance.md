@@ -2,7 +2,7 @@
 
 ## 升级
 
-`latest` 跟随中转的最新发布。固定版本时，将 `compose.yaml` 中的镜像标签换为已发布的 `relay-v<版本号>`，例如镜像地址格式为 `ghcr.io/mingzaily/tandem-relay:relay-v<版本号>`。
+`latest` 跟随中转的最新发布。固定版本时，将 `compose.yaml` 中的镜像标签换为已发布的版本号，例如 `ghcr.io/mingzaily/tandem-relay:0.1.2`。`0.1.1` 及更早的镜像标签带 `relay-v` 前缀，如 `relay-v0.1.1`。
 
 ```sh
 docker compose pull

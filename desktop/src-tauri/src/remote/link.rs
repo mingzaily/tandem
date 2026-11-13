@@ -2,10 +2,10 @@
 
 use super::crypto;
 use super::store::PairedClient;
-use super::{now_ms, ops, Inner, LinkStatus, Outgoing, PAIRING_LIFETIME};
+use super::{Inner, LinkStatus, Outgoing, PAIRING_LIFETIME, now_ms, ops};
 use futures_util::{SinkExt, StreamExt};
 use p256::ecdh::EphemeralSecret;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,10 +36,30 @@ struct Ready {
 }
 
 enum Peer {
-    AwaitPair3 { token: [u8; 32], th: [u8; 32], keys: crypto::PairKeys, client_point: Vec<u8>, name: String },
-    AwaitPairAnswer { token: [u8; 32], keys: crypto::PairKeys, client_point: Vec<u8>, name: String },
-    AwaitPairGrant { token: [u8; 32], id: String },
-    AwaitHello3 { client_id: String, th: [u8; 32], c2h: [u8; 32], h2c: [u8; 32], client_point: Vec<u8> },
+    AwaitPair3 {
+        token: [u8; 32],
+        th: [u8; 32],
+        keys: crypto::PairKeys,
+        client_point: Vec<u8>,
+        name: String,
+    },
+    AwaitPairAnswer {
+        token: [u8; 32],
+        keys: crypto::PairKeys,
+        client_point: Vec<u8>,
+        name: String,
+    },
+    AwaitPairGrant {
+        token: [u8; 32],
+        id: String,
+    },
+    AwaitHello3 {
+        client_id: String,
+        th: [u8; 32],
+        c2h: [u8; 32],
+        h2c: [u8; 32],
+        client_point: Vec<u8>,
+    },
     Ready(Box<Ready>),
     /// The relay is closing this connection; further frames are ignored.
     Closed,
@@ -48,7 +68,9 @@ enum Peer {
 impl Peer {
     fn pairing_token(&self) -> Option<[u8; 32]> {
         match self {
-            Self::AwaitPair3 { token, .. } | Self::AwaitPairAnswer { token, .. } | Self::AwaitPairGrant { token, .. } => Some(*token),
+            Self::AwaitPair3 { token, .. }
+            | Self::AwaitPairAnswer { token, .. }
+            | Self::AwaitPairGrant { token, .. } => Some(*token),
             _ => None,
         }
     }
@@ -56,8 +78,16 @@ impl Peer {
 
 enum Registration {
     Restore,
-    Pairing { token: [u8; 32], reply: oneshot::Sender<Result<(), String>> },
-    Client { conn: String, token: [u8; 32], client: PairedClient, pair4: Value },
+    Pairing {
+        token: [u8; 32],
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Client {
+        conn: String,
+        token: [u8; 32],
+        client: PairedClient,
+        pair4: Value,
+    },
 }
 
 struct PendingGrant {
@@ -73,15 +103,26 @@ fn data_frame(conn: &str, message: &Value) -> Value {
 /// Splits one message into encrypted frames.
 fn seal_frames(ready: &mut Ready, conn: &str, message: &Value) -> Result<Vec<Value>, String> {
     let bytes = message.to_string().into_bytes();
-    let chunks: Vec<&[u8]> = if bytes.is_empty() { vec![&[][..]] } else { bytes.chunks(CHUNK_BYTES).collect() };
+    let chunks: Vec<&[u8]> = if bytes.is_empty() {
+        vec![&[][..]]
+    } else {
+        bytes.chunks(CHUNK_BYTES).collect()
+    };
     let last = chunks.len() - 1;
     let mut frames = Vec::with_capacity(chunks.len());
     for (index, chunk) in chunks.into_iter().enumerate() {
         let mut plain = Vec::with_capacity(chunk.len() + 1);
-        plain.push(if index == last { CHUNK_LAST } else { CHUNK_MORE });
+        plain.push(if index == last {
+            CHUNK_LAST
+        } else {
+            CHUNK_MORE
+        });
         plain.extend_from_slice(chunk);
         let sealed = crypto::seal_message(&ready.h2c, ready.sent, &plain)?;
-        frames.push(data_frame(conn, &json!({"k": "m", "n": ready.sent, "c": crypto::encode(&sealed)})));
+        frames.push(data_frame(
+            conn,
+            &json!({"k": "m", "n": ready.sent, "c": crypto::encode(&sealed)}),
+        ));
         ready.sent += 1;
     }
     Ok(frames)
@@ -89,11 +130,19 @@ fn seal_frames(ready: &mut Ready, conn: &str, message: &Value) -> Result<Vec<Val
 
 /// Takes one encrypted frame. Returns a whole message once its last chunk has arrived.
 fn open_frame(ready: &mut Ready, frame: &Value) -> Result<Option<Value>, String> {
-    let counter = frame.get("n").and_then(Value::as_u64).ok_or("A message has no counter")?;
+    let counter = frame
+        .get("n")
+        .and_then(Value::as_u64)
+        .ok_or("A message has no counter")?;
     if counter != ready.received {
         return Err("A message arrived out of order".to_owned());
     }
-    let sealed = crypto::decode(frame.get("c").and_then(Value::as_str).ok_or("A message has no content")?)?;
+    let sealed = crypto::decode(
+        frame
+            .get("c")
+            .and_then(Value::as_str)
+            .ok_or("A message has no content")?,
+    )?;
     let plain = crypto::open_message(&ready.c2h, counter, &sealed)?;
     ready.received += 1;
     let (&flag, chunk) = plain.split_first().ok_or("A message is empty")?;
@@ -105,14 +154,21 @@ fn open_frame(ready: &mut Ready, frame: &Value) -> Result<Option<Value>, String>
         CHUNK_MORE => Ok(None),
         CHUNK_LAST => {
             let whole = std::mem::take(&mut ready.buffer);
-            serde_json::from_slice(&whole).map(Some).map_err(|_| "A message is not JSON".to_owned())
+            serde_json::from_slice(&whole)
+                .map(Some)
+                .map_err(|_| "A message is not JSON".to_owned())
         }
         _ => Err("A message has an unknown flag".to_owned()),
     }
 }
 
 fn field_bytes(message: &Value, name: &str) -> Result<Vec<u8>, String> {
-    crypto::decode(message.get(name).and_then(Value::as_str).ok_or("A field is missing")?)
+    crypto::decode(
+        message
+            .get(name)
+            .and_then(Value::as_str)
+            .ok_or("A field is missing")?,
+    )
 }
 
 struct Link {
@@ -124,14 +180,26 @@ struct Link {
 }
 
 impl Link {
-    fn register(&mut self, token_hash: String, one_time: bool, registration: Registration) -> String {
+    fn register(
+        &mut self,
+        token_hash: String,
+        one_time: bool,
+        registration: Registration,
+    ) -> String {
         let id = crypto::encode(&crypto::random_bytes::<16>());
         let frame = if one_time {
             json!({"t": "allow", "id": id, "tokenHash": token_hash, "oneTime": true, "ttlMs": PAIRING_LIFETIME.as_millis() as u64})
         } else {
             json!({"t": "allow", "id": id, "tokenHash": token_hash, "oneTime": false, "expiresAt": null})
         };
-        self.grants.insert(id.clone(), PendingGrant { token_hash, deadline: Instant::now() + HELLO_TIMEOUT, registration });
+        self.grants.insert(
+            id.clone(),
+            PendingGrant {
+                token_hash,
+                deadline: Instant::now() + HELLO_TIMEOUT,
+                registration,
+            },
+        );
         self.outbox.push(frame);
         id
     }
@@ -145,9 +213,21 @@ impl Link {
     }
 
     fn finish_restore(&mut self) {
-        if self.restoring && !self.grants.values().any(|grant| matches!(grant.registration, Registration::Restore)) {
-            let hashes: Vec<String> = self.inner.lock_config().clients.iter().map(|client| client.token_hash.clone()).collect();
-            self.outbox.push(json!({"t": "allow-sync", "tokenHashes": hashes}));
+        if self.restoring
+            && !self
+                .grants
+                .values()
+                .any(|grant| matches!(grant.registration, Registration::Restore))
+        {
+            let hashes: Vec<String> = self
+                .inner
+                .lock_config()
+                .clients
+                .iter()
+                .map(|client| client.token_hash.clone())
+                .collect();
+            self.outbox
+                .push(json!({"t": "allow-sync", "tokenHashes": hashes}));
             self.restoring = false;
             crate::diagnostics::debug("remote", || "relay connection online".to_owned());
             self.inner.set_status(LinkStatus::Online, None);
@@ -155,11 +235,19 @@ impl Link {
     }
 
     fn pairing_is_live(&self, token: &[u8; 32]) -> bool {
-        self.inner.pairing.lock().is_ok_and(|pairing| pairing.as_ref().is_some_and(|p| p.token == *token && p.is_live()))
+        self.inner.pairing.lock().is_ok_and(|pairing| {
+            pairing
+                .as_ref()
+                .is_some_and(|p| p.token == *token && p.is_live())
+        })
     }
 
     fn end_pairing(&self, token: &[u8; 32]) {
-        let matches = self.inner.pairing.lock().is_ok_and(|pairing| pairing.as_ref().is_some_and(|p| p.token == *token));
+        let matches = self
+            .inner
+            .pairing
+            .lock()
+            .is_ok_and(|pairing| pairing.as_ref().is_some_and(|p| p.token == *token));
         if matches {
             self.inner.end_pairing();
             self.inner.notify_changed();
@@ -174,9 +262,17 @@ impl Link {
             Registration::Restore => self.finish_restore(),
             Registration::Pairing { token, reply } => {
                 let registered = {
-                    let mut pairing = self.inner.pairing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let mut pairing = self
+                        .inner
+                        .pairing
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     match pairing.as_mut() {
-                        Some(p) if p.token == token && p.deadline > Instant::now() && !reply.is_closed() => {
+                        Some(p)
+                            if p.token == token
+                                && p.deadline > Instant::now()
+                                && !reply.is_closed() =>
+                        {
                             p.registered = true;
                             #[cfg(debug_assertions)]
                             super::write_pairing_for_test(&p.text);
@@ -189,17 +285,30 @@ impl Link {
                     self.inner.notify_changed();
                     let _ = reply.send(Ok(()));
                 } else {
-                    self.outbox.push(json!({"t": "revoke", "tokenHash": grant.token_hash}));
+                    self.outbox
+                        .push(json!({"t": "revoke", "tokenHash": grant.token_hash}));
                     let _ = reply.send(Err("Pairing has ended".to_owned()));
                 }
             }
-            Registration::Client { conn, token, client, pair4 } => {
-                let committed = if matches!(self.peers.get(&conn), Some(Peer::AwaitPairGrant { id: pending, .. }) if pending == id) {
+            Registration::Client {
+                conn,
+                token,
+                client,
+                pair4,
+            } => {
+                let committed = if matches!(self.peers.get(&conn), Some(Peer::AwaitPairGrant { id: pending, .. }) if pending == id)
+                {
                     let inner = self.inner.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         let mut config = inner.lock_config();
-                        let pairing = inner.pairing.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if !pairing.as_ref().is_some_and(|p| p.token == token && p.is_live()) {
+                        let pairing = inner
+                            .pairing
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if !pairing
+                            .as_ref()
+                            .is_some_and(|p| p.token == token && p.is_live())
+                        {
                             return Ok::<bool, String>(false);
                         }
                         let mut updated = config.clone();
@@ -207,7 +316,9 @@ impl Link {
                         inner.save(&updated)?;
                         *config = updated;
                         Ok(true)
-                    }).await.map_err(|error| error.to_string())??
+                    })
+                    .await
+                    .map_err(|error| error.to_string())??
                 } else {
                     false
                 };
@@ -215,7 +326,8 @@ impl Link {
                     self.outbox.push(data_frame(&conn, &pair4));
                     self.drop_session(&conn, CLOSE_SESSION);
                 } else {
-                    self.outbox.push(json!({"t": "revoke", "tokenHash": grant.token_hash}));
+                    self.outbox
+                        .push(json!({"t": "revoke", "tokenHash": grant.token_hash}));
                     if self.peers.contains_key(&conn) {
                         self.deny_pair(&conn);
                     }
@@ -233,7 +345,8 @@ impl Link {
     }
 
     fn deny_pair(&mut self, conn: &str) {
-        self.outbox.push(data_frame(conn, &json!({"k": "pair-denied"})));
+        self.outbox
+            .push(data_frame(conn, &json!({"k": "pair-denied"})));
         self.drop_session(conn, CLOSE_SESSION);
     }
 
@@ -243,11 +356,22 @@ impl Link {
             .pairing
             .lock()
             .ok()
-            .and_then(|pairing| pairing.as_ref().filter(|pairing| pairing.is_live()).map(|pairing| (pairing.token, pairing.secret)))
+            .and_then(|pairing| {
+                pairing
+                    .as_ref()
+                    .filter(|pairing| pairing.is_live())
+                    .map(|pairing| (pairing.token, pairing.secret))
+            })
             .ok_or("No pairing is open")?;
         let e_c = field_bytes(message, "e")?;
         let s_c = field_bytes(message, "s")?;
-        let name: String = message.get("name").and_then(Value::as_str).unwrap_or("").chars().take(64).collect();
+        let name: String = message
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .chars()
+            .take(64)
+            .collect();
         let host_point = crypto::public_point(&self.host_key()?);
         let (ephemeral, e_h): (EphemeralSecret, Vec<u8>) = crypto::new_ephemeral();
         let shared = crypto::shared_secret(&ephemeral, &e_c)?;
@@ -258,12 +382,28 @@ impl Link {
             conn,
             &json!({"k": "pair2", "e": crypto::encode(&e_h), "mac": crypto::encode(&mac)}),
         ));
-        self.peers.insert(conn.to_owned(), Peer::AwaitPair3 { token, th, keys, client_point: s_c, name });
+        self.peers.insert(
+            conn.to_owned(),
+            Peer::AwaitPair3 {
+                token,
+                th,
+                keys,
+                client_point: s_c,
+                name,
+            },
+        );
         Ok(())
     }
 
     fn on_pair3(&mut self, conn: &str, message: &Value) -> Result<(), String> {
-        let Some(Peer::AwaitPair3 { token, th, keys, client_point, name }) = self.peers.remove(conn) else {
+        let Some(Peer::AwaitPair3 {
+            token,
+            th,
+            keys,
+            client_point,
+            name,
+        }) = self.peers.remove(conn)
+        else {
             return Err("Pairing messages arrived out of order".to_owned());
         };
         let mac = field_bytes(message, "mac")?;
@@ -271,13 +411,32 @@ impl Link {
             return Err("The pairing code does not match".to_owned());
         }
         crypto::verify(&client_point, b"", &th, &field_bytes(message, "sig")?)?;
-        ask_user(self.inner.clone(), conn.to_owned(), name.clone(), keys.code.clone());
-        self.peers.insert(conn.to_owned(), Peer::AwaitPairAnswer { token, keys, client_point, name });
+        ask_user(
+            self.inner.clone(),
+            conn.to_owned(),
+            name.clone(),
+            keys.code.clone(),
+        );
+        self.peers.insert(
+            conn.to_owned(),
+            Peer::AwaitPairAnswer {
+                token,
+                keys,
+                client_point,
+                name,
+            },
+        );
         Ok(())
     }
 
     fn finish_pair(&mut self, conn: &str, allow: bool) -> Result<(), String> {
-        let Some(Peer::AwaitPairAnswer { token: pairing_token, keys, client_point, name }) = self.peers.remove(conn) else {
+        let Some(Peer::AwaitPairAnswer {
+            token: pairing_token,
+            keys,
+            client_point,
+            name,
+        }) = self.peers.remove(conn)
+        else {
             return Ok(());
         };
         if !allow || !self.pairing_is_live(&pairing_token) {
@@ -289,15 +448,31 @@ impl Link {
         let token = crypto::random_bytes::<32>();
         let token_hash = crypto::sha256_hex(&token);
         let client = PairedClient {
-            client_id: client_id.clone(), public_key: crypto::encode(&client_point), name,
-            paired_at_ms: now_ms(), token_hash: token_hash.clone(),
+            client_id: client_id.clone(),
+            public_key: crypto::encode(&client_point),
+            name,
+            paired_at_ms: now_ms(),
+            token_hash: token_hash.clone(),
         };
         let plain = json!({"clientId": client_id, "token": crypto::encode(&token)}).to_string();
         let sealed = crypto::seal_pair4(&keys.aes, plain.as_bytes())?;
-        let id = self.register(token_hash, false, Registration::Client {
-            conn: conn.to_owned(), token: pairing_token, client, pair4: json!({"k": "pair4", "c": crypto::encode(&sealed)}),
-        });
-        self.peers.insert(conn.to_owned(), Peer::AwaitPairGrant { token: pairing_token, id });
+        let id = self.register(
+            token_hash,
+            false,
+            Registration::Client {
+                conn: conn.to_owned(),
+                token: pairing_token,
+                client,
+                pair4: json!({"k": "pair4", "c": crypto::encode(&sealed)}),
+            },
+        );
+        self.peers.insert(
+            conn.to_owned(),
+            Peer::AwaitPairGrant {
+                token: pairing_token,
+                id,
+            },
+        );
         Ok(())
     }
 
@@ -305,8 +480,18 @@ impl Link {
         if message.get("v").and_then(Value::as_u64) != Some(1) {
             return Err("Another protocol version".to_owned());
         }
-        let client_id = message.get("clientId").and_then(Value::as_str).ok_or("No client id")?.to_owned();
-        let client = self.inner.lock_config().clients.iter().find(|client| client.client_id == client_id).cloned();
+        let client_id = message
+            .get("clientId")
+            .and_then(Value::as_str)
+            .ok_or("No client id")?
+            .to_owned();
+        let client = self
+            .inner
+            .lock_config()
+            .clients
+            .iter()
+            .find(|client| client.client_id == client_id)
+            .cloned();
         let Some(client) = client else {
             self.drop_session(conn, CLOSE_UNPAIRED);
             return Ok(());
@@ -325,15 +510,37 @@ impl Link {
             conn,
             &json!({"k": "hello2", "e": crypto::encode(&e_h), "sig": crypto::encode(&signature)}),
         ));
-        self.peers.insert(conn.to_owned(), Peer::AwaitHello3 { client_id, th, c2h, h2c, client_point });
+        self.peers.insert(
+            conn.to_owned(),
+            Peer::AwaitHello3 {
+                client_id,
+                th,
+                c2h,
+                h2c,
+                client_point,
+            },
+        );
         Ok(())
     }
 
     fn on_hello3(&mut self, conn: &str, message: &Value) -> Result<(), String> {
-        let Some(Peer::AwaitHello3 { client_id, th, c2h, h2c, client_point }) = self.peers.remove(conn) else {
+        let Some(Peer::AwaitHello3 {
+            client_id,
+            th,
+            c2h,
+            h2c,
+            client_point,
+        }) = self.peers.remove(conn)
+        else {
             return Err("Handshake messages arrived out of order".to_owned());
         };
-        if !self.inner.lock_config().clients.iter().any(|client| client.client_id == client_id) {
+        if !self
+            .inner
+            .lock_config()
+            .clients
+            .iter()
+            .any(|client| client.client_id == client_id)
+        {
             self.drop_session(conn, CLOSE_UNPAIRED);
             return Ok(());
         }
@@ -343,7 +550,14 @@ impl Link {
         }
         self.peers.insert(
             conn.to_owned(),
-            Peer::Ready(Box::new(Ready { client_id, c2h, h2c, sent: 0, received: 0, buffer: Vec::new() })),
+            Peer::Ready(Box::new(Ready {
+                client_id,
+                c2h,
+                h2c,
+                sent: 0,
+                received: 0,
+                buffer: Vec::new(),
+            })),
         );
         self.inner.notify_changed();
         Ok(())
@@ -369,8 +583,12 @@ impl Link {
             return Ok(());
         }
         let bytes = crypto::decode(data)?;
-        let message: Value = serde_json::from_slice(&bytes).map_err(|_| "A frame is not JSON".to_owned())?;
-        match (message.get("k").and_then(Value::as_str), self.peers.get(conn)) {
+        let message: Value =
+            serde_json::from_slice(&bytes).map_err(|_| "A frame is not JSON".to_owned())?;
+        match (
+            message.get("k").and_then(Value::as_str),
+            self.peers.get(conn),
+        ) {
             (Some("pair1"), None) => self.on_pair1(conn, &message),
             (Some("pair3"), Some(Peer::AwaitPair3 { .. })) => self.on_pair3(conn, &message),
             (Some("hello1"), None) => self.on_hello1(conn, &message),
@@ -419,7 +637,8 @@ impl Link {
     }
 
     fn drop_session(&mut self, conn: &str, code: u16) {
-        self.outbox.push(json!({"t": "disconnect", "conn": conn, "code": code}));
+        self.outbox
+            .push(json!({"t": "disconnect", "conn": conn, "code": code}));
         self.peers.insert(conn.to_owned(), Peer::Closed);
         self.forget_online(conn);
     }
@@ -437,8 +656,16 @@ impl Link {
             Outgoing::BeginPairing { pairing, reply } => {
                 self.inner.end_pairing();
                 let token = pairing.token;
-                *self.inner.pairing.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pairing);
-                self.register(crypto::sha256_hex(&token), true, Registration::Pairing { token, reply });
+                *self
+                    .inner
+                    .pairing
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pairing);
+                self.register(
+                    crypto::sha256_hex(&token),
+                    true,
+                    Registration::Pairing { token, reply },
+                );
                 self.inner.notify_changed();
             }
             Outgoing::ToPeer { conn, message } => {
@@ -487,11 +714,16 @@ impl Link {
 
 /// A native dialog, so that the page, which renders untrusted content, cannot approve a device.
 fn ask_user(inner: Arc<Inner>, conn: String, name: String, code: String) {
-    let is_english = inner.context.lock().is_ok_and(|context| context.language.as_deref() == Some("en"));
+    let is_english = inner
+        .context
+        .lock()
+        .is_ok_and(|context| context.language.as_deref() == Some("en"));
     let (title, body, allow, deny) = if is_english {
         (
             "Pair this device?".to_owned(),
-            format!("{name} wants to control this computer's agents.\n\nCheck that it shows this code: {code}"),
+            format!(
+                "{name} wants to control this computer's agents.\n\nCheck that it shows this code: {code}"
+            ),
             "Allow",
             "Deny",
         )
@@ -514,46 +746,96 @@ fn ask_user(inner: Arc<Inner>, conn: String, name: String, code: String) {
             .dialog()
             .message(body)
             .title(title)
-            .buttons(MessageDialogButtons::OkCancelCustom(allow.to_owned(), deny.to_owned()))
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                allow.to_owned(),
+                deny.to_owned(),
+            ))
             .blocking_show();
-        inner.send(Outgoing::PairAnswer { conn, allow: answer });
+        inner.send(Outgoing::PairAnswer {
+            conn,
+            allow: answer,
+        });
     });
+}
+
+fn relay_close_message(code: Option<u16>) -> String {
+    match code {
+        Some(4401) => "部署令牌不正确".to_owned(),
+        Some(1011) => "中转无法写入数据目录。请确认这个目录存在，并且容器可以写入".to_owned(),
+        Some(4429) => "连接过于频繁，请稍后再试".to_owned(),
+        Some(4409) => "另一台电脑占用了这个中转房间".to_owned(),
+        Some(code) => format!("中转关闭了连接（{code}）"),
+        None => "中转关闭了连接".to_owned(),
+    }
 }
 
 fn relay_version(frame: &Value) -> Option<String> {
     let version = frame.get("relayVersion")?.as_str()?;
     let parts: Vec<_> = version.split('.').collect();
-    (version.len() <= 64 && parts.len() == 3
-        && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
-        .then(|| version.to_owned())
+    (version.len() <= 64
+        && parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())))
+    .then(|| version.to_owned())
 }
 
-async fn connect_once(inner: &Arc<Inner>, receiver: &mut mpsc::UnboundedReceiver<Outgoing>) -> Result<(), (String, bool)> {
+async fn connect_once(
+    inner: &Arc<Inner>,
+    receiver: &mut mpsc::UnboundedReceiver<Outgoing>,
+) -> Result<(), (String, bool)> {
     let config = inner.lock_config().clone();
     let plain = |error: String| (error, false);
-    let (mut socket, _) = tokio::time::timeout(HELLO_TIMEOUT, tokio_tungstenite::connect_async(config.relay_url.as_str()))
-        .await
-        .map_err(|_| plain("The relay did not answer".to_owned()))?
-        .map_err(|error| plain(error.to_string()))?;
+    let (mut socket, _) = tokio::time::timeout(
+        HELLO_TIMEOUT,
+        tokio_tungstenite::connect_async(config.relay_url.as_str()),
+    )
+    .await
+    .map_err(|_| plain("中转没有响应".to_owned()))?
+    .map_err(|error| plain(error.to_string()))?;
     let hello = json!({"t": "host-hello", "v": 1, "room": config.room, "token": config.host_token});
-    socket.send(Message::text(hello.to_string())).await.map_err(|error| plain(error.to_string()))?;
-    let ack = tokio::time::timeout(HELLO_TIMEOUT, socket.next()).await.map_err(|_| plain("The relay did not answer".to_owned()))?;
+    socket
+        .send(Message::text(hello.to_string()))
+        .await
+        .map_err(|error| plain(error.to_string()))?;
+    let ack = tokio::time::timeout(HELLO_TIMEOUT, socket.next())
+        .await
+        .map_err(|_| plain("中转没有响应".to_owned()))?;
     let frame = match ack {
-        Some(Ok(Message::Text(text))) => serde_json::from_str::<Value>(&text).ok(),
-        _ => None,
-    }.filter(|frame| frame.get("t").and_then(Value::as_str) == Some("hello-ack"))
-        .ok_or_else(|| plain("The relay refused this token".to_owned()))?;
-    if let Ok(mut status) = inner.status.lock() { status.relay_version = relay_version(&frame); }
+        Some(Ok(Message::Text(text))) => serde_json::from_str::<Value>(&text)
+            .ok()
+            .filter(|frame| frame.get("t").and_then(Value::as_str) == Some("hello-ack"))
+            .ok_or_else(|| plain("中转没有接受这个部署令牌".to_owned()))?,
+        Some(Ok(Message::Close(frame))) => {
+            return Err(plain(relay_close_message(
+                frame.as_ref().map(|frame| u16::from(frame.code)),
+            )));
+        }
+        None => return Err(plain(relay_close_message(None))),
+        _ => return Err(plain("中转没有接受这个部署令牌".to_owned())),
+    };
+    if let Ok(mut status) = inner.status.lock() {
+        status.relay_version = relay_version(&frame);
+    }
     // What was queued while offline was meant for connections that no longer exist.
     while receiver.try_recv().is_ok() {}
 
-    let mut link = Link { inner: inner.clone(), peers: HashMap::new(), grants: HashMap::new(), restoring: true, outbox: Vec::new() };
+    let mut link = Link {
+        inner: inner.clone(),
+        peers: HashMap::new(),
+        grants: HashMap::new(),
+        restoring: true,
+        outbox: Vec::new(),
+    };
     link.restore_clients();
     let mut last_heard = Instant::now();
     let mut ping = tokio::time::interval(PING_EVERY);
     loop {
         for frame in link.outbox.drain(..) {
-            socket.send(Message::text(frame.to_string())).await.map_err(|error| plain(error.to_string()))?;
+            socket
+                .send(Message::text(frame.to_string()))
+                .await
+                .map_err(|error| plain(error.to_string()))?;
         }
         let grant_deadline = link.grants.values().map(|grant| grant.deadline).min();
         tokio::select! {
@@ -563,12 +845,12 @@ async fn connect_once(inner: &Arc<Inner>, receiver: &mut mpsc::UnboundedReceiver
                     link.on_frame(&text).await.map_err(plain)?;
                 }
                 Some(Ok(Message::Close(frame))) => {
-                    let replaced = frame.is_some_and(|frame| u16::from(frame.code) == CLOSE_REPLACED);
-                    return Err(("The relay closed the connection".to_owned(), replaced));
+                    let code = frame.as_ref().map(|frame| u16::from(frame.code));
+                    return Err((relay_close_message(code), code == Some(CLOSE_REPLACED)));
                 }
                 Some(Ok(_)) => last_heard = Instant::now(),
                 Some(Err(error)) => return Err(plain(error.to_string())),
-                None => return Err(plain("The relay closed the connection".to_owned())),
+                None => return Err(plain(relay_close_message(None))),
             },
             outgoing = receiver.recv() => match outgoing {
                 Some(outgoing) => link.on_outgoing(outgoing),
@@ -577,10 +859,10 @@ async fn connect_once(inner: &Arc<Inner>, receiver: &mut mpsc::UnboundedReceiver
             _ = async {
                 if let Some(deadline) = grant_deadline { tokio::time::sleep_until(deadline.into()).await; }
                 else { std::future::pending::<()>().await; }
-            } => return Err(plain("The relay did not confirm the token registration".to_owned())),
+            } => return Err(plain("中转没有确认令牌登记".to_owned())),
             _ = ping.tick() => {
                 if last_heard.elapsed() > SILENCE_LIMIT {
-                    return Err(plain("The relay stopped answering".to_owned()));
+                    return Err(plain("中转停止响应".to_owned()));
                 }
                 socket.send(Message::Ping(Vec::new().into())).await.map_err(|error| plain(error.to_string()))?;
             }
@@ -606,7 +888,11 @@ pub(super) async fn run(inner: Arc<Inner>, mut receiver: mpsc::UnboundedReceiver
             }
         };
         tokio::time::sleep(wait).await;
-        backoff = if started.elapsed() > MAX_BACKOFF { Duration::from_secs(1) } else { (backoff * 2).min(MAX_BACKOFF) };
+        backoff = if started.elapsed() > MAX_BACKOFF {
+            Duration::from_secs(1)
+        } else {
+            (backoff * 2).min(MAX_BACKOFF)
+        };
     }
 }
 
@@ -615,9 +901,18 @@ mod version_tests {
     use super::*;
     #[test]
     fn reads_relay_version_and_accepts_an_ack_from_an_older_relay() {
-        assert_eq!(relay_version(&json!({"t":"hello-ack","relayVersion":"0.1.2026111102"})), Some("0.1.2026111102".into()));
-        for frame in [json!({"t":"hello-ack"}), json!({"relayVersion":""}), json!({"relayVersion":"1.2"}),
-            json!({"relayVersion":"1.2.3\n"}), json!({"relayVersion":12}), json!({"relayVersion":"<script>"})] {
+        assert_eq!(
+            relay_version(&json!({"t":"hello-ack","relayVersion":"0.1.2026111102"})),
+            Some("0.1.2026111102".into())
+        );
+        for frame in [
+            json!({"t":"hello-ack"}),
+            json!({"relayVersion":""}),
+            json!({"relayVersion":"1.2"}),
+            json!({"relayVersion":"1.2.3\n"}),
+            json!({"relayVersion":12}),
+            json!({"relayVersion":"<script>"}),
+        ] {
             assert_eq!(relay_version(&frame), None);
         }
     }

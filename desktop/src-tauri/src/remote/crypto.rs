@@ -1,12 +1,12 @@
 //! The key schedule from docs/relay-protocol.md, sections 5 and 6. Everything here is a pure
 //! function of its inputs, so the shared test vectors can check it against the page's WebCrypto.
 
-use aes_gcm::{aead::Aead, aead::Payload, Aes256Gcm, KeyInit, Nonce};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce, aead::Aead, aead::Payload};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
-use p256::ecdsa::{signature::Signer, signature::Verifier, Signature, SigningKey, VerifyingKey};
-use p256::{ecdh::EphemeralSecret, PublicKey};
+use p256::ecdsa::{Signature, SigningKey, VerifyingKey, signature::Signer, signature::Verifier};
+use p256::{PublicKey, ecdh::EphemeralSecret};
 use rand_core::{OsRng, RngCore};
 use sha2::{Digest, Sha256};
 
@@ -21,7 +21,9 @@ pub fn encode(bytes: &[u8]) -> String {
 }
 
 pub fn decode(text: &str) -> Result<Vec<u8>, String> {
-    URL_SAFE_NO_PAD.decode(text).map_err(|_| "Bad base64".to_owned())
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| "Bad base64".to_owned())
 }
 
 pub fn random_bytes<const N: usize>() -> [u8; N] {
@@ -31,7 +33,10 @@ pub fn random_bytes<const N: usize>() -> [u8; N] {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn hash(parts: &[&[u8]]) -> [u8; 32] {
@@ -86,7 +91,10 @@ pub fn signing_key_from(bytes: &[u8]) -> Result<SigningKey, String> {
 }
 
 pub fn public_point(key: &SigningKey) -> Vec<u8> {
-    key.verifying_key().to_encoded_point(false).as_bytes().to_vec()
+    key.verifying_key()
+        .to_encoded_point(false)
+        .as_bytes()
+        .to_vec()
 }
 
 pub fn sign(key: &SigningKey, label: &[u8], th: &[u8]) -> Vec<u8> {
@@ -98,7 +106,8 @@ pub fn verify(point: &[u8], label: &[u8], th: &[u8], signature: &[u8]) -> Result
     parse_point(point)?;
     let key = VerifyingKey::from_sec1_bytes(point).map_err(|_| "Bad public key".to_owned())?;
     let signature = Signature::from_slice(signature).map_err(|_| "Bad signature".to_owned())?;
-    key.verify(&[label, th].concat(), &signature).map_err(|_| "The signature does not match".to_owned())
+    key.verify(&[label, th].concat(), &signature)
+        .map_err(|_| "The signature does not match".to_owned())
 }
 
 pub struct PairKeys {
@@ -116,7 +125,12 @@ pub fn pair_keys(shared: &[u8], secret: &[u8], th: &[u8; 32]) -> PairKeys {
     let okm: [u8; 96] = hkdf(shared, secret, &[PAIR_LABEL, th]);
     let part = |start: usize| -> [u8; 32] { okm[start..start + 32].try_into().expect("32 bytes") };
     let number = u32::from_be_bytes(th[..4].try_into().expect("4 bytes")) % 1_000_000;
-    PairKeys { mac_host: part(0), mac_client: part(32), aes: part(64), code: format!("{number:06}") }
+    PairKeys {
+        mac_host: part(0),
+        mac_client: part(32),
+        aes: part(64),
+        code: format!("{number:06}"),
+    }
 }
 
 pub fn mac_host(keys: &PairKeys, th: &[u8]) -> [u8; 32] {
@@ -129,24 +143,44 @@ pub fn mac_client(keys: &PairKeys, th: &[u8]) -> [u8; 32] {
 
 /// Compares without stopping at the first difference.
 pub fn same_bytes(left: &[u8], right: &[u8]) -> bool {
-    left.len() == right.len() && left.iter().zip(right).fold(0, |seen, (a, b)| seen | (a ^ b)) == 0
+    left.len() == right.len()
+        && left
+            .iter()
+            .zip(right)
+            .fold(0, |seen, (a, b)| seen | (a ^ b))
+            == 0
 }
 
 pub fn seal_pair4(aes: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(aes).map_err(|error| error.to_string())?;
     cipher
-        .encrypt(Nonce::from_slice(&[0; 12]), Payload { msg: plain, aad: PAIR4_AAD })
+        .encrypt(
+            Nonce::from_slice(&[0; 12]),
+            Payload {
+                msg: plain,
+                aad: PAIR4_AAD,
+            },
+        )
         .map_err(|_| "Encryption failed".to_owned())
 }
 
-pub fn session_transcript(client_id: &[u8], e_c: &[u8], e_h: &[u8], s_c: &[u8], s_h: &[u8]) -> [u8; 32] {
+pub fn session_transcript(
+    client_id: &[u8],
+    e_c: &[u8],
+    e_h: &[u8],
+    s_c: &[u8],
+    s_h: &[u8],
+) -> [u8; 32] {
     hash(&[SESSION_LABEL, client_id, e_c, e_h, s_c, s_h])
 }
 
 /// Client-to-host key, then host-to-client key.
 pub fn session_keys(shared: &[u8], th: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let okm: [u8; 64] = hkdf(shared, th, &[SESSION_LABEL]);
-    (okm[..32].try_into().expect("32 bytes"), okm[32..].try_into().expect("32 bytes"))
+    (
+        okm[..32].try_into().expect("32 bytes"),
+        okm[32..].try_into().expect("32 bytes"),
+    )
 }
 
 fn message_nonce(counter: u64) -> [u8; 12] {
@@ -158,14 +192,26 @@ fn message_nonce(counter: u64) -> [u8; 12] {
 pub fn seal_message(key: &[u8; 32], counter: u64, plain: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| error.to_string())?;
     cipher
-        .encrypt(Nonce::from_slice(&message_nonce(counter)), Payload { msg: plain, aad: MESSAGE_AAD })
+        .encrypt(
+            Nonce::from_slice(&message_nonce(counter)),
+            Payload {
+                msg: plain,
+                aad: MESSAGE_AAD,
+            },
+        )
         .map_err(|_| "Encryption failed".to_owned())
 }
 
 pub fn open_message(key: &[u8; 32], counter: u64, sealed: &[u8]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|error| error.to_string())?;
     cipher
-        .decrypt(Nonce::from_slice(&message_nonce(counter)), Payload { msg: sealed, aad: MESSAGE_AAD })
+        .decrypt(
+            Nonce::from_slice(&message_nonce(counter)),
+            Payload {
+                msg: sealed,
+                aad: MESSAGE_AAD,
+            },
+        )
         .map_err(|_| "A message did not decrypt".to_owned())
 }
 
@@ -205,7 +251,15 @@ mod tests {
         assert_eq!(signature.len(), 64);
         assert!(verify(&point, b"host", b"th", &signature).is_ok());
         assert!(verify(&point, b"client", b"th", &signature).is_err());
-        assert!(verify(&public_point(&new_signing_key()), b"host", b"th", &signature).is_err());
+        assert!(
+            verify(
+                &public_point(&new_signing_key()),
+                b"host",
+                b"th",
+                &signature
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -213,7 +267,10 @@ mod tests {
         let keys = pair_keys(&[1; 32], &[2; 32], &[0; 32]);
         assert_eq!(keys.code, "000000");
         assert!(same_bytes(&mac_host(&keys, b"t"), &mac_host(&keys, b"t")));
-        assert!(!same_bytes(&mac_host(&keys, b"t"), &mac_client(&keys, b"t")));
+        assert!(!same_bytes(
+            &mac_host(&keys, b"t"),
+            &mac_client(&keys, b"t")
+        ));
     }
 
     #[test]
@@ -232,7 +289,8 @@ mod tests {
     }
 
     fn vector_shared(vectors: &serde_json::Value) -> [u8; 32] {
-        let secret = p256::SecretKey::from_slice(&vector_bytes(vectors, "/privateKeys/ec/d")).unwrap();
+        let secret =
+            p256::SecretKey::from_slice(&vector_bytes(vectors, "/privateKeys/ec/d")).unwrap();
         let peer = PublicKey::from_sec1_bytes(&vector_bytes(vectors, "/publicKeys/eh")).unwrap();
         let shared = p256::ecdh::diffie_hellman(secret.to_nonzero_scalar(), peer.as_affine());
         (*shared.raw_secret_bytes()).into()
@@ -241,35 +299,75 @@ mod tests {
     #[test]
     fn matches_the_shared_pairing_vectors() {
         let v: serde_json::Value = serde_json::from_str(VECTORS).unwrap();
-        let (e_c, s_c) = (vector_bytes(&v, "/publicKeys/ec"), vector_bytes(&v, "/publicKeys/sc"));
-        let (e_h, s_h) = (vector_bytes(&v, "/publicKeys/eh"), vector_bytes(&v, "/publicKeys/sh"));
+        let (e_c, s_c) = (
+            vector_bytes(&v, "/publicKeys/ec"),
+            vector_bytes(&v, "/publicKeys/sc"),
+        );
+        let (e_h, s_h) = (
+            vector_bytes(&v, "/publicKeys/eh"),
+            vector_bytes(&v, "/publicKeys/sh"),
+        );
         let th = pair_transcript(&e_c, &s_c, &e_h, &s_h);
         assert_eq!(th.to_vec(), vector_bytes(&v, "/pair/th"));
         let keys = pair_keys(&vector_shared(&v), &vector_bytes(&v, "/secret"), &th);
-        assert_eq!(mac_host(&keys, &th).to_vec(), vector_bytes(&v, "/pair/macH"));
-        assert_eq!(mac_client(&keys, &th).to_vec(), vector_bytes(&v, "/pair/macC"));
+        assert_eq!(
+            mac_host(&keys, &th).to_vec(),
+            vector_bytes(&v, "/pair/macH")
+        );
+        assert_eq!(
+            mac_client(&keys, &th).to_vec(),
+            vector_bytes(&v, "/pair/macC")
+        );
         assert_eq!(keys.code, v["pair"]["code"].as_str().unwrap());
         assert!(verify(&s_c, b"", &th, &vector_bytes(&v, "/pair/signature")).is_ok());
         let plain = v["pair"]["plaintext"].as_str().unwrap();
-        assert_eq!(seal_pair4(&keys.aes, plain.as_bytes()).unwrap(), vector_bytes(&v, "/pair/ciphertext"));
+        assert_eq!(
+            seal_pair4(&keys.aes, plain.as_bytes()).unwrap(),
+            vector_bytes(&v, "/pair/ciphertext")
+        );
     }
 
     #[test]
     fn matches_the_shared_session_vectors() {
         let v: serde_json::Value = serde_json::from_str(VECTORS).unwrap();
-        let (e_c, s_c) = (vector_bytes(&v, "/publicKeys/ec"), vector_bytes(&v, "/publicKeys/sc"));
-        let (e_h, s_h) = (vector_bytes(&v, "/publicKeys/eh"), vector_bytes(&v, "/publicKeys/sh"));
+        let (e_c, s_c) = (
+            vector_bytes(&v, "/publicKeys/ec"),
+            vector_bytes(&v, "/publicKeys/sc"),
+        );
+        let (e_h, s_h) = (
+            vector_bytes(&v, "/publicKeys/eh"),
+            vector_bytes(&v, "/publicKeys/sh"),
+        );
         let th = session_transcript(&vector_bytes(&v, "/clientId"), &e_c, &e_h, &s_c, &s_h);
         assert_eq!(th.to_vec(), vector_bytes(&v, "/session/th"));
         let (c2h, h2c) = session_keys(&vector_shared(&v), &th);
         assert_eq!([c2h, h2c].concat(), vector_bytes(&v, "/session/okm"));
-        assert!(verify(&s_h, b"host", &th, &vector_bytes(&v, "/session/hostSignature")).is_ok());
-        assert!(verify(&s_c, b"client", &th, &vector_bytes(&v, "/session/clientSignature")).is_ok());
+        assert!(
+            verify(
+                &s_h,
+                b"host",
+                &th,
+                &vector_bytes(&v, "/session/hostSignature")
+            )
+            .is_ok()
+        );
+        assert!(
+            verify(
+                &s_c,
+                b"client",
+                &th,
+                &vector_bytes(&v, "/session/clientSignature")
+            )
+            .is_ok()
+        );
         let counter = v["session"]["n"].as_u64().unwrap();
         let sealed = vector_bytes(&v, "/session/ciphertext");
         // The first byte is the chunk flag, the rest is the message.
         let opened = open_message(&c2h, counter, &sealed).unwrap();
         assert_eq!(opened[0], 0);
-        assert_eq!(&opened[1..], v["session"]["plaintext"].as_str().unwrap().as_bytes());
+        assert_eq!(
+            &opened[1..],
+            v["session"]["plaintext"].as_str().unwrap().as_bytes()
+        );
     }
 }

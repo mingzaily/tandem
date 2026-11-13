@@ -8,9 +8,9 @@ mod store;
 
 use crate::runner::{TurnEvent, TurnSink};
 use crate::sessions::Agent;
-use qrcode::{render::svg, QrCode};
+use qrcode::{QrCode, render::svg};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +61,10 @@ impl RunRecord {
             "seq": seq, "event": event,
         });
         // Lifecycle boundaries carry the input; streaming deltas keep their compact payload.
-        if matches!(event, TurnEvent::Started { .. } | TurnEvent::Finished { .. }) {
+        if matches!(
+            event,
+            TurnEvent::Started { .. } | TurnEvent::Finished { .. }
+        ) {
             payload["prompt"] = json!(self.prompt);
         }
         payload
@@ -108,12 +111,20 @@ struct ConnectionStatus {
 }
 
 impl Default for ConnectionStatus {
-    fn default() -> Self { Self { status: LinkStatus::Off, error: None, relay_version: None } }
+    fn default() -> Self {
+        Self {
+            status: LinkStatus::Off,
+            error: None,
+            relay_version: None,
+        }
+    }
 }
 
 impl ConnectionStatus {
     fn set(&mut self, status: LinkStatus, error: Option<String>) {
-        if status != LinkStatus::Online { self.relay_version = None; }
+        if status != LinkStatus::Online {
+            self.relay_version = None;
+        }
         self.status = status;
         self.error = error;
     }
@@ -121,11 +132,22 @@ impl ConnectionStatus {
 
 pub(crate) enum Outgoing {
     Frame(Value),
-    BeginPairing { pairing: Pairing, reply: oneshot::Sender<Result<(), String>> },
-    ToPeer { conn: String, message: Value },
+    BeginPairing {
+        pairing: Pairing,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    ToPeer {
+        conn: String,
+        message: Value,
+    },
     Broadcast(Value),
-    PairAnswer { conn: String, allow: bool },
-    Disconnect { client_id: String },
+    PairAnswer {
+        conn: String,
+        allow: bool,
+    },
+    Disconnect {
+        client_id: String,
+    },
 }
 
 pub(crate) struct Inner {
@@ -178,25 +200,37 @@ pub struct RemoteState {
 }
 
 pub(crate) fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as u64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
 }
 
 fn qr_data_url(text: &str) -> Result<String, String> {
     let code = QrCode::new(text.as_bytes()).map_err(|error| error.to_string())?;
-    let image = code.render::<svg::Color>().min_dimensions(QR_SIZE, QR_SIZE).build();
-    Ok(format!("data:image/svg+xml;base64,{}", base64_standard(image.as_bytes())))
+    let image = code
+        .render::<svg::Color>()
+        .min_dimensions(QR_SIZE, QR_SIZE)
+        .build();
+    Ok(format!(
+        "data:image/svg+xml;base64,{}",
+        base64_standard(image.as_bytes())
+    ))
 }
 
 fn base64_standard(bytes: &[u8]) -> String {
-    use base64::{engine::general_purpose::STANDARD, Engine};
+    use base64::{Engine, engine::general_purpose::STANDARD};
     STANDARD.encode(bytes)
 }
 
 /// Long stretches of text arrive a few characters at a time, and only the text matters later.
 fn push_event(events: &mut Vec<TurnEvent>, event: &TurnEvent) {
     match (events.last_mut(), event) {
-        (Some(TurnEvent::TextDelta { text: last }), TurnEvent::TextDelta { text }) => return last.push_str(text),
-        (Some(TurnEvent::ThinkingDelta { text: last }), TurnEvent::ThinkingDelta { text }) => return last.push_str(text),
+        (Some(TurnEvent::TextDelta { text: last }), TurnEvent::TextDelta { text }) => {
+            return last.push_str(text);
+        }
+        (Some(TurnEvent::ThinkingDelta { text: last }), TurnEvent::ThinkingDelta { text }) => {
+            return last.push_str(text);
+        }
         _ => {}
     }
     if events.len() < MAX_RUN_EVENTS {
@@ -225,26 +259,50 @@ impl Remote {
             task: Mutex::default(),
             seq: AtomicU64::new(0),
         }));
-        if writable { remote.restart_link(); }
+        if writable {
+            remote.restart_link();
+        }
         Ok(remote)
     }
 
     pub fn state(&self) -> RemoteState {
         let config = self.0.lock_config();
-        let ConnectionStatus { status, error, relay_version } = self.0.status.lock().map_or_else(|_| ConnectionStatus::default(), |status| status.clone());
-        let online = self.0.online.lock().map(|online| online.clone()).unwrap_or_default();
+        let ConnectionStatus {
+            status,
+            error,
+            relay_version,
+        } = self
+            .0
+            .status
+            .lock()
+            .map_or_else(|_| ConnectionStatus::default(), |status| status.clone());
+        let online = self
+            .0
+            .online
+            .lock()
+            .map(|online| online.clone())
+            .unwrap_or_default();
         let pairing = self.0.pairing.lock().ok().and_then(|pairing| {
-            pairing.as_ref().filter(|pairing| pairing.is_live()).map(|pairing| PairingView {
-                text: pairing.text.clone(),
-                qr: pairing.qr.clone(),
-                expires_at_ms: now_ms() + pairing.deadline.saturating_duration_since(Instant::now()).as_millis() as u64,
-            })
+            pairing
+                .as_ref()
+                .filter(|pairing| pairing.is_live())
+                .map(|pairing| PairingView {
+                    text: pairing.text.clone(),
+                    qr: pairing.qr.clone(),
+                    expires_at_ms: now_ms()
+                        + pairing
+                            .deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis() as u64,
+                })
         });
         RemoteState {
             enabled: config.enabled,
             relay_url: config.relay_url.clone(),
             has_host_token: !config.host_token.is_empty(),
-            relay_version: matches!(status, LinkStatus::Online).then_some(relay_version).flatten(),
+            relay_version: matches!(status, LinkStatus::Online)
+                .then_some(relay_version)
+                .flatten(),
             status,
             error,
             pairing,
@@ -262,24 +320,33 @@ impl Remote {
     }
 
     /// An empty token keeps the saved one, so the page never has to read it back.
-    pub fn configure(&self, enabled: bool, relay_url: String, host_token: Option<String>) -> Result<(), String> {
-        let relay_url = relay_url.trim().to_owned();
-        if !relay_url.is_empty() {
-            store::check_relay_url(&relay_url)?;
-        }
+    pub fn configure(
+        &self,
+        enabled: bool,
+        relay_url: String,
+        host_token: Option<String>,
+    ) -> Result<(), String> {
+        let relay_url = if relay_url.trim().is_empty() {
+            String::new()
+        } else {
+            store::normalize_relay_url(&relay_url)?
+        };
         {
             let mut current = self.0.lock_config();
             let mut config = current.clone();
             if enabled && relay_url.is_empty() {
-                return Err("Enter the relay address first".to_owned());
+                return Err("请先填写中转域名".to_owned());
             }
             config.enabled = enabled;
             config.relay_url = relay_url;
-            if let Some(token) = host_token.map(|token| token.trim().to_owned()).filter(|token| !token.is_empty()) {
+            if let Some(token) = host_token
+                .map(|token| token.trim().to_owned())
+                .filter(|token| !token.is_empty())
+            {
                 config.host_token = token;
             }
             if enabled && config.host_token.is_empty() {
-                return Err("Enter the relay token first".to_owned());
+                return Err("请先填写部署令牌".to_owned());
             }
             self.0.save(&config)?;
             *current = config;
@@ -291,7 +358,14 @@ impl Remote {
 
     pub async fn begin_pairing(&self) -> Result<(), String> {
         let config = self.0.lock_config().clone();
-        if self.0.status.lock().map(|status| status.status.clone()).ok() != Some(LinkStatus::Online) {
+        if self
+            .0
+            .status
+            .lock()
+            .map(|status| status.status.clone())
+            .ok()
+            != Some(LinkStatus::Online)
+        {
             return Err("Not connected to the relay".to_owned());
         }
         let token = crypto::random_bytes::<32>();
@@ -305,12 +379,24 @@ impl Remote {
             "token": crypto::encode(&token),
             "secret": crypto::encode(&secret),
         });
-        let text = format!("tandem-pair:{}", crypto::encode(payload.to_string().as_bytes()));
+        let text = format!(
+            "tandem-pair:{}",
+            crypto::encode(payload.to_string().as_bytes())
+        );
         let qr = qr_data_url(&text)?;
-        let pairing = Pairing { token, secret, deadline: Instant::now() + PAIRING_LIFETIME, registered: false, text, qr };
+        let pairing = Pairing {
+            token,
+            secret,
+            deadline: Instant::now() + PAIRING_LIFETIME,
+            registered: false,
+            text,
+            qr,
+        };
         let (reply, received) = oneshot::channel();
         self.0.send(Outgoing::BeginPairing { pairing, reply });
-        received.await.map_err(|_| "The relay connection closed before confirming the pairing token".to_owned())?
+        received.await.map_err(|_| {
+            "The relay connection closed before confirming the pairing token".to_owned()
+        })?
     }
 
     pub fn cancel_pairing(&self) {
@@ -322,15 +408,23 @@ impl Remote {
         {
             let mut current = self.0.lock_config();
             let mut config = current.clone();
-            let Some(index) = config.clients.iter().position(|client| client.client_id == client_id) else {
+            let Some(index) = config
+                .clients
+                .iter()
+                .position(|client| client.client_id == client_id)
+            else {
                 return Err("That device is not paired".to_owned());
             };
             let client = config.clients.remove(index);
             self.0.save(&config)?;
             *current = config;
-            self.0.send(Outgoing::Frame(json!({"t": "revoke", "tokenHash": client.token_hash})));
+            self.0.send(Outgoing::Frame(
+                json!({"t": "revoke", "tokenHash": client.token_hash}),
+            ));
         }
-        self.0.send(Outgoing::Disconnect { client_id: client_id.to_owned() });
+        self.0.send(Outgoing::Disconnect {
+            client_id: client_id.to_owned(),
+        });
         self.0.notify_changed();
         Ok(())
     }
@@ -342,34 +436,60 @@ impl Remote {
             }
             *current = context;
         }
-        self.0.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
+        self.0
+            .send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
     }
 
     /// Registers a turn so phones see it, whichever side started it. Every event then goes through
     /// the returned sink. Call `end_run` when the turn's function returns.
-    pub fn track(&self, agent: Agent, task_id: Option<String>, prompt: String, sink: TurnSink) -> (String, TurnSink) {
+    pub fn track(
+        &self,
+        agent: Agent,
+        task_id: Option<String>,
+        prompt: String,
+        sink: TurnSink,
+    ) -> (String, TurnSink) {
         let run_id = format!("run-{}", uuid::Uuid::new_v4());
         if let Ok(mut runs) = self.0.runs.lock() {
-            runs.insert(run_id.clone(), RunRecord {
-                agent, prompt, task_id, started_at_ms: now_ms(), started: Instant::now(), events: Vec::new(), sink,
-            });
+            runs.insert(
+                run_id.clone(),
+                RunRecord {
+                    agent,
+                    prompt,
+                    task_id,
+                    started_at_ms: now_ms(),
+                    started: Instant::now(),
+                    events: Vec::new(),
+                    sink,
+                },
+            );
         }
         let inner = self.0.clone();
         let id = run_id.clone();
-        (run_id, TurnSink::new(move |event| inner.deliver(&id, event)))
+        (
+            run_id,
+            TurnSink::new(move |event| inner.deliver(&id, event)),
+        )
     }
 
     /// A turn that failed before it could report that itself still has to end on the phones.
     pub fn end_run(&self, run_id: &str, result: &Result<(), String>) {
-        let Ok(mut runs) = self.0.runs.lock() else { return; };
+        let Ok(mut runs) = self.0.runs.lock() else {
+            return;
+        };
         let record = runs.remove(run_id);
         let (Some(record), Err(message)) = (record, result) else {
             return;
         };
-        let event = TurnEvent::Finished { is_error: true, cancelled: false, message: Some(message.clone()) };
+        let event = TurnEvent::Finished {
+            is_error: true,
+            cancelled: false,
+            message: Some(message.clone()),
+        };
         let seq = self.0.seq.fetch_add(1, Ordering::SeqCst) + 1;
         self.0.broadcast_turn(run_id, &record, seq, &event);
-        self.0.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
+        self.0
+            .send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
     }
 
     /// Whoever answered a request, the other side's card has to go away.
@@ -380,7 +500,12 @@ impl Remote {
                 .map(|(run_id, _)| run_id.clone())
         });
         if let Some(run_id) = run_id {
-            let _ = self.0.deliver(&run_id, TurnEvent::RequestSettled { request_id: request_id.to_owned() });
+            let _ = self.0.deliver(
+                &run_id,
+                TurnEvent::RequestSettled {
+                    request_id: request_id.to_owned(),
+                },
+            );
         }
     }
 
@@ -415,7 +540,9 @@ impl Remote {
 
 impl Inner {
     pub(crate) fn lock_config(&self) -> std::sync::MutexGuard<'_, Config> {
-        self.config.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.config
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub(crate) fn save(&self, config: &Config) -> Result<(), String> {
@@ -442,20 +569,31 @@ impl Inner {
     }
 
     pub(crate) fn end_pairing(&self) {
-        let ended = self.pairing.lock().ok().and_then(|mut pairing| pairing.take());
+        let ended = self
+            .pairing
+            .lock()
+            .ok()
+            .and_then(|mut pairing| pairing.take());
         if let Some(pairing) = ended {
-            self.send(Outgoing::Frame(json!({"t": "revoke", "tokenHash": crypto::sha256_hex(&pairing.token)})));
+            self.send(Outgoing::Frame(
+                json!({"t": "revoke", "tokenHash": crypto::sha256_hex(&pairing.token)}),
+            ));
         }
     }
 
     fn broadcast_turn(&self, run_id: &str, record: &RunRecord, seq: u64, event: &TurnEvent) {
-        self.send(Outgoing::Broadcast(json!({"ev": "turn.event", "p": record.event_payload(run_id, seq, event)})));
+        self.send(Outgoing::Broadcast(
+            json!({"ev": "turn.event", "p": record.event_payload(run_id, seq, event)}),
+        ));
     }
 
     fn deliver(&self, run_id: &str, event: TurnEvent) -> Result<(), String> {
         // Numbered under the lock, so a snapshot's number splits the events exactly.
         let sink = {
-            let mut runs = self.runs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut runs = self
+                .runs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             // A request can settle concurrently with the turn's final event.
             let Some(record) = runs.get_mut(run_id) else {
                 return Ok(());
@@ -472,7 +610,10 @@ impl Inner {
             }
             sink
         };
-        if matches!(event, TurnEvent::Started { .. } | TurnEvent::Finished { .. }) {
+        if matches!(
+            event,
+            TurnEvent::Started { .. } | TurnEvent::Finished { .. }
+        ) {
             self.send(Outgoing::Broadcast(json!({"ev": "tasks.changed", "p": {}})));
         }
         sink.send(event)
@@ -501,7 +642,11 @@ mod tests {
     #[test]
     fn relay_version_is_retained_online_and_cleared_on_disconnect_or_reconnect() {
         for next in [LinkStatus::Off, LinkStatus::Connecting, LinkStatus::Failed] {
-            let mut connection = ConnectionStatus { status: LinkStatus::Connecting, error: None, relay_version: Some("0.1.2026111101".into()) };
+            let mut connection = ConnectionStatus {
+                status: LinkStatus::Connecting,
+                error: None,
+                relay_version: Some("0.1.2026111101".into()),
+            };
             connection.set(LinkStatus::Online, None);
             assert_eq!(connection.relay_version.as_deref(), Some("0.1.2026111101"));
             connection.set(next, None);
@@ -512,8 +657,12 @@ mod tests {
     #[test]
     fn pairing_is_available_after_registration_and_before_its_monotonic_deadline() {
         let mut pairing = Pairing {
-            token: [0; 32], secret: [0; 32], deadline: Instant::now() + PAIRING_LIFETIME,
-            registered: false, text: String::new(), qr: String::new(),
+            token: [0; 32],
+            secret: [0; 32],
+            deadline: Instant::now() + PAIRING_LIFETIME,
+            registered: false,
+            text: String::new(),
+            qr: String::new(),
         };
         assert!(!pairing.is_live());
         pairing.registered = true;
@@ -535,16 +684,34 @@ mod tests {
     #[test]
     fn lifecycle_frames_identify_the_actual_agent_input_and_task_before_startup_can_fail() {
         let record = RunRecord {
-            agent: Agent::Pi, task_id: Some("task".into()), prompt: "continue".into(),
-            started_at_ms: 100, started: Instant::now(), events: vec![],
+            agent: Agent::Pi,
+            task_id: Some("task".into()),
+            prompt: "continue".into(),
+            started_at_ms: 100,
+            started: Instant::now(),
+            events: vec![],
             sink: TurnSink::new(|_| Ok(())),
         };
-        let failed = record.event_payload("run", 2, &TurnEvent::Finished { is_error: true, cancelled: false, message: Some("startup failed".into()) });
+        let failed = record.event_payload(
+            "run",
+            2,
+            &TurnEvent::Finished {
+                is_error: true,
+                cancelled: false,
+                message: Some("startup failed".into()),
+            },
+        );
         assert_eq!(failed["agent"], "pi");
         assert_eq!(failed["taskId"], "task");
         assert_eq!(failed["prompt"], "continue");
         assert_eq!(failed["seq"], 2);
-        let delta = record.event_payload("run", 1, &TurnEvent::TextDelta { text: "part".into() });
+        let delta = record.event_payload(
+            "run",
+            1,
+            &TurnEvent::TextDelta {
+                text: "part".into(),
+            },
+        );
         assert!(delta.get("prompt").is_none());
         assert_eq!(delta["agent"], "pi");
     }
